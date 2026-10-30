@@ -395,9 +395,6 @@ std::optional<ExtraQuantType> ggml_openvino_get_requant_type(const ggml_tensor *
     if (strncmp(tensor->name, "output.weight", 13) == 0) {
         return ExtraQuantType::Q8_0_C;
     }
-    if (ggml_openvino_is_npu()) {
-        return ExtraQuantType::Q4_0_128;
-    }
     // By default Q6_K/Q5_K are requantized to Q8_0_C, which *inflates* 6- and 5-bit weights to 8
     // while the rest of the model stays at 4 bits, and Q4_K keeps its native group-32 layout
     // (an f16 scale plus an f16 zero point per 32 weights = 0.125 B/weight of metadata).
@@ -422,6 +419,28 @@ std::optional<ExtraQuantType> ggml_openvino_get_requant_type(const ggml_tensor *
     const bool sym128_all = is_opt("q4_sym128_all");
     const bool asym64_all = is_opt("q4_asym64_all");
     const bool asym64 = is_opt("q4_asym64");
+
+    // Upstream sends *every* weight to grouped 4 bit on the NPU, with no comment about why and no way
+    // to decline. That is not neutral: a Q4_K_M checkpoint arrives as per-32 weights with an f16 scale
+    // and an f16 zero point, and this turns it into symmetric group 128 *without the zero point* - the
+    // same accuracy trade the `_all` suffix above documents, applied unconditionally, on one device
+    // only. So an NPU run and a CPU run of the "same" GGUF are not evaluating the same quantization,
+    // which is why comparing them as-is measures two different models.
+    //
+    // The override applies only when the user asked for nothing: an explicit GGML_OPENVINO_REQUANT_KQUANT
+    // (q4_sym128_all, q4_asym64_all, native, ...) falls through to the normal branches, so the NPU can
+    // be measured against the CPU under an identical quantization. Gating this on `!is_opt("native")`
+    // instead was a bug: it swallowed every option, so default / q4_sym128_all / q4_asym64_all produced
+    // byte-identical NPU dumps and the comparison proved nothing.
+    //
+    // `native` is worth recording as *not* a workaround: keeping Q4_K on the NPU fails to compile,
+    //   [vpux-compiler] MatMul_10801 ... as_convolution: Channels count of input tensor shape and
+    //   filter shape must be the same: 0 != 64
+    // i.e. the plugin cannot take the grouped-Q4_K-with-zero-point layout, which is presumably why
+    // upstream forces grouped 4 bit here at all.
+    if (ggml_openvino_is_npu() && !rq) {
+        return ExtraQuantType::Q4_0_128;
+    }
 
     if (tensor->type == GGML_TYPE_Q4_K) {
         if (sym128_all) {
