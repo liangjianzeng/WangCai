@@ -1,49 +1,47 @@
-## What
+## 改了什么
 
-<!-- One paragraph. What changed, and what problem does it solve? -->
+<!-- 一段话：改了什么，解决什么问题。 -->
 
-Linked issue / roadmap item:
+关联 issue / 路线图条目：
 
-## Type
+## 类型
 
-- [ ] correctness fix (graph construction / op lowering / cache contract)
-- [ ] performance
-- [ ] new env var / diagnostic
-- [ ] build or tooling
-- [ ] documentation (including a rejected hypothesis — those are welcome)
+- [ ] 正确性修复（图构建 / 算子降级 / 缓存契约）
+- [ ] 性能
+- [ ] 新增环境变量 / 诊断手段
+- [ ] 构建或工具链
+- [ ] 文档（包括被推翻的假设——这类同样欢迎）
 
-## Measurements
+## 测量数据
 
-Required for anything that changes execution. Paste the actual output, not a summary.
+任何改变执行行为的改动都必须附。请贴真实输出，不要写摘要。
 
-| | before | after |
+| | 改动前 | 改动后 |
 |---|---|---|
 | prompt eval (t/s) | | |
 | decode (t/s) | | |
-| top-1 agreement vs CPU reference | | |
-| cosine vs CPU reference (decode) | | |
+| 与 CPU 参照的 top-1 一致率 | | |
+| 与 CPU 参照的余弦（decode） | | |
 
-Command line, `-c`, `-b`, `GGML_OPENVINO_PREFILL_CHUNK_SIZE`, prompt/generated token counts, cold or
-warm compiled-graph cache:
+命令行、`-c`、`-b`、`GGML_OPENVINO_PREFILL_CHUNK_SIZE`、prompt / 生成 token 数、编译图缓存是冷是热：
 
 ```
 ```
 
-## Verification
+## 验证
 
-- [ ] `tools\run-npu.ps1 -Backend native` — CPU reference still coherent
-- [ ] `tools\run-npu.ps1 -Backend static` — static path on CPU still coherent
-- [ ] `tools\run-npu.ps1 -Backend npu` — NPU run recorded
-- [ ] `tools\compare-tensors.ps1` output attached (for anything touching graph construction)
-- [ ] passes aligned with `tools\top-token.ps1` before comparing
-- [ ] a fresh `GGML_OPENVINO_CACHE_DIR` was used per configuration
-- [ ] `AGENTS.md` / `CLAUDE.md` and other agent-memory files are not in the diff
+- [ ] `tools\run-npu.ps1 -Backend native` —— CPU 参照仍然连贯
+- [ ] `tools\run-npu.ps1 -Backend static` —— CPU 上的静态路径仍然连贯
+- [ ] `tools\run-npu.ps1 -Backend npu` —— NPU 运行已记录
+- [ ] 附 `tools\compare-tensors.ps1` 输出（任何触及图构建的改动都要）
+- [ ] 比对前先用 `tools\top-token.ps1` 对齐 pass
+- [ ] 每种配置都使用了全新的 `GGML_OPENVINO_CACHE_DIR`
+- [ ] `AGENTS.md` / `CLAUDE.md` 等智能体记忆文件不在 diff 里
 
-## Notes for review
+## 给评审的提示
 
-- If you changed an input shape, both sides of the static contract moved together
-  (`get_graph_input_shape` **and** the static binder) — say which two places.
-- If you added an env var, it is registered in the table in `ggml-openvino-extra.cpp` and documented
-  in [docs/env-vars.md](../docs/env-vars.md).
-- If you disabled something rather than fixing it, say so plainly and record it in
-  [CHANGELOG.md](../CHANGELOG.md).
+- 如果你改了输入形状，静态契约的两侧必须一起动（`get_graph_input_shape` **和**静态绑定器）——
+  说明是哪两处。
+- 如果你加了环境变量，它必须登记在 `ggml-openvino-extra.cpp` 的表里，并写进
+  [docs/env-vars.md](../docs/env-vars.md)。
+- 如果你是"先关掉"而不是"修好"，请直说，并记进 [CHANGELOG.md](../CHANGELOG.md)。

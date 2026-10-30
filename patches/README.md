@@ -1,33 +1,32 @@
-# Patches
+# 补丁
 
-Everything WangCai changes in upstream code lives here, as a patch set against a pinned llama.cpp
-commit. Keeping it outside the vendored tree means the fork stays a clean checkout and the delta
-stays reviewable.
+WangCai 对上游代码的全部改动都集中在这里，以一组针对固定（pinned）llama.cpp commit 的补丁集
+形式存在。把它们放在 vendored 目录树之外，这个 fork 才能保持为一份干净的检出（checkout），
+差异（delta）也才保持可评审。
 
-| Artifact | Against | Size |
+| 产物 | 基线 | 规模 |
 |---|---|---|
-| `0001-ggml-openvino-npu-adaptation.patch` | llama.cpp `abb76ab380c7f3f731e365a859fb4cc64e939bb8` | 7 files, +213 / −8 |
-| `ov_opencl_shim.hpp` | new file → `ggml/src/ggml-openvino/ov_opencl_shim.hpp` | ~150 lines |
+| `0001-ggml-openvino-npu-adaptation.patch` | llama.cpp `abb76ab380c7f3f731e365a859fb4cc64e939bb8` | 7 个文件，+213 / −8 |
+| `ov_opencl_shim.hpp` | 新文件 → `ggml/src/ggml-openvino/ov_opencl_shim.hpp` | 约 150 行 |
 
-All hunks are inside `ggml/src/ggml-openvino/`. No llama.cpp core, sampler, or ggml-CPU file is
-touched.
+所有 hunk 都位于 `ggml/src/ggml-openvino/` 之内。llama.cpp 核心、采样器（sampler）与
+ggml-CPU 的文件一概未动。
 
-## How this relates to `src/ggml-openvino/`
+## 本目录与 `src/ggml-openvino/` 的关系
 
-The engine's source is **in the repository** at [`src/ggml-openvino/`](../src/ggml-openvino/) — the
-full upstream backend directory with WangCai's changes applied, so it can be read and reviewed without
-applying anything. `tools/bootstrap.ps1` clones the pinned llama.cpp into `src/llama/` and **overlays**
-that directory onto `ggml/src/ggml-openvino/`, then prints `git diff --stat` so you can see exactly what
-changed relative to pristine upstream.
+引擎源码**就在仓库里**，位于 [`src/ggml-openvino/`](../src/ggml-openvino/) —— 那是完整的上游
+后端目录，并已应用 WangCai 的改动，因此无需应用任何东西即可直接阅读与评审。
+`tools/bootstrap.ps1` 会把固定的 llama.cpp 克隆到 `src/llama/`，并把该目录**覆盖（overlay）**到
+`ggml/src/ggml-openvino/` 之上，随后打印 `git diff --stat`，让你看清相对于原始上游到底改了什么。
 
-This directory is the same change expressed as a diff — the artifact for review and for upstreaming.
-To use it instead of the overlay (e.g. to verify the two are still equivalent):
+本目录是同一份改动以 diff 形式的表达 —— 用于评审、也用于回馈上游的产物。若想改用它而不是覆盖
+（overlay）方式（例如验证两者仍然等价）：
 
 ```powershell
 tools\bootstrap.ps1 -UsePatch
 ```
 
-or by hand:
+或手工执行：
 
 ```powershell
 git clone https://github.com/ggml-org/llama.cpp src/llama
@@ -37,81 +36,76 @@ git apply ..\..\patches\0001-ggml-openvino-npu-adaptation.patch
 Copy-Item ..\..\patches\ov_opencl_shim.hpp ggml\src\ggml-openvino\
 ```
 
-`git apply --check` first if you are trying a newer llama.cpp: the OpenVINO backend moves around
-between releases, and a rejected hunk is a rebase of these hunks, not a bug in your tree.
+如果在较新的 llama.cpp 上尝试，先跑 `git apply --check`：OpenVINO 后端在各版本之间位置会漂移，
+hunk 被拒意味着这批 hunk 需要重新变基（rebase），而不是你的本地树有问题。
 
-## What each hunk does
+## 各个 hunk 的作用
 
-### `ov_opencl_shim.hpp` (new file) + the four include swaps
+### `ov_opencl_shim.hpp`（新文件）与四处 include 替换
 
-**Problem.** `ggml-openvino.cpp`, `utils.cpp` and `ggml-openvino-extra.{h,cpp}` include
-`<openvino/runtime/intel_gpu/ocl/ocl.hpp>` (and `ggml-openvino-extra.h` included `<CL/cl.h>`). That
-header pulls `<CL/cl2.hpp>`, which is not in the OpenVINO runtime package and not in a Visual Studio
-Build Tools install. An NPU-only build therefore fails on a GPU header it never uses:
-`fatal error C1083: cannot open include file "CL/cl2.hpp"`, from
-`openvino/runtime/intel_gpu/ocl/ocl_wrapper.hpp:50`.
+**问题。** `ggml-openvino.cpp`、`utils.cpp` 与 `ggml-openvino-extra.{h,cpp}` 都包含了
+`<openvino/runtime/intel_gpu/ocl/ocl.hpp>`（`ggml-openvino-extra.h` 还包含了 `<CL/cl.h>`）。该
+头文件会牵出 `<CL/cl2.hpp>`，而它既不在 OpenVINO 运行时包里，也不在 Visual Studio Build Tools
+的安装中。于是纯 NPU 构建会卡死在一个它根本用不到的 GPU 头文件上：
+`fatal error C1083: cannot open include file "CL/cl2.hpp"`，来自
+`openvino/runtime/intel_gpu/ocl/ocl_wrapper.hpp:50`。
 
-**Fix.** A header that declares exactly what those files need to *compile*: the `cl_*` scalar
-typedefs, distinct opaque handle types (`_cl_context*`, `_cl_command_queue*`, … — distinct, so the
-overloaded `ClContext` constructors do not become ambiguous), the handful of enums referenced,
-inline throwing stubs for the `clGet*`/`clCreate*` entry points, plus `ov::intel_gpu::ocl::ClContext`
-and `USMTensor`. Every path in it is GPU-only; the NPU never calls into it.
+**修复。** 一个只声明这些文件*编译*所需内容的头文件：`cl_*` 标量 typedef、互不相同的不透明句柄
+类型（`_cl_context*`、`_cl_command_queue*` 等 —— 必须互不相同，重载的 `ClContext` 构造函数才不会
+变成歧义）、被引用到的那几个枚举、为 `clGet*`/`clCreate*` 入口点提供的内联抛异常桩（stub），外加
+`ov::intel_gpu::ocl::ClContext` 与 `USMTensor`。其中每一条路径都只面向 GPU；NPU 绝不会调用进去。
 
-Swapping the include is a one-line change per file and keeps the diff honest — nothing is `#ifdef`'d
-out, the GPU paths are still type-checked.
+替换 include 每个文件只动一行，也让 diff 保持诚实 —— 没有任何东西被 `#ifdef` 排除在外，GPU 路径
+仍然参与类型检查。
 
-### `ggml-decoder.h` — `get_mask_ctx_size()`
+### `ggml-decoder.h` —— `get_mask_ctx_size()`
 
-The one function that decides how wide an attention mask input must be.
+决定注意力掩码输入必须有多宽的那一个函数。
 
-llama.cpp hands the backend one mask per attention module, padded to the **largest** KV buffer in
-the model (`llama_kv_cache::get_n_kv()`), while each layer attends over its own cache. Under dynamic
-graphs that is invisible because K gets sliced down to the mask width. Under static (NPU) graphs both
-shapes are baked into the compiled graph, so the sliding-window layers need the ring length and the
-full-attention layers the context length — and the parameter shape *and* the host tensor built for
-the binding have to agree, or the NPU plugin rejects the binding
-(`input tensor size is not equal to the model input type`) or opset-13 SDPA refuses shape inference
-(`attention_mask_input_correctness`).
+llama.cpp 交给后端的是每个注意力模块一份掩码，按模型中**最大**的 KV 缓冲区
+（`llama_kv_cache::get_n_kv()`）补齐，而每一层实际只在自己的缓存上做注意力。动态图（dynamic
+graph）下这一点看不出来，因为 K 会被切到掩码的宽度。静态图（static graph，即 NPU）下两个形状
+都被烘进编译后的图里，所以滑动窗口注意力（SWA）层需要的是环形缓冲长度，全注意力层需要的是上下文
+长度 —— 而且参数形状*和*为绑定（binding）构建的宿主张量必须一致，否则 NPU 插件会拒绝该绑定
+（`input tensor size is not equal to the model input type`），或者 opset-13 SDPA 拒绝形状推断
+（`attention_mask_input_correctness`）。
 
-For LFM3-1.7B that is the difference between `mask_kv = 1024` for six layers and `768` for five.
+对 LFM3-1.7B 而言，这就是六个层的 `mask_kv = 1024` 与五个层的 `768` 之间的差别。
 
-### `ggml-decoder.cpp` — mask branch of `get_graph_input_shape()`
+### `ggml-decoder.cpp` —— `get_graph_input_shape()` 的掩码分支
 
-Uses `get_mask_ctx_size()` instead of the model-wide context for the mask parameter, and keeps a
-one-line-per-distinct-mask `ov-mask:` warning. That log line is what turned a shape-guessing game
-into a fact: both mask tensors arrive as `ne=[256,2,1,1]`, so neither width comes from the host
-tensor.
+掩码参数改用 `get_mask_ctx_size()`，不再取全模型上下文长度，并保留一条按不同掩码各占一行的
+`ov-mask:` warning。正是这行日志把猜形状变成了事实：两个掩码张量都以 `ne=[256,2,1,1]` 抵达，
+也就是说两个宽度都不来自宿主张量。
 
-### `utils.cpp` — the two static bindings, plus diagnostics
+### `utils.cpp` —— 两个静态绑定，外加诊断
 
-- `get_ov_input_tensor_static_decode()` and `get_ov_input_tensor_static_prefill()` now size the
-  padded mask with `get_mask_ctx_size()`. These two sites and the parameter shape above must move
-  together; that coupling is the whole reason the bug was hard.
-- `GGML_OPENVINO_MASK_MODE=1`: build the mask from token positions instead of llama.cpp's. The
-  padding keeps padded rows finite on their own column, mirroring `set_zero_diagonal()`, so a fully
-  masked row cannot produce `0/0 = NaN` and leak into the recurrent-state gather.
-- `dump_ov_outputs_raw()` (`GGML_OPENVINO_DUMP_BIN`): raw per-output dumps on the static *and*
-  dynamic paths, so two devices can be compared element by element. Aggregate `min/max/mean`
-  statistics — the only thing `GGML_OPENVINO_DEBUG_OUTPUT` gives you — hide single-row errors, and a
-  single wrong row is exactly what a mis-selected chunk position looks like.
+- `get_ov_input_tensor_static_decode()` 与 `get_ov_input_tensor_static_prefill()` 现在用
+  `get_mask_ctx_size()` 决定补齐后掩码的尺寸。这两处代码点与上面的参数形状必须同步改动；这种耦合
+  正是该 bug 难查的全部原因。
+- `GGML_OPENVINO_MASK_MODE=1`：由 token 位置而非 llama.cpp 给出的掩码来构造掩码。补齐方式让被补齐
+  的行在自己那一列上保持有限值，与 `set_zero_diagonal()` 的做法一致，因此一整行被完全屏蔽时不会
+  产生 `0/0 = NaN` 并泄漏进递归状态的 gather。
+- `dump_ov_outputs_raw()`（`GGML_OPENVINO_DUMP_BIN`）：在静态*与*动态两条路径上按输出做原始转储
+  （dump），从而可以逐元素比较两个设备。聚合的 `min/max/mean` 统计 —— 这是
+  `GGML_OPENVINO_DEBUG_OUTPUT` 唯一能给你的东西 —— 会掩盖单行错误，而恰好一行错正是 chunk 位置
+  选错时的表现。
 
-### `openvino/op/flash_attn_ext.cpp` — `trim_mask_to_kv()`
+### `openvino/op/flash_attn_ext.cpp` —— `trim_mask_to_kv()`
 
-When the mask is still wider than the K operand, slice it to the KV extent from
-`seq_active_start`. A guard rather than a fix: with `get_mask_ctx_size()` in place the widths already
-agree on LFM3, so this path stays inert.
+当掩码仍然比 K 操作数更宽时，从 `seq_active_start` 起把它切到 KV 的范围。这是防线（guard）而非
+修复：有了 `get_mask_ctx_size()` 之后，在 LFM3 上宽度本来就一致，所以这条路径保持不生效。
 
-### `ggml-openvino-extra.{h,cpp}` — env plumbing
+### `ggml-openvino-extra.{h,cpp}` —— 环境变量接线
 
-Registers the three new variables in the recognized-env table (`ggml_openvino_getenv_int`/`_str`
-read from a table cached at backend init, so an unregistered name silently reads as unset — that
-cost an afternoon), parses `GGML_OPENVINO_NPU_COMPILE_OVERRIDES`, and points the CL include at the
-shim.
+把三个新变量登记进已识别环境变量表（`ggml_openvino_getenv_int`/`_str` 读取的是后端（backend）
+初始化时缓存的一张表，未登记的名字会被静默当作未设置 —— 这一点花掉了一个下午）、解析
+`GGML_OPENVINO_NPU_COMPILE_OVERRIDES`，并把 CL include 指向该 shim。
 
-## Regenerating the patch
+## 重新生成补丁
 
-From a patched llama.cpp checkout — and remember the patch and `src/ggml-openvino/` are two views of
-one change, so both must move together:
+在一份已打补丁的 llama.cpp 检出上执行 —— 并记住补丁与 `src/ggml-openvino/` 是同一份改动的两个
+视图，两者必须同步推进：
 
 ```powershell
 git diff -- ggml/src/ggml-openvino > ..\..\patches\0001-ggml-openvino-npu-adaptation.patch
@@ -119,12 +113,11 @@ Copy-Item ggml\src\ggml-openvino\ov_opencl_shim.hpp ..\..\patches\
 Copy-Item ggml\src\ggml-openvino\* ..\..\src\ggml-openvino\ -Recurse -Force
 ```
 
-Keep the hunks in one file per concern; if a change is orthogonal (a new knob, a new lowering), make
-it `0002-*.patch` so it can be reviewed and upstreamed separately.
+hunk 按关注点归组，一个关注点一个文件；若某项改动是正交的（一个新的可调项、一条新的降级
+（lowering）），单独立为 `0002-*.patch`，以便单独评审、单独回馈上游。
 
-## Upstreaming
+## 回馈上游
 
-Items 2–4 (`get_mask_ctx_size`, the paired bindings, `trim_mask_to_kv`) are model-correctness fixes
-for hybrid models on the static path and are the natural upstream candidates. The shim is arguably an
-upstream build-config question (make the GPU remote-context usage optional), and the diagnostics
-belong there too as first-class env vars.
+第 2–4 项（`get_mask_ctx_size`、成对的那两个绑定、`trim_mask_to_kv`）是混合模型在静态路径上的
+模型正确性修复，是最自然的上游候选。shim 更像一个上游构建配置问题（把 GPU remote-context 的使用
+改为可选），诊断能力也应以一等环境变量（first-class env var）的身份进入上游。

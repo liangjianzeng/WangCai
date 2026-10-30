@@ -1,62 +1,62 @@
 ---
-name: Bug report
-about: Something fails to build, compile, or produce sane output
+name: 缺陷报告
+about: 构建失败、图编译失败，或输出不正常
 title: "[bug] "
 labels: bug
 assignees: ''
 ---
 
 <!--
-Read https://github.com/liangjianzeng/WangCai/blob/main/CONTRIBUTING.md#before-you-open-an-issue first.
-The single most useful thing you can attach is the compare-tensors.ps1 output for a wrong-output bug,
-and the full log for a compile failure. Most reports resolve to one of: graph did not compile /
-ran but numbers are wrong / ran on the wrong device - and the console alone cannot tell them apart.
+请先读 https://github.com/liangjianzeng/WangCai/blob/main/CONTRIBUTING.md#提交缺陷之前 。
+对"输出错误"类问题，最有用的附件是 compare-tensors.ps1 的输出；对"编译失败"类问题，最有用的
+是完整日志。绝大多数报告最终归为三类：图没编译出来 / 跑起来了但数值不对 / 跑在了错误的设备上
+——而只看控制台输出无法区分这三类。
 -->
 
-## Which kind of failure
+## 属于哪一类失效
 
-- [ ] build fails (CMake / MSVC)
-- [ ] graph compilation fails (`ov::Exception`, `Check ... failed`)
-- [ ] runs, output is wrong (no exception)
-- [ ] runs, but not on the device I asked for
-- [ ] performance, not correctness
+- [ ] 构建失败（CMake / MSVC）
+- [ ] 图编译失败（`ov::Exception`、`Check ... failed`）
+- [ ] 跑起来了，输出错误（无异常）
+- [ ] 跑起来了，但不在我指定的设备上
+- [ ] 是性能问题，不是正确性问题
 
-## Environment
+## 环境
 
 | | |
 |---|---|
-| OS build | |
+| 系统版本 | |
 | CPU / SoC | |
-| NPU driver version | |
-| OpenVINO version | |
+| NPU 驱动版本 | |
+| OpenVINO 版本 | |
 | llama.cpp commit | |
 | WangCai commit | |
-| patch applied cleanly? | yes / no (rebased) |
-| model file, size, quantization | |
+| 补丁能否干净应用 | 能 / 否（已 rebase） |
+| 模型文件、大小、量化方式 | |
 
-## Command
+## 命令
 
 ```powershell
-# exact command line, including -c / -b / -n / -fa / -np and every GGML_OPENVINO_* variable
+# 完整命令行，包含 -c / -b / -n / -fa / -np 以及每一个 GGML_OPENVINO_* 变量
 ```
 
-## Output
+## 输出
 
 ```
-full log, not an excerpt
+完整日志，不要节选
 ```
 
-## Expected vs actual
+## 期望与实际
 
-## Artifacts
+## 附件材料
 
-- [ ] `llama-cli --list-devices` output
-- [ ] run log with `GGML_OPENVINO_CACHE_DIR` set to a fresh directory
-- [ ] for wrong output: `GGML_OPENVINO_DUMP_BIN` captures from both the NPU and `-Backend static`,
-      plus `tools\compare-tensors.ps1` output
-- [ ] `tools\top-token.ps1 -Dir <each dump dir>` (so passes can be aligned)
+- [ ] `llama-cli --list-devices` 输出
+- [ ] 把 `GGML_OPENVINO_CACHE_DIR` 指到一个全新目录后重跑的运行日志
+- [ ] 输出错误类问题：NPU 与 `-Backend static` 两侧的 `GGML_OPENVINO_DUMP_BIN` 转储，
+      外加 `tools\compare-tensors.ps1` 输出
+- [ ] `tools\top-token.ps1 -Dir <每个转储目录>`（用于对齐 pass）
 
-## Things already tried
+## 已经试过的东西
 
-<!-- Especially: fresh cache dir per configuration? chat template (`-st`) rather than raw completion?
-     `-fa 1`? `-np 1`? Verified the file size of the GGUF against the source? -->
+<!-- 尤其是：每种配置是否用了全新的缓存目录？是否用 chat 模板（`-st`）而非裸续写？`-fa 1`？
+     `-np 1`？是否核对过 GGUF 文件字节数与来源一致？ -->

@@ -64,6 +64,7 @@ Honest, measured, tracked in [docs/status.md](docs/status.md).
 | Prefill competitive with CPU | 🟡 73% of the reference; headroom still unexplained |
 | Decode competitive with CPU | 🟡 6× behind; the current performance target |
 | LFM3 omni modalities (audio in / vision in) | ⬜ planned (official GGUF + `mmproj` on ModelScope) |
+| **On-device multimodal assistant "WangCai"** | 🟡 planned — this engine inside TongYiLite (Flutter, Android→Windows) |
 
 What "in progress" means concretely: greedy generation on the NPU tracks the CPU reference for the
 first few tokens and then wanders. Cosine similarity against reference logits is `0.969` at the end of
@@ -79,6 +80,66 @@ Two measurement rules earned the hard way, both in
 passes (byte-identical across different prompts), so statistics over them measure nothing; and **a
 continuation task is not a coherence test** — it agrees byte-for-byte even when the device is wrong,
 which only an instruction-following prompt reveals.
+
+## Roadmap: the on-device multimodal assistant "WangCai"
+
+In one line: **WangCai is an on-device multimodal assistant, and the NPU engine is its low-power heart.**
+
+This repository currently does one thing: run a quantized LLM **entirely on the Intel NPU**. That is the
+engine. The engine is not the destination — putting it inside an assistant that talks, sees, listens and
+reasons is what "WangCai" means.
+
+### Three layers
+
+| Layer | Component | Responsibility |
+|---|---|---|
+| Application | **TongYiLite** (Flutter) | UI, agent loop, tool calling, memory, speech pipeline, vision input pipeline |
+| Service | **inference core** (pluggable backends) | One platform-neutral C ABI; backends switchable: CPU (`ggml-cpu`) / GPU (`ggml-vulkan`) / **NPU (`ggml-openvino` / WangCai)** |
+| Engine | **WangCai** | Pure-NPU inference: translate a `ggml_cgraph` into static OpenVINO graphs and run them on `AI Boost` |
+
+### Android → Windows
+
+TongYiLite is a **Flutter application (not Kotlin)**: roughly 54k lines of Dart against 6 Kotlin files and
+2k lines of host shell. The heavy code is one C++ file — `tongyilite_jni.cpp` (3887 lines) does model
+loading, per-token callbacks, MTP speculative decoding and mtmd vision encoding. The porting judgement
+(backed by **artifacts already built on this machine**; see
+`Windows移植_CPU_GPU_NPU_实施方案_2026-10-30.md` in the TongYiLite tree):
+
+- **About 90% of the Dart side is reused unchanged** in Flutter Windows — the agent, tools, memory and
+  speech pipelines do not touch Android APIs.
+- **The real work is the C++ core**: extract that 3887-line JNI shell into a platform-neutral **C ABI**,
+  rewrite logging / OOM probing / path handling, and replace MainActivity's 8 `MethodChannel`s with a
+  Dart FFI bridge.
+- **The backend set is rewired**: drop KleidiAI (ARM), the OpenCL stub and the NDK Vulkan stub; add
+  MSVC + Ninja + **`ggml-openvino` (NPU)**.
+  Feasibility is already demonstrated locally: `.upgrade-tmp/host-mingw/bin/llama-mtmd-cli.exe` proves
+  llama.cpp builds natively for Windows x64 under MinGW.
+
+### Why the NPU (low power)
+
+Decode is memory-bound, and that is where the NPU is strong: **very low power, CPU cores left free for
+the rest of the system**. NPU prefill on LFM3 reaches **415 t/s** (73% of the CPU reference) with the CPU
+idle. The price: decode is still **8.3–8.7 t/s** and accuracy is not there yet
+([docs/status.md](docs/status.md)) — both are the next targets.
+
+> Stated honestly: **this machine exposes no NPU counters, has no battery, and is on the "high
+> performance" power plan**, so there is no performance-per-watt number yet. What the roadmap commits to is
+> reproducible proxy evidence (CPU occupancy, temperature, throttle events); watts need an external meter
+> or a battery-backed machine.
+
+### Modalities
+
+TongYiLite already ships text ✅, vision ✅ (mtmd + mmproj), speech in ✅ (sherpa ASR) and speech out ✅
+(Edge TTS + sherpa VITS). Its model catalog already carries `LFM3-VL-2B QAD-Q4_0` with an mmproj — once the
+text path is right, the modalities are a question for the same backend.
+
+### Phases
+
+- **Phase 0 (this repository)**: pure-NPU engine, LFM3 text path. 🟡 in progress.
+- **Phase 1**: move the engine into the TongYiLite service layer — C ABI extraction, pluggable backends.
+- **Phase 2**: the app runs on Windows; CPU backend first, NPU second.
+- **Phase 3**: modalities (vision / speech) end to end on the NPU.
+- **Phase 4**: measured low power, and power-aware scheduling policy.
 
 ## Measured numbers
 

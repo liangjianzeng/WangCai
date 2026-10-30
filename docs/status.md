@@ -1,84 +1,76 @@
-# Status
+# 当前状态
 
-Point-in-time, measured, and falsifiable. Each claim lists the command that proves or disproves it.
+按时间点记录、来自实测、可被证伪。每一条论断都附上能证实或推翻它的命令。
 
-**Baseline:** llama.cpp `abb76ab380c7f3f731e365a859fb4cc64e939bb8` + [patches/](../patches/README.md)
-**Runtime:** OpenVINO 2026.4.1 · **Machine:** Intel Core Ultra 9 275HX, Intel AI Boost (NPU 3720), 32 GB
-**Model under active development:** LFM3-1.7B `Q4_K_M`, 1049 MB, 24 layers
-(13 gated short-conv + 5 sliding-window@256 + 6 global attention)
+**基线：** llama.cpp `abb76ab380c7f3f731e365a859fb4cc64e939bb8` + [patches/](../patches/README.md)
+**运行时：** OpenVINO 2026.4.1 · **机器：** Intel Core Ultra 9 275HX、Intel AI Boost (NPU 3720)、32 GB
+**在研模型：** LFM3-1.7B `Q4_K_M`，1049 MB，24 层
+（13 门控短卷积 + 5 滑动窗口@256 + 6 全局注意力）
 
-## Milestones
+## 里程碑
 
-| # | Milestone | Status | Evidence |
+| # | 里程碑 | 状态 | 证据 |
 |---|---|---|---|
-| 0.1 | OpenVINO backend builds without GPU/OpenCL SDK | ✅ | `tools\build.ps1` on a Build Tools + OpenVINO wheel install |
-| 0.2 | NPU device registered and selectable | ✅ | `llama-cli --list-devices` → `OPENVINO3: ... Intel(R) AI Boost (NPU 3720)` |
-| 0.3 | Both static graphs compile on NPU | ✅ | run reaches generation; cold compile 36.4 s logged as load time |
-| 0.4 | Hybrid KV rings addressed correctly | ✅ | `ov-mask:` shows `is_swa=1 -> mask_kv=768`, `is_swa=0 -> mask_kv=1024` |
-| 0.5 | Short-conv state chains across decode steps | ✅ | 1-token prompt stays coherent over 40 decode steps on NPU |
-| 0.6 | Static path proven numerically sound off-device | ✅ | `-Backend static` (CPU) coherent, matches dynamic bit-for-bit on early passes |
-| **1.1** | **NPU output numerically on par with CPU reference** | 🟡 **open** | cosine to reference: prefill `0.969`, decode `0.73–0.87` |
-| 1.2 | Greedy matches reference token-for-token ≥ 64 tokens | 🟡 | diverges after 2–3 tokens |
-| 1.3 | Acceptance harness in CI | ⬜ | needs 1.1 |
-| 2.1 | NPU decode beats OpenVINO-CPU | ⬜ | decode 8.3–8.7 t/s vs 21.7–29.2 (CPU) / 54.1 (native) |
-| 2.1b | NPU prefill competitive | 🟡 | `pp512` 415 t/s = 73% of native reference; ~1.4 of ~13 TOPS used |
-| 2.2 | Warm start < 5 s | ⬜ | cache dir works, 36 s cold |
-| 3.x | Model-line breadth (0.3 B–8 B, long context) | ⬜ | |
-| 4.x | LFM3 omni modalities (audio in, vision in) | ⬜ | |
+| 0.1 | 不装 GPU/OpenCL SDK 也能构建 OpenVINO 后端 | ✅ | 在 Build Tools + OpenVINO wheel 安装环境上跑 `tools\build.ps1` |
+| 0.2 | NPU 设备被枚举且可选中 | ✅ | `llama-cli --list-devices` → `OPENVINO3: ... Intel(R) AI Boost (NPU 3720)` |
+| 0.3 | 两张静态图都能在 NPU 上编译 | ✅ | 运行进入生成阶段；冷编译 36.4 s 被记进加载耗时 |
+| 0.4 | 混合 KV 环寻址正确 | ✅ | `ov-mask:` 显示 `is_swa=1 -> mask_kv=768`、`is_swa=0 -> mask_kv=1024` |
+| 0.5 | 短卷积状态能跨解码步接续 | ✅ | 单 token prompt 在 NPU 上连续 40 个解码步仍连贯 |
+| 0.6 | 静态路径在设备外被证明数值可信 | ✅ | `-Backend static`（CPU）输出连贯，早期 pass 与动态图逐位一致 |
+| **1.1** | **NPU 输出与 CPU 参照数值对齐** | 🟡 **未通过** | 与参照余弦：prefill `0.969`，decode `0.73–0.87` |
+| 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | 🟡 | 2–3 个 token 后发散 |
+| 1.3 | CI 里有验收测试 | ⬜ | 依赖 1.1 |
+| 2.1 | NPU 解码快过 OpenVINO-CPU | ⬜ | 解码 8.3–8.7 t/s，对比 21.7–29.2（CPU）/ 54.1（原生） |
+| 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；约用了 13 TOPS 中的 1.4 |
+| 2.2 | 热启动 < 5 s | ⬜ | 缓存目录有效，冷启动 36 s |
+| 3.x | 模型线宽度（0.3 B–8 B、长上下文） | ⬜ | |
+| 4.x | LFM3 全模态（音频输入、视觉输入） | ⬜ | |
 
-## What works today
+## 今天能用的部分
 
-- **Reference quality output on CPU.** `-Backend native` and `-Backend ovcpu` both produce coherent
-  Chinese and English answers through the chat template. This is the ground truth every NPU claim is
-  measured against.
-- **The NPU runs the full model end to end**, including the recurrent short-conv layers, sliding-window
-  attention and the global attention layers, with flash attention (`-fa 1`) and a single sequence.
-- **The static path is trustworthy off-device.** `GGML_OPENVINO_FORCE_STATIC=1` on CPU reproduces the
-  NPU's code path, which turns most debugging into a seconds-long loop.
-- **Diagnostics are good enough to localize a defect**, which is how the accuracy gap got narrowed to
-  the plugin rather than the graph: raw output dumps, per-pass top-token alignment, element-wise
-  comparison, and run-time NPU compile-config overrides.
+- **CPU 上的参照质量输出。** `-Backend native` 与 `-Backend ovcpu` 都能通过 chat 模板产出连贯的中英文
+  回答。所有关于 NPU 的论断都以它为基准真值。
+- **NPU 端到端跑完整模型**，包括递归的短卷积层、滑动窗口注意力和全局注意力层，开启 flash attention
+  （`-fa 1`）且单序列。
+- **静态路径在设备外可信。** CPU 上的 `GGML_OPENVINO_FORCE_STATIC=1` 复现 NPU 的代码路径，于是大部分
+  调试变成秒级循环。
+- **诊断手段已经足够定位缺陷**——精度差距正是这样被缩小到插件而不是图上的：原始输出转储、逐 pass 的
+  top-token 对齐、逐元素比对、以及运行期的 NPU 编译配置覆盖。
 
-## Open defects
+## 未解决的缺陷
 
-### 1. NPU logits are flattened (blocking)
+### 1. NPU 的 logits 被压平（阻塞性）
 
-Greedy generation on the NPU agrees with the CPU reference for 2–3 tokens and then wanders into
-word salad.
+NPU 上的贪心解码与 CPU 参照一致 2–3 个 token，随后开始胡言乱语。
 
-| Pass | CPU reference | NPU |
+| Pass | CPU 参照 | NPU |
 |---|---|---|
-| prefill (generating) | id2083 · 19.58 | id2083 · 17.53 (cosine `0.969`) |
-| decode 1 | id1094 · 20.27 | id1094 · 13.51 (cosine `0.786`) |
-| decode 2 | id310 · 25.87 | id310 · 15.81 (cosine `0.804`) |
-| decode 3 | id5141 · 22.29 | **id342** · 14.91 (cosine `0.870`) |
-| decode 4 | id278 · 26.06 | **id711** · 11.32 (cosine `0.726`) |
+| prefill（生成中） | id2083 · 19.58 | id2083 · 17.53（余弦 `0.969`） |
+| decode 1 | id1094 · 20.27 | id1094 · 13.51（余弦 `0.786`） |
+| decode 2 | id310 · 25.87 | id310 · 15.81（余弦 `0.804`） |
+| decode 3 | id5141 · 22.29 | **id342** · 14.91（余弦 `0.870`） |
+| decode 4 | id278 · 26.06 | **id711** · 11.32（余弦 `0.726`） |
 
-Same norm, lower peak → precision signature, not an indexing one. The per-layer measurement over the
-**real** prefill chunks of a ~220-token prompt (conv-state outputs) shows a small error at the bottom of
-the stack compounding upward — `l0 0.9956`, `l9 0.873`, `l13 0.534`, **`l17 0.163`** — and it is already
-there in the first chunk, before any decode step or state reuse. The conv path degrades; the attention
-writes largely do not: V is written exactly (max abs `2.7e-6` across all 200 rows), K sits at
-`0.90–0.9998` **except row 0**, which misses by eight orders of magnitude (`cosine 0.288`, max abs
-`1.06e10`). That single row is the most concrete lead in the investigation. Ruled out and still-standing
-conclusions are tabulated in
-[npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap), including the full NPUW/dynamic-quantization
-lever sweep (nothing fixes it; disabling those paths makes it strictly worse).
+范数相同、峰值更低 → 这是精度的特征，不是寻址的特征。对一个约 220 token prompt 的**真实** prefill
+chunk 做的逐层测量（conv 状态输出）显示：栈底就有一个小误差，并向上复利放大——`l0 0.9956`、`l9 0.873`、
+`l13 0.534`、**`l17 0.163`**——而且在第一个 chunk 就已经存在，早于任何解码步与状态复用。退化集中在 conv
+路径；注意力写入基本无辜：V 精确写入（200 行全部，最大绝对差 `2.7e-6`），K 稳定在 `0.90–0.9998`
+**唯独第 0 行**错了八个数量级（余弦 `0.288`、最大绝对差 `1.06e10`）。那一行是整个调查中目前最具体的
+线索。已排除项与仍然成立的结论列在
+[npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap)，包括完整的 NPUW / 动态量化开关扫描
+（没有任何开关能修好它；关掉这些路径只会更糟）。
 
-**Classify the dump passes before reading any comparison.** `prefill_0`, `prefill_1` and `decode_2` are
-llama.cpp warmup: byte-identical between runs of the same model with different prompts. An earlier version
-of the table above was measured on warmup and had to be redone; the hash-compare recipe that separates the
-two is in [npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap).
+**在读任何比对结果之前，先把 pass 分类。** `prefill_0`、`prefill_1`、`decode_2` 是 llama.cpp 的预热：
+同一模型换 prompt 重跑，它们逐字节不变。上面这张表的早期版本就是在预热数据上量的，只能重做；区分两者的
+哈希比对方法写在 [npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap)。
 
-**A native-Q4_0 checkpoint separates two errors that were being conflated.** With
-`LFM3-1.7B-QAD-Q4_0.gguf` (ModelScope, QAD = quantization-aware distillation) the requant asymmetry mostly
-disappears, and the two remaining behaviours split cleanly by task: a 220-token continuation comes out
-**byte-identical on native CPU, OV-CPU static and the NPU**, while a 64-token Chinese instruction run still
-degenerates on the NPU alone (conv-state cosine `decode_2 0.989` → `decode_9 0.51` → plateau `≈0.25`,
-top-1 diverging from step 10 onward). A continuation is a plumbing test, not a coherence test — it matches
-even when the device is wrong.
+**一份原生 Q4_0 权重把两个被混为一谈的误差分开了。** 换用 `LFM3-1.7B-QAD-Q4_0.gguf`（ModelScope，
+QAD = 量化感知蒸馏）之后，重量化造成的不对称基本消失，剩下两种行为按任务干净地劈开：220 token 的**续写**
+在原生 CPU、OV-CPU 静态、NPU 三条路径上**逐字节一致**；而 64 token 的中文**指令跟随**仍然只在 NPU 上退化
+（conv 状态余弦 `decode_2 0.989` → `decode_9 0.51` → 平台期 `≈0.25`，top-1 从第 10 步起发散）。
+**续写是通路测试，不是连贯性测试**——设备算错时它照样一致。
 
-Reproduce:
+复现：
 
 ```powershell
 tools\run-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf -PromptFile prompts\zh.txt -Backend static -Label cpu -DumpBin tmp\dumps\cpu
@@ -87,57 +79,53 @@ tools\top-token.ps1 -Dir tmp\dumps\cpu ; tools\top-token.ps1 -Dir tmp\dumps\npu
 tools\compare-tensors.ps1 -A tmp\dumps\cpu -B tmp\dumps\npu
 ```
 
-### 2. NPU decode is 6× slower than the CPU reference (blocking for the thesis)
+### 2. NPU 解码比 CPU 参照慢 6 倍（对核心主张是阻塞性的）
 
-8.3–8.7 t/s vs 54.1 t/s native / 21.7–29.2 t/s OpenVINO-CPU on the same model and machine — about
-**0.03 of the available TOPS**. The whole argument for using the NPU is performance per watt; losing to
-the CPU on absolute throughput while the CPU stays free is not yet explained. Note this is *specific*
-to decode: prefill at `pp512` is competitive (415 vs 570 t/s), so the plugin is not uniformly
-misconfigured. Suspects, in order: stateless cache re-binding per step, activation quantization cost,
-compile hints for decode-shaped graphs, the runtime-indexed conv-state `Gather`.
+同一模型同一台机器上：8.3–8.7 t/s，对比原生 54.1 t/s、OpenVINO-CPU 21.7–29.2 t/s——大约是**可用
+TOPS 的 0.03**。用 NPU 的全部理由就是每瓦性能；绝对吞吐输給 CPU 而 CPU 还全程空闲，这件事至今没有
+解释。注意它**只发生在解码**：`pp512` 的预填充是有竞争力的（415 对 570 t/s），所以插件并不是整体配置
+错了。嫌疑按序：每步重绑无状态缓存、激活量化的开销、解码形状图的编译提示、以及按运行期索引的
+conv 状态 `Gather`。
 
-### 3. Sequences longer than the KV cache take the OpenVINO backend down
+### 3. 超出 KV 缓存的序列会把 OpenVINO 后端拖垮
 
-`Check 'idxValue < static_cast<int64_t>(srcDimAxis) ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`
-whenever a KV write index lands outside the cache. Observed from `llama-perplexity` (any device) and
-from `llama-bench -p 1024 -n 32` with a 1024 context; the same test at `-p 512` runs clean, which is
-what points at an out-of-range index rather than at the graph shape. On the **NPU the same condition
-takes the device down** with `ZE_RESULT_ERROR_DEVICE_LOST` instead of failing a check.
+只要 KV 写入索引落到缓存之外就报
+`Check 'idxValue < static_cast<int64_t>(srcDimAxis) ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`。
+在 `llama-perplexity`（任意设备）以及 1024 上下文下的 `llama-bench -p 1024 -n 32` 上都观察到；同样的
+测试在 `-p 512` 下干净通过，这正说明问题指向越界索引而不是图形状。在 **NPU 上同样的条件会把设备拖崩**，
+报的是 `ZE_RESULT_ERROR_DEVICE_LOST` 而不是一条检查失败。
 
-Consequences: perplexity is currently unusable as an accuracy metric (exactly the metric wanted for
-defect 1), and an out-of-range index is a device-level failure on NPU, which deserves an upstream
-report on its own. Root cause not established — the earlier claim in this document that "the
-multi-output graph breaks the `SET_ROWS` lowering" was **not supported** by the `-p 512` / `-p 1024`
-differential and has been withdrawn.
+后果：perplexity 目前无法用作精度指标（恰好就是缺陷 1 想要的那个指标）；而在 NPU 上，一个越界索引是
+设备级失效，本身就值得单独上游上报。根因尚未确立——本文档早期"多输出图破坏了 `SET_ROWS` 降级"的说法，
+**没有**得到 `-p 512` / `-p 1024` 差分实验的支持，已撤回。
 
-### 4. `GGML_OPENVINO_DEBUG_NODE` aborts the process on NPU
+### 4. `GGML_OPENVINO_DEBUG_NODE` 在 NPU 上会让进程中止
 
-Appending `Result` nodes to a graph makes the plugin die during compile. Worked around with
-`GGML_OPENVINO_DUMP_BIN`; the upstream fix is either plugin-side or refusing the request with an error.
+往图里追加 `Result` 节点会让插件在编译期死掉。已用 `GGML_OPENVINO_DUMP_BIN` 绕过；上游的修法要么在插件
+侧，要么就是明确拒绝该请求并报错。
 
-### 5. No control model
+### 5. 缺少对照模型
 
-Every conclusion so far comes from one architecture. A small model that is validated upstream on the
-NPU would separate "NPU plugin behaviour" from "LFM3 behaviour"; the local candidate turned out to be
-a truncated download.
+到目前为止所有结论都来自同一个架构。一个上游已在 NPU 上验证过的小模型，能把"NPU 插件的行为"与
+"LFM3 的行为"分开；本地那个候选后来发现是个下载不完整的文件。
 
-## Constraints and non-negotiables
+## 约束与不可妥协项
 
-| Constraint | Why |
+| 约束 | 原因 |
 |---|---|
-| `-fa 1` only | with `-fa 0` llama.cpp flattens V to one element per row; the OpenVINO scatter write-back then rejects the index |
-| `-np 1` only | the static path is single-sequence; `-np 2` hits `state is only supported with stateless` |
-| bf16 unsupported | rejected at scheduling on NPU |
-| fresh `GGML_OPENVINO_CACHE_DIR` per configuration | otherwise a stale compiled graph silently wins |
-| chat template required | an instruct model driven by raw completion produces repetition salad on every backend, including native CPU |
-| ~36 s cold compile per graph | use a persistent cache dir; see roadmap 2.2 |
+| 只能用 `-fa 1` | `-fa 0` 时 llama.cpp 把 V 摊成每行一个元素，OpenVINO 的 scatter 写回随即拒绝该索引 |
+| 只能用 `-np 1` | 静态路径是单序列的；`-np 2` 会撞上 `state is only supported with stateless` |
+| 不支持 bf16 | 在 NPU 的调度阶段就被拒绝 |
+| 每种配置用全新的 `GGML_OPENVINO_CACHE_DIR` | 否则一张过期的编译图会无声胜出 |
+| 必须用 chat 模板 | instruct 模型被裸续写驱动，在任何后端（含原生 CPU）都会退化成重复胡话 |
+| 每张图冷编译约 36 s | 使用持久缓存目录；见路线图 2.2 |
 
-## How we know a claim is real
+## 我们凭什么说一条论断是真的
 
-Three habits that are worth enforcing on every PR:
+三条值得在每个 PR 上强制执行的习惯：
 
-1. **Compare tensors, not adjectives.** `compare-tensors.ps1` output, not "looks better".
-2. **Align passes before comparing them.** Two runs do not produce the same number of graph calls;
-   comparing pass N to pass N is how you get confident, wrong answers.
-3. **Prove the device.** `--list-devices` plus a dump comparison — two devices are never bit-identical,
-   and a "NPU" run with CPU-like throughput has run on the CPU.
+1. **比对张量，不要用形容词。** 要 `compare-tensors.ps1` 的输出，不要"看起来好多了"。
+2. **先对齐 pass 再比对。** 两次运行产生的图调用次数并不相同；拿第 N 个 pass 对第 N 个 pass，正是产出
+   "自信且错误"结论的方法。
+3. **证明设备。** `--list-devices` 加上一次转储比对——两台设备不可能逐位相同，而一次吞吐长得像 CPU 的
+   "NPU 运行"，其实是跑在 CPU 上。

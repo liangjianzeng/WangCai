@@ -1,141 +1,144 @@
-# NPU internals: what is actually hard
+# NPU 内部机制：真正难的地方
 
-The parts of "run an LLM on Intel AI Boost" that are not covered by the fact that a backend exists.
-Each section states the constraint, the symptom you see when you violate it, and the fix.
+"在 Intel AI Boost 上跑 LLM"这件事里，那些"后端存在"并不等于"已经解决"的部分。每一节都按同一种写法：
+约束是什么、违反它会看到什么症状、正确的做法是什么。
 
 ---
 
-## 1. Static shapes couple the parameter shape to the host binding
+## 1. 静态形状把参数形状与主机绑定耦在一起
 
-A compiled graph bakes in every input shape. Two independent pieces of code must therefore agree
-exactly, for every input:
+<a id="1-static-shapes-couple-the-parameter-shape-to-the-host-binding"></a>
+
+编译后的图会把每个输入形状焊死。于是下面两段互相独立的代码，必须对每一个输入完全一致：
 
 ```
-GgmlOvDecoder::get_graph_input_shape(op, input)      ← the compiled parameter shape
-get_ov_input_tensor_static_{decode,prefill}(…)        ← the ov::Tensor you actually bind
+GgmlOvDecoder::get_graph_input_shape(op, input)      ← 编译进参数的形状
+get_ov_input_tensor_static_{decode,prefill}(…)        ← 你实际绑定的那个 ov::Tensor
 ```
 
-If they disagree, the NPU plugin refuses the binding:
+一旦两者不一致，NPU 插件会拒绝绑定：
 
 ```
 Check 'is_dynamic || port_partial_shape == tensor_shape' failed at
   intel_npu/src/backend/src/zero_infer_request.cpp:1250: got [1,1,256,1024] expecting [1,1,256,768]
 ```
 
-Note the asymmetry of that message: it does not tell you *which* of the two is wrong, and both sides
-have plausible reasons for their number. Any change to one side must be made to the other in the same
-commit. `get_mask_ctx_size()` exists precisely so they cannot drift.
+注意这条报错的不对称之处：它不告诉你是**哪一侧**错了，而两侧各自都有看似充分的理由坚持自己的数字。
+改其中一侧，必须在同一个 commit 里改另一侧。`get_mask_ctx_size()` 的存在就是为了让它俩没法各自漂移。
 
 ---
 
-## 2. Hybrid models address two KV rings with one mask tensor
+## 2. 混合结构模型用一个 mask 张量寻址两个 KV 环
 
-LFM3-1.7B is 24 layers: 13 gated short-conv, 5 sliding-window@256, 6 global attention. Under a static
-graph it needs **two** different mask widths:
+<a id="2-hybrid-models-address-two-kv-rings-with-one-mask-tensor"></a>
 
-| Mask | Context | Why |
+LFM3-1.7B 是 24 层：13 门控短卷积、5 滑动窗口@256、6 全局注意力。在静态图下它需要**两种**不同的 mask
+宽度：
+
+| Mask | 上下文 | 为什么 |
 |---|---:|---|
-| full attention | `1024` (= `-c`) | attends over the whole context |
-| sliding-window | `768` (the ring: `3 × window`) | attends over the ring only |
+| 全局注意力 | `1024`（= `-c`） | 对整个上下文做注意力 |
+| 滑动窗口 | `768`（环长 = `3 × window`） | 只对环内做注意力 |
 
-What llama.cpp actually hands the backend, measured — both masks:
+而 llama.cpp 实际交给后端的，实测下来两个 mask 长这样：
 
 ```
 ov-mask: name=attn_inp_kq_mask ne=[256,2,1,1] is_swa=0 -> mask_kv=1024 | ctx=1024 ctx_swa=768 chunk=256
 ov-mask: name=attn_inp_kq_mask ne=[256,2,1,1] is_swa=1 -> mask_kv= 768 | ctx=1024 ctx_swa=768 chunk=256
 ```
 
-Neither width comes from the host tensor. `256` is llama.cpp's `n_kv` rounded up to a multiple of its
-occupancy granularity; the width a static graph needs comes from **the cache the consuming op reads**.
-Deriving it from the tensor is the bug; deriving it from the consuming cache is
-`get_mask_ctx_size()`.
+这两个宽度都不是来自主机张量。`256` 是 llama.cpp 的 `n_kv` 向上取整到它的占用粒度倍数；静态图需要的
+宽度来自**消费该算子所读的缓存**。从张量里推导宽度就是那个 bug；从消费方缓存推导才是
+`get_mask_ctx_size()`。
 
-The failure modes on the way there, all real:
+一路上踩到的失效模式，全部真实发生过：
 
-| Attempt | Result |
+| 尝试 | 结果 |
 |---|---|
-| both masks at `ctx` (original) | `Check 'attention_mask_input_correctness' failed at scaled_dot_product_attention_shape_inference.hpp:92` — mask `[1,1,256,1024]` vs K/V `[1,16,768,128]` |
-| both masks at the ring length | SDPA accepts it, binding rejects it: `got [1,1,256,1024] expecting [1,1,256,768]` |
-| both masks at the host width (256) | SDPA now fails on the **full-attention** layers: `{[1,16,256,128],[1,16,1024,128],[1,16,1024,128],[1,1,256,256]}` |
-| per-module width (correct) | both graphs compile and run |
+| 两个 mask 都用 `ctx`（最初版本） | `Check 'attention_mask_input_correctness' failed at scaled_dot_product_attention_shape_inference.hpp:92` —— mask `[1,1,256,1024]` 对 K/V `[1,16,768,128]` |
+| 两个 mask 都用环长 | SDPA 接受了，绑定拒绝了：`got [1,1,256,1024] expecting [1,1,256,768]` |
+| 两个 mask 都用主机宽度（256） | 现在轮到 SDPA 在**全局注意力**层失败：`{[1,16,256,128],[1,16,1024,128],[1,16,1024,128],[1,1,256,256]}` |
+| 按模块给各自宽度（正确做法） | 两张图都编译通过并运行 |
 
-Two supporting rules:
+两条配套规矩：
 
-- **Column slicing is strided, so pad on the host and slice in the graph, never both.** Padding the
-  shared host mask is a `pad_input()` with `std::min(cols, padded_cols)`, which conveniently truncates
-  to the first N columns — the convention upstream also uses for its stateful sliced mask.
-- **Keep padded rows finite.** `set_zero_diagonal()` exists so a fully masked padded row does not
-  evaluate `softmax` as `0/0`. A NaN in a padded row is not harmless: the recurrent-state gather reads
-  columns *immediately after* the last valid token, i.e. exactly the padding region.
-
----
-
-## 3. The recurrent (conv) state is a stream, not a buffer
-
-LFM3's short conv has `d_conv = 7`, so the per-layer state is `6 × 2048 = 12288` elements
-(`cache_r_l*`, bound as `[1,1,1,12288]`). The op consumes a stream laid out as
-
-```
-[ previous state: 6 columns │ chunk tokens: chunk_size columns ]
-```
-
-and the write-back must capture the 6 columns **ending at the last valid token**, i.e. stream columns
-`[v, v+6)` for `chunk_valid_len = v`. Prefill does that with a `Gather` at `chunk_valid_len` (a Gather
-rather than a Slice, so the output shape stays static); decode uses a `Slice` at `rs_src_begin_*`.
-Two different code paths for the same conceptual operation — a useful thing to remember when one of
-them is wrong.
-
-Evidence that pins the conv path as (probably) innocent: a **1-token prompt is coherent on the NPU**,
-and it executes the same padded-to-256-column prefill graph, then 40 decode steps that each
-read-and-write the conv state. Multi-column convolution and per-step state chaining therefore work.
+- **列切片是带跨度的，所以只能在主机上补齐、在图里切片，不能两边都做。** 对共享的主机 mask 做补齐用的是
+  `pad_input()` 加 `std::min(cols, padded_cols)`，它顺带就把列截断到前 N 列——这也正是上游为它的有状态
+  切片 mask 采用的约定。
+- **补齐出来的行必须是有限值。** `set_zero_diagonal()` 的存在是为了让一个被全遮住的补齐行不会把 `softmax`
+  算成 `0/0`。补齐行里出现 NaN 绝不是无害的：递归状态的 gather 读的是最后一个有效 token **之后**的那些列，
+  而那里恰好就是补齐区域。
 
 ---
 
-## 4. The accuracy gap
+## 3. 递归（conv）状态是一条流，不是一个缓冲区
 
-**Status: open.** The NPU runs the model end to end; the numbers are off in a way that is consistent
-and not yet explained.
+<a id="3-the-recurrent-conv-state-is-a-stream-not-a-buffer"></a>
 
-### How it was localized
+LFM3 的短卷积 `d_conv = 7`，所以每层状态是 `6 × 2048 = 12288` 个元素（`cache_r_l*`，绑定成
+`[1,1,1,12288]`）。该算子消费的流按如下方式排布：
 
-Greedy generation, same prompt/seed, three execution paths, then compare *raw output tensors*
-(`GGML_OPENVINO_DUMP_BIN`) rather than text. Aligning passes by their top-1 token id:
+```
+[ 上一轮状态：6 列 │ 本 chunk 的 token：chunk_size 列 ]
+```
 
-| Pass | CPU dynamic | CPU static | NPU static |
+而写回必须取走**以最后一个有效 token 结尾的那 6 列**，即流上的列区间 `[v, v+6)`，其中
+`chunk_valid_len = v`。Prefill 用一个位于 `chunk_valid_len` 的 `Gather` 来做这件事（用 Gather 而不是
+Slice，是为了让输出形状保持静态）；decode 则用位于 `rs_src_begin_*` 的 `Slice`。同一个概念操作有两条
+不同的代码路径——当其中一条出错时，记住这一点很有用。
+
+把 conv 路径（大概率）摘干净的证据是：**单 token prompt 在 NPU 上是连贯的**，而且它执行的是同一张被补到
+256 列的 prefill 图，随后 40 个解码步每步都读写 conv 状态。所以多列卷积与逐步状态接续都是通的。
+
+---
+
+## 4. 精度差距
+
+<a id="4-the-accuracy-gap"></a>
+<a id="the-accuracy-gap"></a>
+
+**状态：未解决。** NPU 端到端跑完了模型；数值偏差的方式既稳定又尚未被解释。
+
+### 它是怎样被定位的
+
+贪心解码、同样的 prompt/seed、三条执行路径，然后比对**原始输出张量**（`GGML_OPENVINO_DUMP_BIN`）而不是
+文本。按 top-1 token id 对齐 pass：
+
+| Pass | CPU 动态 | CPU 静态 | NPU 静态 |
 |---|---|---|---|
 | prompt batch 1 | id229 · 12.639 | id229 · 12.639 | id12942 · 10.555 |
 | prompt batch 2 | id0 · 19.015 | id0 · 19.015 | id7 · 16.141 |
-| **prefill (generating)** | id2083 · 18.98 | id2083 · 19.58 | id2083 · 17.53 |
+| **prefill（生成中）** | id2083 · 18.98 | id2083 · 19.58 | id2083 · 17.53 |
 | decode 1 | id1094 · 23.14 | id1094 · 20.27 | id1094 · 13.51 |
 | decode 2 | id310 · 27.07 | id310 · 25.87 | id310 · 15.81 |
 | decode 3 | id5141 · 20.90 | id5141 · 22.29 | **id342** · 14.91 |
 | decode 4 | id278 · 25.82 | id278 · 26.06 | **id711** · 11.32 |
 
-Derived facts:
+由此得到的事实：
 
-- **CPU dynamic ≡ CPU static.** Same top-1 ids and essentially identical magnitudes, so static-mode
-  graph construction and the mask/ring work are not the source of the error.
-- **Prefill is close**: cosine `0.969` to the CPU reference, same top-1 and same top-5 set.
-- **Decode is not**: cosine `0.73–0.87`, and the distribution is flattened — same L2 norm, lower peak
-  (`25.87 → 15.81`). Greedy tracks the reference for 2–3 tokens, then leaves the rails.
-- Cache writes (K, V, conv state) agree closely between devices on min/max/mean; a single wrong row is
-  invisible in those aggregates, which is exactly why the raw dumps exist.
+- **CPU 动态 ≡ CPU 静态。** top-1 id 相同、量级基本一致，所以静态模式的图构建以及 mask / 环那部分工作
+  不是误差来源。
+- **Prefill 很接近**：与 CPU 参照余弦 `0.969`，top-1 相同、top-5 集合也相同。
+- **Decode 不行**：余弦 `0.73–0.87`，而且分布被压平——L2 范数相同、峰值更低（`25.87 → 15.81`）。贪心
+  与参照一致 2–3 个 token，然后脱轨。
+- 缓存写入（K、V、conv 状态）在两设备间的 min/max/mean 很接近；但错一行在这些聚合量里是隐形的——这正
+  是要做原始转储的原因。
 
-A flattened-but-norm-preserving logit distribution is a precision signature, not an indexing
-signature: an off-by-one row or a mis-sliced window produces a *different* distribution, not a scaled
-one.
+logit 分布"被压平但保住了范数"，是精度的特征而不是寻址的特征：错一行或者窗口切错会产生一个**不同的**
+分布，而不是一个缩放的分布。
 
-### The warmup trap — read this before trusting any dump comparison
+### 预热陷阱——在相信任何转储比对之前先读这一节
 
-`GGML_OPENVINO_DUMP_BIN` numbers passes in execution order, and **the first passes are not the prompt**.
-llama.cpp warms the backend up before the first real token, so `prefill_0`, `prefill_1` and `decode_2`
-came out **byte-identical between two runs of the same model with two different prompts**, while
-`prefill_3..6` and `decode_7..11` did not. Statistics over warmup passes look clean and mean nothing.
+<a id="the-warmup-trap"></a>
 
-The first version of the section below did exactly this and reported a per-layer curve computed on
-synthetic warmup input. It was removed and re-measured. Identify the passes mechanically rather than by
-index — run the same model twice with different prompts and compare hashes; every name whose hash
-matches is a warmup pass:
+`GGML_OPENVINO_DUMP_BIN` 按执行顺序给 pass 编号，而**最靠前的那些 pass 不是 prompt**。llama.cpp 会在第一
+个真实 token 之前预热后端，所以 `prefill_0`、`prefill_1`、`decode_2` 在"同一模型、两个不同 prompt"的两次
+运行之间**逐字节相同**，而 `prefill_3..6`、`decode_7..11` 不同。在预热 pass 上算统计量，看着干净，其实
+什么都没测。
+
+下面那节的第一个版本就犯了这个错，报出了一条在合成预热输入上算出的逐层曲线。它已被删除并重新测量。
+判定 pass 归属要靠机械手段而不是靠编号——同一模型用两个不同 prompt 各跑一次，比对哈希；凡名字哈希相同的
+就是预热 pass：
 
 ```powershell
 foreach ($f in Get-ChildItem dbg\runA -Filter *.bin) {
@@ -147,14 +150,15 @@ foreach ($f in Get-ChildItem dbg\runA -Filter *.bin) {
 }
 ```
 
-### Per-layer divergence (real passes)
+### 逐层发散（真实 pass）
 
-`LFM3-1.7B-Q4_K_M`, ~220-token prompt (one full 256-column chunk), NPU against the CPU-static reference
-under each side's default quantization — i.e. the configuration that outputs the wrong thing. The
-recurrent conv state (`cache_r_l*`, 6 × 2048 per layer) is the informative output because each layer's
-state is a function of everything below it:
+<a id="per-layer-divergence"></a>
 
-| Layer | `prefill_3` | `prefill_4` | `decode_7` | | Layer | `prefill_3` | `prefill_4` | `decode_7` |
+`LFM3-1.7B-Q4_K_M`，约 220 token 的 prompt（正好一个完整的 256 列 chunk），NPU 对 CPU 静态参照，各自使用
+默认的量化方式——也就是会输出错东西的那个配置。递归 conv 状态（`cache_r_l*`，每层 6 × 2048）是最有信息量
+的输出，因为每一层的状态都是它以下所有部分的函数：
+
+| 层 | `prefill_3` | `prefill_4` | `decode_7` | | 层 | `prefill_3` | `prefill_4` | `decode_7` |
 |---|---:|---:|---:|---|---|---:|---:|---:|
 | `l0` | 0.9956 | 0.9939 | 0.9985 | | `l13` | 0.5343 | 0.9068 | 0.8275 |
 | `l1` | 0.9856 | 0.9832 | 0.9930 | | `l15` | 0.3684 | 0.8903 | 0.7809 |
@@ -164,168 +168,161 @@ state is a function of everything below it:
 | `l9` | 0.8728 | 0.8390 | 0.7865 | | `l23` | 0.6455 | 0.9450 | 0.8721 |
 | `l11` | 0.8290 | 0.8691 | 0.7800 | | | | | |
 
-Four things follow:
+由此得到四点：
 
-1. **Layer 0 already differs** (`0.9956`, max abs `0.064` on order-1 values). No single layer is broken;
-   each contributes a small error and the residual stream compounds it. That is the signature of
-   arithmetic rather than indexing, and it matches the flattened logits measured above.
-2. **It is present in the first real prefill chunk** — before any decode step and before any state is
-   reused — so the cross-step state-chaining area (conv-state gather, `chunk_valid_len`, decode slicing)
-   is exonerated for this defect. It still has to be right; it is not what makes the output wrong.
-3. The collapse is **data-dependent, not step-count-dependent**: the worst case is deep layers of the
-   *first* chunk (`0.16` at l17) while the second chunk of the same prompt stays ≥ 0.83 and decode sits
-   around 0.7–0.9.
-4. It is concentrated in the **short-conv path**. The attention writes tell the opposite story:
+1. **第 0 层就已经不同**（`0.9956`，在量级为 1 的值上最大绝对差 `0.064`）。没有任何一层是坏掉的；每层
+   贡献一点小误差，残差流把它复利放大。这是算术的特征而非寻址的特征，也与上面测到的 logits 压平一致。
+2. **它在第一个真实 prefill chunk 里就存在**——早于任何解码步、也早于任何状态复用——所以跨步状态接续那
+   一整块（conv 状态 gather、`chunk_valid_len`、decode 切片）在本缺陷上是被排除的。它仍然必须正确，但
+   不是让输出变错的那个东西。
+3. 塌缩是**依赖数据、而不是依赖步数**的：最差情况出现在*第一个* chunk 的深层（l17 处 `0.16`），而同一
+   prompt 的第二个 chunk 保持在 ≥ 0.83，decode 大约在 0.7–0.9 之间。
+4. 它集中在**短卷积路径**上。注意力写入讲的是相反的故事：
 
-| KV tensor (row mode, `-RowSize 512` = one position = 4 KV heads × 128) | reading |
+| KV 张量（行模式，`-RowSize 512` = 一个位置 = 4 个 KV 头 × 128） | 解读 |
 |---|---|
-| `cache_v_*`, all 200 written rows | max abs diff `1.5e-9`–`2.7e-6`, `leading-clean=200` → **V is written exactly** |
-| `cache_k_l2` rows 1–7 | cosine 0.95–0.9998 → small relative error |
-| `cache_k_l12` rows 1–7 | cosine 0.90–0.99 → same order |
-| **row 0 of every K layer** | cosine **0.2876**, max abs **1.06e10** → position 0 is grossly wrong on one side |
+| `cache_v_*`，全部 200 个已写行 | 最大绝对差 `1.5e-9`–`2.7e-6`，`leading-clean=200` → **V 是精确写入的** |
+| `cache_k_l2` 第 1–7 行 | 余弦 0.95–0.9998 → 相对误差很小 |
+| `cache_k_l12` 第 1–7 行 | 余弦 0.90–0.99 → 同一量级 |
+| **每个 K 层的第 0 行** | 余弦 **0.2876**，最大绝对差 **1.06e10** → 位置 0 在某一侧严重错误 |
 
-V exact means the dequant → norm → projection chain is broadly right, which is also what the requant
-control below shows. **K row 0 is the one structural anomaly in the whole comparison** and the sharpest
-lead available: whatever writes the first position (the prefill write index for row 0, or the value
-written there) does not behave like rows 1..n.
+V 精确意味着"反量化 → 归一化 → 投影"这条链大体是对的，下面那个重量化对照实验也指向同一结论。
+**K 的第 0 行是整个比对中唯一一个结构性异常**，也是眼下最锋利的线索：那个写第一个位置的东西
+（第 0 行的 prefill 写入索引，或者写到那里的值），它的行为跟第 1..n 行不一样。
 
-Whole-buffer statistics over the rows a chunk never wrote are not measurements: both sides hold zeros
-there, which reads as `cosine 0.135, maxDiff 0.0000`. Use row mode — see
-[`tools/README.md`](../tools/README.md).
+对一个 chunk 根本没写过的行做整缓冲区统计，不叫测量：两侧在那儿都是零，读出来就是
+`cosine 0.135, maxDiff 0.0000`。请用行模式——见 [`tools/README.md`](../tools/README.md)。
 
-### What has been ruled out
+### 已经排除掉的
 
-| Hypothesis | Test | Verdict |
+<a id="what-has-been-ruled-out"></a>
+
+| 假设 | 检验方法 | 结论 |
 |---|---|---|
-| mask content wrong | `GGML_OPENVINO_MASK_MODE=1` (position-derived causal mask) | CPU-static stays coherent, NPU still wrong → mask content exonerated |
-| multi-column conv | `PREFILL_CHUNK_SIZE` = 1/2/7/32/128/256 | no change → not chunk-shape related |
-| conv op itself | 1-token prompt, 40 decode steps | coherent → conv and per-step state chaining fine |
-| bound inputs differ | `GGML_OPENVINO_DEBUG_INPUT` on both devices | identical bound inputs (tokens, positions, indices, masks) |
-| static path itself | `GGML_OPENVINO_FORCE_STATIC=1` on CPU | coherent → static translation is correct |
-| weight requant to `Q4_0_128` | force the same requant on CPU | still coherent → not sufficient on its own |
-| missing op lowering (`SSM_CONV`) | read the code | already implemented as depthwise `GroupConvolution` |
-| GQA/SDPA lowering | `GGML_OPENVINO_MANUAL_GQA_ATTN=1`, `LOG_UNSUPPORTED_OPS=1` | no unsupported-op fallbacks logged; no improvement |
-| `-fa 0` | any device | dead end by design (see [troubleshooting](troubleshooting.md)) |
+| mask 内容错 | `GGML_OPENVINO_MASK_MODE=1`（按位置推导的因果 mask） | CPU 静态仍连贯，NPU 依旧错 → mask 内容被排除 |
+| 多列卷积 | `PREFILL_CHUNK_SIZE` = 1/2/7/32/128/256 | 无变化 → 与 chunk 形状无关 |
+| conv 算子本身 | 单 token prompt，40 个解码步 | 连贯 → conv 与逐步状态接续没问题 |
+| 绑定的输入不同 | 两侧都开 `GGML_OPENVINO_DEBUG_INPUT` | 绑定输入完全相同（token、位置、索引、mask） |
+| 静态路径本身 | CPU 上 `GGML_OPENVINO_FORCE_STATIC=1` | 连贯 → 静态翻译是正确的 |
+| 重量化成 `Q4_0_128` | 在 CPU 上强制同样的重量化 | 仍然连贯 → 单靠它不足以解释 |
+| 算子降级缺失（`SSM_CONV`） | 读代码 | 已实现为 depthwise `GroupConvolution` |
+| GQA/SDPA 降级 | `GGML_OPENVINO_MANUAL_GQA_ATTN=1`、`LOG_UNSUPPORTED_OPS=1` | 没有记录到不支持算子的回退；也无改善 |
+| `-fa 0` | 任意设备 | 设计上就是死路（见 [troubleshooting](troubleshooting.md)） |
 
-### The NPUW / quantization lever sweep
+### NPUW / 量化开关扫描
 
-Everything the backend sets for the NPU plugin, toggled at run time via
-`GGML_OPENVINO_NPU_COMPILE_OVERRIDES` (each cell a fresh `GGML_OPENVINO_CACHE_DIR`):
+<a id="the-npuw--quantization-lever-sweep"></a>
 
-| Override | Result |
+后端为 NPU 插件设置的每一项，都通过 `GGML_OPENVINO_NPU_COMPILE_OVERRIDES` 在运行期逐个翻转（每格一个全新
+的 `GGML_OPENVINO_CACHE_DIR`）：
+
+| 覆盖项 | 结果 |
 |---|---|
-| *(none — default)* | runs, flattened logits, garbage past ~3 tokens |
-| `NPU_COMPILER_DYNAMIC_QUANTIZATION=NO` | `ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY` (`pfnAppendGraphExecute`, code `0x70000002`) — the non-quantized graph does not fit |
-| `NPU_USE_NPUW=NO` | `ov::Exception` from `core.cpp:120` at compile; unsupported configuration |
-| `NPUW_DQ=NO` | compiles, generation degenerates to `>>>>>>>>>>>>>>>>>` |
-| `NPUW_DQ=NO,NPUW_DQ_FULL=YES` | `ov::Exception`, compile fails |
-| `NPUW_DQ_FULL=YES` | degenerates to `>>>>>>>>>>>>>>>>>` |
-| `NPUW_FOLD=NO` | degenerates to `>>>>>>>>>>>>>>>>>`, compile time 383 s |
-| `NPUW_WEIGHTS_BANK=none` | unchanged |
+| *（无——默认）* | 能跑，logits 被压平，约 3 个 token 之后开始出垃圾 |
+| `NPU_COMPILER_DYNAMIC_QUANTIZATION=NO` | `ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY`（`pfnAppendGraphExecute`，code `0x70000002`）——未量化的图放不下 |
+| `NPU_USE_NPUW=NO` | 编译期 `core.cpp:120` 抛 `ov::Exception`；不支持的配置 |
+| `NPUW_DQ=NO` | 能编译，生成退化成 `>>>>>>>>>>>>>>>>>` |
+| `NPUW_DQ=NO,NPUW_DQ_FULL=YES` | `ov::Exception`，编译失败 |
+| `NPUW_DQ_FULL=YES` | 退化成 `>>>>>>>>>>>>>>>>>` |
+| `NPUW_FOLD=NO` | 退化成 `>>>>>>>>>>>>>>>>>`，编译耗时 383 s |
+| `NPUW_WEIGHTS_BANK=none` | 无变化 |
 
-Reading: the compressed-weights + on-device-dequant path is not merely an optimization here — turning
-it off makes things strictly worse (a collapsed single-token output is a *broken weights* signature).
-And the accuracy defect survives every documented lever. That combination points away from "pick a
-better flag" and towards something structural in how this model's graph is executed on-device.
+怎么读这张表：压缩权重 + 设备内反量化这条路径在这里不只是"一个优化"——把它关掉只会更糟（塌成单 token
+输出是*权重坏了*的特征）。而精度缺陷在所有有文档记载的开关下都存活。这两件事合起来，指向的不是"挑个更好
+的 flag"，而是这个模型的图在设备上执行方式里某个结构性问题。
 
-### The requant control, and what it settled
+### 重量化对照实验，以及它解决了什么
 
-Comparing the NPU against the CPU is only meaningful if both sides load the same weights, and by default
-they do not: the NPU forces grouped 4 bit on every weight (`docs/env-vars.md`). Measured with the policy
-made identical on both sides (`GGML_OPENVINO_REQUANT_KQUANT=q4_sym128_all` on the CPU, `GGML_OPENVINO_FORCE_STATIC=1`
-so the CPU runs the NPU's static code path):
+<a id="the-requant-control"></a>
 
-| Comparison | worst conv state | worst K row | logits |
+拿 NPU 和 CPU 比，只有两边加载同一份权重才有意义；而默认情况下它们加载的**不是**同一份：NPU 会对每个
+权重强制分组 4 bit（见 `docs/env-vars.md`）。把两侧策略对齐后测量（CPU 侧
+`GGML_OPENVINO_REQUANT_KQUANT=q4_sym128_all`，并设 `GGML_OPENVINO_FORCE_STATIC=1`
+让 CPU 走 NPU 的静态代码路径）：
+
+| 比对 | 最差 conv 状态 | 最差 K 行 | logits |
 |---|---:|---:|---|
-| NPU (forced requant) vs CPU (native Q4_K) | `0.215` | `0.31` | flattened, garbage past ~3 tokens |
-| NPU vs CPU, **both** requantized to `Q4_0_128` | `0.9589` | `0.9994`–`1.0000` | top-1 agrees on 4 of 6 passes |
+| NPU（强制重量化） 对 CPU（原生 Q4_K） | `0.215` | `0.31` | 被压平，约 3 个 token 后出垃圾 |
+| NPU 对 CPU，**两侧都**重量化成 `Q4_0_128` | `0.9589` | `0.9994`–`1.0000` | 6 个 pass 里 4 个 top-1 一致 |
 
-Two thirds of the gap was the two devices running *different quantizations*, not the NPU computing badly.
-What survives is real but far smaller, and it is consistent with the earlier conclusion: a per-layer
-rounding error in the conv path, compounding.
+三分之二的差距来自"两台设备跑的是*不同的量化*"，而不是 NPU 算得差。剩下的那部分是真实存在的，但小得多，
+并且与之前的结论一致：conv 路径里逐层的舍入误差在复利放大。
 
-A native-Q4_0 checkpoint (`LFM3-1.7B-QAD-Q4_0.gguf`) pushes this further and separates the last conflated
-pair of behaviours: on a 220-token **continuation** it is byte-identical on native CPU, OpenVINO-CPU static
-and the NPU, while on a 64-token Chinese **instruction** run the NPU alone degenerates, with the conv state
-diverging per step as `decode_2 0.989 → decode_9 0.51 → plateau ≈0.25`. Low-entropy tasks hide the defect
-completely; they are useful as plumbing checks and as nothing else.
+一份原生 Q4_0 权重（`LFM3-1.7B-QAD-Q4_0.gguf`）把这件事推得更远，并把最后一对被混淆的行为分开：在
+220 token 的**续写**上，它在原生 CPU、OpenVINO-CPU 静态和 NPU 上逐字节一致；而在 64 token 的中文**指令**
+任务上，只有 NPU 退化，conv 状态逐步发散为 `decode_2 0.989 → decode_9 0.51 → 平台期 ≈0.25`。
+**低熵任务会把这个缺陷完全藏起来**；它们只配当通路检查用，别的什么都证明不了。
 
-### Where to take it next
+### 接下来往哪儿走
 
-1. **K row 0.** Every K layer's row 0 is wrong by eight orders of magnitude (`cosine 0.288`, max abs
-   `1.06e10`) while rows 1..n sit at `0.90–0.9998`, and V is exact everywhere. That asymmetry — one row of
-   one tensor family — is the most specific thing the dumps have produced. Look at the prefill write index
-   for the first position and at what value lands there.
-2. **Why the conv path degrades while V does not.** Both consume the same requantized weights and the same
-   hidden states; one compounds, one is exact to `1e-8`. The difference is the op (`d_conv=7` gated causal
-   conv + its state slicing) and the state layout — that is where the f32 bisection should start.
-3. **Isolate the output projection.** `output.weight` is requantized to Q8_0_C and the projection is
-   128000×2048. `result_norm` is not dumpable (appending a `Result` node aborts the NPU plugin), so this
-   needs a different hook than `GGML_OPENVINO_DUMP_BIN`.
-4. **F32 for a single op.** Force one op at a time into f32 (the RMS-norm chain, the short conv, the final
-   `MatMul`, the SDPA) and watch the cosine.
-5. **A different architecture as control.** A small pure-transformer model validated upstream on NPU would
-   still separate "NPU plugin numeric issue" from "LFM3-specific issue"; a second quantization of the same
-   model (item above) narrowed but did not close it.
+<a id="where-to-take-it-next"></a>
+
+1. **K 的第 0 行。** 每个 K 层的第 0 行都错了八个数量级（余弦 `0.288`、最大绝对差 `1.06e10`），而第 1..n
+   行都在 `0.90–0.9998`，V 处处精确。这一处不对称——某一族张量里的某一行——是转储给出的最具体的东西。
+   去看第一个位置的 prefill 写入索引，以及写到那里的到底是什么值。
+2. **为什么 conv 路径退化而 V 不退化。** 两者消费同样的重量化权重和同样的隐状态；一个复利放大，一个精确到
+   `1e-8`。差别在于算子本身（`d_conv=7` 的门控因果卷积 + 它的状态切片）与状态布局——f32 二分应该从这里开始。
+3. **隔离输出投影。** `output.weight` 被重量化成 Q8_0_C，投影规模是 128000×2048。`result_norm` 转储不出来
+   （追加 `Result` 节点会让 NPU 插件中止），所以这需要一个不同于 `GGML_OPENVINO_DUMP_BIN` 的挂钩。
+4. **单个算子升到 f32。** 一次只把一个算子升到 f32（RMS-norm 链、短卷积、最后的 `MatMul`、SDPA），盯余弦变化。
+5. **换一个架构做对照。** 一个上游已在 NPU 上验证过的小型纯 transformer 模型，仍然能进一步区分"NPU 插件的
+   数值问题"与"LFM3 特有的问题"；同一模型的第二种量化（上一条）缩小但没有关闭这个缺口。
 
 ---
 
-## 5. Tooling that is part of the engine
+## 5. 属于引擎一部分的工具链
 
-These exist because reading the code was not enough:
+<a id="5-tooling-that-is-part-of-the-engine"></a>
 
-| Tool | Why it exists |
+这些东西的存在，是因为"读代码"不够用：
+
+| 工具 | 它为什么存在 |
 |---|---|
-| `GGML_OPENVINO_DUMP_BIN` + `tools/compare-tensors.ps1` | aggregate `min/max/mean` statistics hide single-row errors; element-wise cosine does not |
-| `tools/top-token.ps1` | aligns passes between two runs by top-1 token id — without it you compare the wrong pass of each run and draw confident, wrong conclusions |
-| `GGML_OPENVINO_MASK_MODE` | separates "mask content" from "graph execution" |
-| `GGML_OPENVINO_NPU_COMPILE_OVERRIDES` | turns an overnight flag sweep into a five-minute one |
-| `GGML_OPENVINO_FORCE_STATIC` on CPU | seconds instead of ~36 s per experiment, same code path |
+| `GGML_OPENVINO_DUMP_BIN` + `tools/compare-tensors.ps1` | `min/max/mean` 这类聚合统计会藏住单行错误；逐元素余弦不会 |
+| `tools/top-token.ps1` | 按 top-1 token id 对齐两次运行的 pass——没有它，你会拿每次运行的错误 pass 相比，然后得出自信且错误的结论 |
+| `GGML_OPENVINO_MASK_MODE` | 把"mask 内容"与"图执行"分开 |
+| `GGML_OPENVINO_NPU_COMPILE_OVERRIDES` | 把一整夜的 flag 扫描压成五分钟 |
+| CPU 上的 `GGML_OPENVINO_FORCE_STATIC` | 同一个代码路径，每个实验从约 36 s 变成几秒 |
 
-`GGML_OPENVINO_DEBUG_NODE` (extra graph outputs) **aborts the process on the NPU** — the plugin cannot
-take appended results. Everything diagnostic in this tree reads outputs the graph already produces.
+`GGML_OPENVINO_DEBUG_NODE`（追加图输出）在 NPU 上会**让进程中止**——插件不接受追加的 result。本代码树里
+所有诊断手段读的都是图本来就产出的输出。
 
 ---
 
-## 6. Performance observations
+## 6. 性能观察
 
-Two halves, and they deserve to be treated separately — conflating them produced a badly wrong
-conclusion in an earlier revision of this document.
+<a id="6-performance-observations"></a>
 
-**Prefill is fine.** At `pp512` (two full 256-token chunks, no padding waste) the NPU reaches
-**415 t/s**, vs 610 on OpenVINO-CPU and 570 on the native CPU reference — 68%/73%. The accelerator
-does what it is supposed to do on the compute-bound half of the workload.
+两件事，它们值得被分开对待——本文档早期版本把它们混在一起，得出过一个严重错误的结论。
 
-What is *not* explained is the absolute efficiency: 415 t/s on a 1.7 B model is ≈ 870 GFLOP per
-256-token chunk ≈ **1.4 TOPS effective out of ~13 TOPS INT8**. An order of magnitude is unaccounted
-for.
+**Prefill 没问题。** 在 `pp512`（两个完整的 256 token chunk，没有填充浪费）下 NPU 达到 **415 t/s**，
+对比 OpenVINO-CPU 的 610 与原生 CPU 参照的 570——68%/73%。在负载中计算密集的那一半上，加速器干了它该
+干的事。
 
-**Decode is the problem.** `8.3–8.7 t/s` on NPU vs `21.7–29.2` on OpenVINO-CPU and `54.1` on the
-native CPU reference: a **6× loss to the CPU it was meant to replace**. At ≈ 3.4 GFLOP/token that is
-~0.03 TOPS — two orders of magnitude below the hardware. Whatever is wrong, it is wrong here.
+尚未解释的是绝对效率：1.7 B 模型跑出 415 t/s，约合每个 256 token chunk 870 GFLOP ≈ **约 13 TOPS INT8 里
+的 1.4 TOPS 有效算力**。有一个数量级不知去向。
 
-**And short-prompt numbers on the NPU are meaningless.** The static prefill graph is fixed at
-`GGML_OPENVINO_PREFILL_CHUNK_SIZE` columns (256 by default), so a 4-token prompt pays the full cost
-of 256 and llama.cpp reports `useful tokens / wall time`: the same 0.66 s chunk reads as 6 t/s for a
-4-token prompt and 12 t/s for an 8-token one. Any NPU-vs-CPU prompt comparison made on short prompts
-measures padding. Use `llama-bench -p 512` or larger; for short-prompt workloads, shrink the chunk
-size — it is a direct multiplier (and part of the graph cache key, so budget one compile per value).
+**Decode 才是问题。** NPU `8.3–8.7 t/s`，对比 OpenVINO-CPU 的 `21.7–29.2` 与原生 CPU 参照的 `54.1`：
+**比它本该替代的 CPU 慢 6 倍**。按约 3.4 GFLOP/token 折算就是约 0.03 TOPS——比硬件低两个数量级。
+不管错的是什么，错就错在这里。
 
-Candidate causes for the decode gap, roughly by suspicion:
+**而 NPU 上短 prompt 的数字毫无意义。** 静态 prefill 图固定为 `GGML_OPENVINO_PREFILL_CHUNK_SIZE` 列
+（默认 256），所以 4 个 token 也要付满 256 列的代价，而 llama.cpp 上报的是"有效 token / 墙钟时间"：同样
+一个 0.66 s 的 chunk，4 token 时被读成 6 t/s，8 token 时被读成 12 t/s。任何基于短 prompt 的 NPU 对 CPU
+比较，测的都是填充。用 `llama-bench -p 512` 或更大；做短 prompt 场景时把 chunk 调小——它是一个直接的
+乘数（同时也是图缓存键的一部分，所以每个取值都要预算一次编译）。
 
-1. the stateless cache contract — every step re-binds and re-writes K/V for 11 layers plus 13 conv
-   states, in and out, as graph inputs and outputs,
-2. activation quantization cost per step (`NPU_COMPILER_DYNAMIC_QUANTIZATION`), which for a single
-   token is pure overhead against very little arithmetic,
-3. `optimization-level` / compile hints not being set for a decode-shaped graph, and NPUW funcall
-   granularity — ~1000-node graphs executed per token with per-invocation submit overhead,
-4. the conv-state write-back being expressed as a runtime-indexed `Gather` (static shape, dynamic
-   index → nothing on-device can optimize it away).
+decode 差距的候选原因，按怀疑程度排列：
 
-Cold compile is ~36 s per graph; warm (cache dir hit) most of that disappears, which is why a
-persistent `GGML_OPENVINO_CACHE_DIR` is mandatory rather than advisory.
+1. 无状态缓存契约——每一步都为 11 层重新绑定并重写 K/V，外加 13 个 conv 状态，进出都作为图的输入输出，
+2. 每步的激活量化开销（`NPU_COMPILER_DYNAMIC_QUANTIZATION`），对单个 token 而言，相对极少的算术它是纯开销，
+3. 解码形状的图没有设 `optimization-level` / 编译提示，以及 NPUW funcall 粒度——约 1000 节点的图每 token
+   执行一次，且每次调用都有提交开销，
+4. conv 状态写回被表达成按运行期索引的 `Gather`（形状静态、索引动态 → 设备上没有任何东西能把它优化掉）。
 
-**Related robustness finding:** an out-of-range KV write index — e.g. `-p 1024 -n 32` against a 1024
-context — makes the CPU plugin fail its `scatter_update` bounds check, and makes the NPU plugin drop
-the device with `ZE_RESULT_ERROR_DEVICE_LOST`. Same bug, and on the NPU it is the worse of the two
-failure modes.
+冷编译每图约 36 s；热启动（命中缓存目录）时其中大部分消失，这就是为什么持久的
+`GGML_OPENVINO_CACHE_DIR` 是强制要求而不是建议。
+
+**相关的健壮性发现：** 一个越界的 KV 写入索引——例如对 1024 上下文跑 `-p 1024 -n 32`——会让 CPU 插件在
+`scatter_update` 的边界检查上失败，而在 NPU 插件上会直接把设备打掉，报 `ZE_RESULT_ERROR_DEVICE_LOST`。
+同一个 bug，而在 NPU 上是两种失效模式里更糟的那一种。

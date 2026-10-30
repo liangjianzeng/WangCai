@@ -58,6 +58,7 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | Prefill 追平 CPU | 🟡 已达参照的 73%，仍在找余量 |
 | Decode 追平 CPU | 🟡 落后 6 倍，当前主攻方向 |
 | LFM3 全模态（音频 / 视觉输入） | ⬜ 规划中（官方 GGUF 与 `mmproj` 已在 ModelScope） |
+| **端侧多模态助手「旺财」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
 
 "进行中"的具体含义：NPU 上的贪心解码在最初几个 token 与 CPU 参照一致，随后漂移。与参照 logits 的
 余弦相似度为 `0.969`（prefill 结束）与 `0.73–0.87`（decode），且 logit 分布被明显"压平"。真实 chunk
@@ -116,6 +117,59 @@ src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 
 ```
 
 细节见 [docs/getting-started.md](docs/getting-started.md) 与 [docs/build.md](docs/build.md)。
+
+## 路线图：端侧多模态助手「旺财」
+
+一句话：**旺财 = 端侧多模态 AI 助手，NPU 引擎是它的低功耗心脏。**
+
+本仓库（WangCai）现在只做一件事：让大模型**完整跑在 Intel NPU 上**。这是"引擎"。但引擎不是终点——
+把它装进一个会说话、会看、会听、会推理的助手里，才是"旺财"。
+
+### 三层结构
+
+| 层 | 组件 | 职责 |
+|---|---|---|
+| 应用层 | **TongYiLite**（Flutter） | 用户界面、Agent 主循环、工具调用、记忆、语音管线、视觉输入管线 |
+| 服务层 | **推理核心**（可插拔后端） | 一个平台无关的 C ABI；后端可切换：CPU（`ggml-cpu`）/ GPU（`ggml-vulkan`）/ **NPU（`ggml-openvino` / WangCai）** |
+| 引擎层 | **WangCai** | 纯 NPU 推理：把 `ggml_cgraph` 翻译成静态 OpenVINO 图，在 `AI Boost` 上执行 |
+
+### 安卓 → Windows 移植
+
+TongYiLite 现在是 **Flutter（不是 Kotlin）应用**：Dart 约 54k 行，Kotlin 宿主壳只有 6 个文件、2k 行。
+真正重量级的代码在 C++——唯一的 `tongyilite_jni.cpp`（3887 行）负责模型加载、逐 token 回调、MTP 投机
+解码、mtmd 视觉编码。移植的关键判断（已有**本机实物证据**，见仓库内
+`Windows移植_CPU_GPU_NPU_实施方案_2026-10-30.md`）：
+
+- **Dart 侧约 90% 可原样复用**到 Flutter Windows：Agent、工具、记忆、语音管线都不依赖 Android API。
+- **真正的工作量集中在 C++ 核心**：把那个 3887 行的 JNI 壳抽成平台无关的 **C ABI**，重写日志 / OOM
+  探测 / 路径部分，把 MainActivity 的 8 个 MethodChannel 换成 Dart 的 FFI 桥。
+- **后端组合重写**：去掉 KleidiAI（ARM）、OpenCL-stub、NDK Vulkan stub，换 MSVC + Ninja +
+  **`ggml-openvino`（NPU）**。
+- 本机已证明可行性：`.upgrade-tmp/host-mingw/bin/llama-mtmd-cli.exe` —— llama.cpp 已在 MinGW GCC 下
+  原生构建成功。
+
+### 为什么是 NPU（低功耗驱动）
+
+NPU 是访存瓶颈型负载里的优等生：**功耗极低、把 CPU 核心完整留给系统**。在 WangCai 里，NPU 端到端跑
+LFM3 时 prefill 已达 **415 t/s**（CPU 参照的 73%），CPU 全程空闲。代价是：decode 还在 **8.3–8.7 t/s**，
+精度也未达标（[docs/status.md](docs/status.md)）——这两条正是下一步要攻的。
+
+> 诚实声明：**本机目前没有 NPU 计数器、没有电池、电源方案是"高性能"**，所以"每瓦性能"还没测出来。
+> 路线图里写的是可复现的替代证据（CPU 占用、温度、降频事件），精确瓦特需要外部功率计或电池模式补测。
+
+### 多模态
+
+TongYiLite 已经具备：文本✅、视觉✅（mtmd + mmproj）、语音输入✅（sherpa ASR）、语音输出✅
+（Edge TTS + sherpa VITS）。模型目录里 `LFM3-VL-2B QAD-Q4_0` 已带 mmproj——**文本链路打通后，多模态
+是同一套后端的事**。
+
+### 分期
+
+- **Phase 0（本仓库）**：纯 NPU 引擎，LFM3 文本链路。🟡 进行中。
+- **Phase 1**：引擎移植进 TongYiLite 服务层，C ABI 抽取 + 后端可插拔。
+- **Phase 2**：App 在 Windows 跑通，CPU 后端先可用，再切 NPU。
+- **Phase 3**：多模态（视觉 / 语音）在 NPU 上端到端。
+- **Phase 4**：低功耗实测 + 功耗感知的调度策略。
 
 ## 仓库结构
 

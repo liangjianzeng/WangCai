@@ -1,30 +1,30 @@
-# Getting started
+# 快速上手
 
-Target: get LFM3-1.7B generating on `Intel(R) AI Boost` in about 30 minutes, including the OpenVINO
-download.
+目标：在约 30 分钟内让 LFM3-1.7B 在 `Intel(R) AI Boost` 上跑起来并产出文本，其中包含下载 OpenVINO
+的时间。
 
-## Prerequisites
+## 前置条件
 
-| Component | What to install | Verified with |
+| 组件 | 安装内容 | 验证环境 |
 |---|---|---|
-| CPU/NPU | Intel Core Ultra with `Intel(R) AI Boost` | Core Ultra 9 275HX, NPU 3720 |
-| NPU driver | Intel NPU driver matching your OpenVINO | bundled with the platform driver |
-| Compiler | Visual Studio 2022 Build Tools, "Desktop development with C++" | MSVC 19.44.35220 (toolset 14.44.35207) |
+| CPU/NPU | Intel Core Ultra，带 `Intel(R) AI Boost` | Core Ultra 9 275HX，NPU 3720 |
+| NPU 驱动 | 与所用 OpenVINO 匹配的 Intel NPU 驱动 | 随平台驱动一同分发 |
+| 编译器 | Visual Studio 2022 Build Tools，"Desktop development with C++"（使用 C++ 的桌面开发） | MSVC 19.44.35220（toolset 14.44.35207） |
 | Windows SDK | 10.x | 10.0.26100 |
-| CMake + Ninja | any recent CMake ≥ 3.22 | 3.22.1 (the one shipped in the Android SDK `cmake/3.22.1/bin`) |
-| OpenVINO runtime + dev files | wheel or package, see below | 2026.4.1 |
+| CMake + Ninja | 任意较新的 CMake ≥ 3.22 | 3.22.1（Android SDK 内置的 `cmake/3.22.1/bin`） |
+| OpenVINO 运行时 + 开发文件 | wheel 或安装包，见下文 | 2026.4.1 |
 
-Check the NPU is enumerated before anything else:
+在做其他事情之前，先确认 NPU 已被枚举：
 
 ```powershell
 Get-PnpDevice -Class ComputeAccelerator | Format-Table FriendlyName, Status, InstanceId
 # expect: Intel(R) AI Boost ... PCI\VEN_8086&DEV_AD1D
 ```
 
-## Get OpenVINO development files
+## 获取 OpenVINO 开发文件
 
-The build needs `OpenVINOConfig.cmake`, `openvino.lib`, `openvino.dll` and the headers. The simplest
-reliable source is the PyPI wheel — it contains all of them and does not require Python at run time:
+构建过程需要 `OpenVINOConfig.cmake`、`openvino.lib`、`openvino.dll` 以及头文件。最简单可靠的来源是
+PyPI 上的 wheel——它包含上述全部内容，且运行时不依赖 Python：
 
 ```powershell
 cd D:\
@@ -34,10 +34,10 @@ Expand-Archive .\ovdl\openvino-2026.4.1-*.whl -DestinationPath .\ov
 # → D:\ov\openvino\libs\openvino.lib, openvino.dll   (511 headers)
 ```
 
-If your network blocks PyPI, use the official package or build OpenVINO from source; anything that
-provides a `cmake/` config package works. [docs/build.md](build.md) covers alternatives and pitfalls.
+如果你的网络访问不了 PyPI，可改用官方安装包，或从源码构建 OpenVINO；凡能提供 `cmake/` 配置包的都行。
+[docs/build.md](build.md) 介绍了替代方案与坑点。
 
-## Bootstrap the tree
+## 初始化代码树
 
 ```powershell
 git clone https://github.com/liangjianzeng/WangCai
@@ -47,31 +47,30 @@ tools\configure.ps1 -OpenVinoDir D:\ov\openvino\cmake
 tools\build.ps1
 ```
 
-`configure.ps1` wraps the CMake invocation (Release, Ninja, OpenVINO backend only, no ccache, no
-curl) and must run inside a Visual Studio developer environment — the script calls `vcvars64.bat`
-itself. See [docs/build.md](build.md) for the exact flag list and the reason it is wrapped in a
-batch file.
+`configure.ps1` 封装了 CMake 调用（Release、Ninja、仅启用 OpenVINO 后端、不用 ccache、不用 curl），
+并且必须在 Visual Studio 开发人员环境中运行——脚本自己会调用 `vcvars64.bat`。完整参数列表，以及为什么
+要用批处理文件来封装，见 [docs/build.md](build.md)。
 
-Expected artifacts in `src/llama/build/bin/`: `llama-cli.exe`, `llama-completion.exe`,
-`llama-bench.exe`, `llama-server.exe`, `llama-perplexity.exe`.
+`src/llama/build/bin/` 下应有的产物：`llama-cli.exe`、`llama-completion.exe`、`llama-bench.exe`、
+`llama-server.exe`、`llama-perplexity.exe`。
 
-## Get a model
+## 获取模型
 
-The current target is LFM3-1.7B:
+当前目标模型是 LFM3-1.7B：
 
-| File | Size | Notes |
+| 文件 | 大小 | 说明 |
 |---|---:|---|
-| `LFM3-1.7B-Q4_K_M.gguf` | 1049 MB | 24 layers = 13 gated short-conv + 5 sliding-window@256 + 6 global attention, hidden 2048, 16 Q heads / 4 KV heads, head_dim 128, vocab 128000 |
+| `LFM3-1.7B-Q4_K_M.gguf` | 1049 MB | 24 层 = 13 个门控短卷积 + 5 个滑动窗口注意力（SWA）@256 + 6 个全局注意力，hidden 2048，16 Q 头 / 4 KV 头，head_dim 128，词表 128000 |
 
-Put it under `models/`. **Verify the size after download.** A silently truncated GGUF does not fail
-cleanly until load time, and the error is easy to mistake for a backend bug:
+把它放到 `models/` 下。**下载完成后核对文件大小。** 被静默截断的 GGUF 要到加载时才失败，而且报错很容易
+被误判成后端缺陷：
 
 ```
 E llama_model_load: error loading model: tensor 'blk.32.ffn_down.weight' data is not within the
   file bounds, model is corrupted or incomplete
 ```
 
-## First run on the NPU
+## 首次在 NPU 上运行
 
 ```powershell
 $env:PATH = "$PWD\src\llama\build\bin;D:\ov\openvino\libs;$env:PATH"
@@ -84,7 +83,7 @@ $env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'
     -dev OPENVINO3 -st -p '用一句话介绍长城。'
 ```
 
-Landmarks in the output:
+输出中可作标记的内容：
 
 ```
 Available devices:
@@ -99,38 +98,37 @@ common_perf_print:        eval time = ... tokens per second
 common_perf_print:        load time = 36374 ms        ← cold NPU graph compilation, one-off
 ```
 
-The two `ov-mask:` lines are the quickest proof that the hybrid KV-ring logic is active and that the
-sliding-window layers got their ring width (768) rather than the context width (1024).
+这两行 `ov-mask:` 是最快的证据：它说明混合 KV 环形缓冲逻辑已经生效，并且滑动窗口层拿到的是环宽（768）
+而不是上下文宽度（1024）。
 
-The second run with the same `GGML_OPENVINO_CACHE_DIR` skips most of the 36 s compile.
+使用同一个 `GGML_OPENVINO_CACHE_DIR` 的第二次运行，会跳过 36 s 编译中的大部分工作。
 
-## Three things that will bite you
+## 三个容易踩的坑
 
-**1. Use chat mode, not raw completion.** LFM3 is instruction-tuned. Asking `llama-completion` to
-continue a bare prompt makes it repeat tokens forever (`中国的首都是都是都是…`) even on the reference
-CPU backend — that is the model behaving badly on an out-of-distribution prompt, not a backend bug.
-Use `llama-cli -st` (Jinja chat template) and the output is coherent on CPU. Diagnosing accuracy with
-a raw-completion prompt will send you chasing a nonexistent bug.
+**1. 用对话模式，不要用裸续写。** LFM3 经过指令微调。让 `llama-completion` 对一段裸提示词做续写，会让它
+无限重复 token（`中国的首都是都是都是…`），即便在作为参照的 CPU 后端上也是如此——这是模型在分布外提示词下
+的糟糕表现，不是后端缺陷。改用 `llama-cli -st`（Jinja 对话模板），在 CPU 上的输出是连贯的。拿裸续写提示词
+去诊断精度，只会让你去追一个并不存在的 bug。
 
-**2. `-fa 1` is mandatory on the NPU.** With `-fa 0` llama.cpp deliberately flattens V to one element
-per row for the non-SDPA write-back path, and the OpenVINO `SET_ROWS` lowering then dies in the
-scatter. This is upstream intent, not a defect to fix in the scatter.
+**2. 在 NPU 上 `-fa 1` 是必须的。** 用 `-fa 0` 时，llama.cpp 会为走非 SDPA 写回路径而刻意把 V 压平成每行
+一个元素，OpenVINO 的 `SET_ROWS` 降级（lowering）随后在 scatter 中崩溃。这是上游的设计意图，不是需要在
+scatter 里修掉的缺陷。
 
-**3. One cache dir per configuration.** `GGML_OPENVINO_CACHE_DIR` keys the compiled-graph cache.
-Reuse it across experiments with different env overrides and you will watch a flag "do nothing".
+**3. 每种配置一个缓存目录。** `GGML_OPENVINO_CACHE_DIR` 是编译缓存（compile cache）的键。把它复用到 env
+覆盖各不相同的多次实验上，你只会看到一个开关“什么都不做”。
 
-## Confirming it is really on the NPU
+## 确认确实跑在 NPU 上
 
-Three independent checks:
+三项相互独立的检查：
 
-1. `--list-devices` shows the device you think you selected, and the run log names the backend.
-2. `tools/top-token.ps1` on a `GGML_OPENVINO_DUMP_BIN` capture: identical tensors between two devices
-   would mean one of them is lying. They are never identical, and the NPU capture differs.
-3. NPU throughput is *distinctively slower* than OpenVINO-CPU for this model today
-   (≈8 t/s decode vs ≈22–29 t/s). If your "NPU" run reports CPU-like numbers, it ran on the CPU.
+1. `--list-devices` 显示出你以为选中的那个设备，并且运行日志里点明了后端。
+2. 对 `GGML_OPENVINO_DUMP_BIN` 转储（dump）出来的结果跑 `tools/top-token.ps1`：如果两个设备的张量完全
+   一致，说明其中一方在说谎。它们从来不会一致，NPU 的转储结果也确实不同。
+3. 就当前情况，这个模型在 NPU 上的吞吐*明显更慢*，慢于 OpenVINO-CPU（解码（decode）≈8 t/s，对比
+   ≈22–29 t/s）。如果你的“NPU”运行报出的是 CPU 量级的数字，那它其实跑在 CPU 上。
 
-## Next
+## 后续
 
-- Numbers are what they are: [docs/benchmarks.md](benchmarks.md).
-- The accuracy gap and how to investigate it: [docs/npu-internals.md](npu-internals.md).
-- Everything you can turn with an env var: [docs/env-vars.md](env-vars.md).
+- 实测数字就是这些：[docs/benchmarks.md](benchmarks.md)。
+- 精度差距（accuracy gap）以及如何排查：[docs/npu-internals.md](npu-internals.md)。
+- 所有能用环境变量拨动的开关：[docs/env-vars.md](env-vars.md)。
