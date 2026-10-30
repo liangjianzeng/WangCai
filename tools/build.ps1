@@ -24,8 +24,11 @@ if (-not (Test-Path (Join-Path $build 'build.ninja'))) {
 }
 
 $targets = ($Target -join ' ')
-$parallel = if ($Parallel -gt 0) { "--parallel $Parallel" } else { '--parallel' }
-$clean = if ($Clean) { '--clean-first' } else { '' }
+# Not $parallel / $clean: PowerShell variable names are case-insensitive, so those collide with the
+# [int]$Parallel and [switch]$Clean parameters and assigning a string to them fails with
+# "Cannot convert value '--parallel' to type System.Int32" before a single compile line runs.
+$parallelArg = if ($Parallel -gt 0) { "--parallel $Parallel" } else { '--parallel' }
+$cleanArg = if ($Clean) { '--clean-first' } else { '' }
 
 $tmp = Join-Path $repo 'tmp'
 New-Item -ItemType Directory -Force -Path $tmp | Out-Null
@@ -41,7 +44,7 @@ if ($onWindows) {
     @"
 @echo off
 call "$vcvars" >nul || exit /b 1
-cmake --build "$build" --target $targets $parallel $clean || exit /b 1
+cmake --build "$build" --target $targets $parallelArg $cleanArg || exit /b 1
 echo EXITCODE=0
 "@ | Set-Content -Path $bat -Encoding ASCII
     # Redirect inside cmd rather than piping in PowerShell: PowerShell stream redirection truncates
@@ -53,7 +56,7 @@ else {
     @(
         '#!/usr/bin/env bash'
         'set -e'
-        "cmake --build `"$build`" --target $targets $parallel $clean"
+        "cmake --build `"$build`" --target $targets $parallelArg $cleanArg"
         'echo EXITCODE=0'
     ) | Set-Content -Path $sh
     bash $sh *> $log

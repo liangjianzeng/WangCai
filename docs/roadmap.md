@@ -21,24 +21,33 @@ engineering, not silicon.
 The one thing that matters right now. NPU logits track the CPU reference through prefill
 (cosine `0.969`) and flatten during decode (`0.73–0.87`); greedy generation drifts after 2–3 tokens.
 
-- [ ] **Per-layer divergence map.** Dump every graph output on CPU-static and NPU, compare *row
-      slices* of the valid region, find the first layer that diverges materially. Deliverable: a table
-      of per-layer cosine, and a verdict — early layers (→ embedding/conv path) or late
-      (→ output projection / requant).
+- [x] **Per-layer divergence map.** Done — and it needed redoing. The first version was computed on
+      llama.cpp **warmup** passes (`prefill_0/1`, `decode_2` are byte-identical across prompts); the real
+      numbers, in [npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap): conv-state cosine
+      `l0 0.9956 → l9 0.873 → l13 0.534 → l17 0.163` on the first real chunk. Verdict: **early and
+      throughout**, not the output projection — and the attention side is nearly clean (V exact, K clean
+      except row 0), which localizes the work to the short-conv path.
 - [ ] **Isolate the output projection.** `output.weight` is Q8_0_C and the projection is
       128000×2048. Compare `result_norm` vs `result_output` across devices; if the hidden state matches
-      and only the logits differ, the defect is one `MatMul`.
+      and only the logits differ, the defect is one `MatMul`. (Blocked: appending a `Result` node aborts
+      the NPU plugin, so this needs a hook other than `GGML_OPENVINO_DUMP_BIN`.)
 - [ ] **Single-op precision bisection.** Promote one op class at a time to f32 (RMS-norm chain,
       `MatMul`, SDPA) and watch the cosine move.
-- [ ] **A control model.** A small upstream-validated model that works on NPU, to separate "NPU plugin
-      behaviour" from "LFM3-specific behaviour". (The local candidate was a truncated download.)
-- [ ] **Re-quantization parity.** NPU forces `Q4_0_128` for all non-embedding weights. Not sufficient on
-      its own to explain the defect, but the `GGML_OPENVINO_REQUANT_KQUANT` parser sits behind an
-      `is_npu()` early return, so it needs a real CPU-side counter-test to be exonerated properly.
+- [x] **A control model.** Half done: `LFM3-1.7B-QAD-Q4_0.gguf` (native Q4_0, ModelScope) removes the
+      requant asymmetry and behaves differently per task — byte-identical to the CPU on a continuation,
+      degenerate on an instruction run. A *different architecture* is still missing and would still be the
+      cleanest split between "NPU plugin" and "LFM3-specific".
+- [x] **Re-quantization parity.** Done, and it exposed a bug: the `GGML_OPENVINO_REQUANT_KQUANT` parser
+      sat behind an `is_npu()` early return that swallowed *every* value, so three configurations produced
+      identical dumps. Fixed by gating on "no explicit choice" (`!rq`). With the policy equalized on both
+      devices the worst conv state goes `0.215 → 0.9589` — two thirds of the gap was two devices loading
+      two different models.
 - [ ] **Un-examined NPU-only branches.** Audit every `ggml_openvino_is_npu()` divergence in the lowering
       code for precision implications (some unary lowerings deliberately skip f32 promotion on NPU).
 - [ ] **Acceptance harness.** A fixed prompt set + reference logits per device, so "correct" is a
-      number and not a vibe. Regression-gate it in CI.
+      number and not a vibe. Regression-gate it in CI. The prompt set must include an
+      **instruction-following** case: a continuation task matches byte-for-byte even when the device is
+      wrong, so it cannot be the acceptance test.
 
 *Exit criteria:* greedy generation matches the CPU reference token-for-token for ≥ 64 tokens on the
 fixed prompt set, and per-layer cosine ≥ 0.99.

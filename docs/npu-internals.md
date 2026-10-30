@@ -125,52 +125,73 @@ A flattened-but-norm-preserving logit distribution is a precision signature, not
 signature: an off-by-one row or a mis-sliced window produces a *different* distribution, not a scaled
 one.
 
-### Per-layer divergence (first measurement)
+### The warmup trap — read this before trusting any dump comparison
 
-Every graph output of the **first prefill chunk** dumped on both devices
-(`GGML_OPENVINO_DUMP_BIN`, `tools/compare-tensors.ps1 -MaxElements 120000`) — the recurrent state
-outputs `cache_r_l*` are the informative ones, because each is a function of everything below it:
+`GGML_OPENVINO_DUMP_BIN` numbers passes in execution order, and **the first passes are not the prompt**.
+llama.cpp warms the backend up before the first real token, so `prefill_0`, `prefill_1` and `decode_2`
+came out **byte-identical between two runs of the same model with two different prompts**, while
+`prefill_3..6` and `decode_7..11` did not. Statistics over warmup passes look clean and mean nothing.
 
-| Layer | cosine | | Layer | cosine |
-|---|---:|---|---|---:|
-| `l0` | 0.9987 | | `l11` | 0.635 |
-| `l1` | 0.989 | | `l13` | 0.419 |
-| `l3` | 0.976 | | `l15` | 0.295 |
-| `l5` | 0.944 | | `l17` | **0.215** |
-| `l7` | 0.850 | | `l19` | 0.360 |
-| `l9` | 0.720 | | `l21` / `l23` | 0.256 / 0.662 |
+The first version of the section below did exactly this and reported a per-layer curve computed on
+synthetic warmup input. It was removed and re-measured. Identify the passes mechanically rather than by
+index — run the same model twice with different prompts and compare hashes; every name whose hash
+matches is a warmup pass:
 
-Two conclusions:
+```powershell
+foreach ($f in Get-ChildItem dbg\runA -Filter *.bin) {
+    $b = Join-Path dbg\runB $f.Name
+    if (Test-Path $b) {
+        $same = (Get-FileHash $f.FullName).Hash -eq (Get-FileHash $b).Hash
+        '{0}  {1}' -f $(if ($same) { 'WARMUP' } else { 'REAL  ' }), $f.Name
+    }
+}
+```
 
-1. **Layer 0 is already different** (`0.9987`, max abs error 0.083 on order-1 values). Nothing deep in
-   the stack is broken; every layer contributes a small error and the residual stream compounds it —
-   which is exactly the signature of the flattened logits observed above, and of precision rather than
-   indexing.
-2. **The divergence is present before any decode step and before any state is reused**, so the whole
-   cross-step state-chaining area (conv-state gather, `chunk_valid_len`, decode slicing) is exonerated
-   for this defect. It still needs to be right, but it is not what makes the output wrong.
+### Per-layer divergence (real passes)
 
-*Caveat, and what slicing showed.* The K/V numbers above were **not** usable as printed. Running the
-comparison in row mode (`-RowSize 512`, one row = one position = 4 KV heads × 128) revealed that this
-prompt wrote only **two rows**; every other row is zero on both sides, which is what produced
-`cache_v_l20 cosine=0.135, maxDiff=0.0000` and the `maxDiff` in the millions. On the rows that were
-actually written:
+`LFM3-1.7B-Q4_K_M`, ~220-token prompt (one full 256-column chunk), NPU against the CPU-static reference
+under each side's default quantization — i.e. the configuration that outputs the wrong thing. The
+recurrent conv state (`cache_r_l*`, 6 × 2048 per layer) is the informative output because each layer's
+state is a function of everything below it:
 
-| Tensor | rows 0–1 | reading |
-|---|---|---|
-| `cache_v_l16`, `cache_v_l20` | max abs diff `8.6e-8`, `1.8e-7` | V writes are essentially exact |
-| `cache_k_l2`, `cache_k_l8` | cosine `0.998` / `0.994` (row 0) | small relative error |
-| `cache_k_l12` | cosine `0.974` (row 0) → `0.308` (row 1) | row 1 materially worse |
+| Layer | `prefill_3` | `prefill_4` | `decode_7` | | Layer | `prefill_3` | `prefill_4` | `decode_7` |
+|---|---:|---:|---:|---|---|---:|---:|---:|
+| `l0` | 0.9956 | 0.9939 | 0.9985 | | `l13` | 0.5343 | 0.9068 | 0.8275 |
+| `l1` | 0.9856 | 0.9832 | 0.9930 | | `l15` | 0.3684 | 0.8903 | 0.7809 |
+| `l3` | 0.9711 | 0.9185 | 0.9490 | | `l17` | **0.1627** | 0.8315 | 0.7243 |
+| `l5` | 0.9562 | 0.9107 | 0.9434 | | `l19` | 0.2849 | 0.8967 | 0.7705 |
+| `l7` | 0.9296 | 0.8376 | 0.8353 | | `l21` | 0.2420 | 0.9136 | 0.6947 |
+| `l9` | 0.8728 | 0.8390 | 0.7865 | | `l23` | 0.6455 | 0.9450 | 0.8721 |
+| `l11` | 0.8290 | 0.8691 | 0.7800 | | | | | |
 
-So the attention state writes are close, and the large divergences live in the **short-conv path**
-(`cache_r_l*`), which is the same path that degrades monotonically with depth. Two caveats remain
-honest about: the prompt was two tokens, so a `d_conv=7` causal conv state is dominated by the
-zero-padded region and its relative error is amplified by small magnitudes; and K magnitudes of order
-`1e4` were seen on *both* devices, so they are a model property, not an NPU artifact.
+Four things follow:
 
-**Next measurement:** re-dump with a ~240-token prompt (one full 256-column chunk) so the conv state is
-filled with real data and K/V have hundreds of written rows, then repeat the row profile. Until that
-exists, the depth curve is directional evidence, not a localization.
+1. **Layer 0 already differs** (`0.9956`, max abs `0.064` on order-1 values). No single layer is broken;
+   each contributes a small error and the residual stream compounds it. That is the signature of
+   arithmetic rather than indexing, and it matches the flattened logits measured above.
+2. **It is present in the first real prefill chunk** — before any decode step and before any state is
+   reused — so the cross-step state-chaining area (conv-state gather, `chunk_valid_len`, decode slicing)
+   is exonerated for this defect. It still has to be right; it is not what makes the output wrong.
+3. The collapse is **data-dependent, not step-count-dependent**: the worst case is deep layers of the
+   *first* chunk (`0.16` at l17) while the second chunk of the same prompt stays ≥ 0.83 and decode sits
+   around 0.7–0.9.
+4. It is concentrated in the **short-conv path**. The attention writes tell the opposite story:
+
+| KV tensor (row mode, `-RowSize 512` = one position = 4 KV heads × 128) | reading |
+|---|---|
+| `cache_v_*`, all 200 written rows | max abs diff `1.5e-9`–`2.7e-6`, `leading-clean=200` → **V is written exactly** |
+| `cache_k_l2` rows 1–7 | cosine 0.95–0.9998 → small relative error |
+| `cache_k_l12` rows 1–7 | cosine 0.90–0.99 → same order |
+| **row 0 of every K layer** | cosine **0.2876**, max abs **1.06e10** → position 0 is grossly wrong on one side |
+
+V exact means the dequant → norm → projection chain is broadly right, which is also what the requant
+control below shows. **K row 0 is the one structural anomaly in the whole comparison** and the sharpest
+lead available: whatever writes the first position (the prefill write index for row 0, or the value
+written there) does not behave like rows 1..n.
+
+Whole-buffer statistics over the rows a chunk never wrote are not measurements: both sides hold zeros
+there, which reads as `cosine 0.135, maxDiff 0.0000`. Use row mode — see
+[`tools/README.md`](../tools/README.md).
 
 ### What has been ruled out
 
@@ -207,21 +228,45 @@ it off makes things strictly worse (a collapsed single-token output is a *broken
 And the accuracy defect survives every documented lever. That combination points away from "pick a
 better flag" and towards something structural in how this model's graph is executed on-device.
 
+### The requant control, and what it settled
+
+Comparing the NPU against the CPU is only meaningful if both sides load the same weights, and by default
+they do not: the NPU forces grouped 4 bit on every weight (`docs/env-vars.md`). Measured with the policy
+made identical on both sides (`GGML_OPENVINO_REQUANT_KQUANT=q4_sym128_all` on the CPU, `GGML_OPENVINO_FORCE_STATIC=1`
+so the CPU runs the NPU's static code path):
+
+| Comparison | worst conv state | worst K row | logits |
+|---|---:|---:|---|
+| NPU (forced requant) vs CPU (native Q4_K) | `0.215` | `0.31` | flattened, garbage past ~3 tokens |
+| NPU vs CPU, **both** requantized to `Q4_0_128` | `0.9589` | `0.9994`–`1.0000` | top-1 agrees on 4 of 6 passes |
+
+Two thirds of the gap was the two devices running *different quantizations*, not the NPU computing badly.
+What survives is real but far smaller, and it is consistent with the earlier conclusion: a per-layer
+rounding error in the conv path, compounding.
+
+A native-Q4_0 checkpoint (`LFM3-1.7B-QAD-Q4_0.gguf`) pushes this further and separates the last conflated
+pair of behaviours: on a 220-token **continuation** it is byte-identical on native CPU, OpenVINO-CPU static
+and the NPU, while on a 64-token Chinese **instruction** run the NPU alone degenerates, with the conv state
+diverging per step as `decode_2 0.989 → decode_9 0.51 → plateau ≈0.25`. Low-entropy tasks hide the defect
+completely; they are useful as plumbing checks and as nothing else.
+
 ### Where to take it next
 
-1. **Row-sliced per-layer comparison.** The conv-state comparison above is the first cut and it already
-   says where the error lives (every layer, compounding). What is missing is a trustworthy K/V
-   comparison: `compare-tensors.ps1` must slice to the rows a chunk actually wrote, following the
-   `cache_idx` write positions, instead of comparing whole buffers whose unwritten regions are zeros or
-   uninitialized garbage.
-2. **Isolate the output projection.** `output.weight` is requantized to Q8_0_C and the projection is
-   128000×2048. Compare `result_norm` against `result_output` between devices: if the hidden state
-   matches and only the logits differ, the defect is localized to the final `MatMul` + requant.
-3. **F32 for a single op.** Force one op at a time into f32 (the RMS-norm chain, the final `MatMul`,
-   the SDPA) and watch the cosine.
-4. **A second model.** Any pure-transformer model that is validated upstream on NPU (small, ≤2 B) as a
-   control would immediately separate "NPU plugin numeric issue" from "LFM3-specific issue". The local
-   control model was a truncated download, so this is still missing.
+1. **K row 0.** Every K layer's row 0 is wrong by eight orders of magnitude (`cosine 0.288`, max abs
+   `1.06e10`) while rows 1..n sit at `0.90–0.9998`, and V is exact everywhere. That asymmetry — one row of
+   one tensor family — is the most specific thing the dumps have produced. Look at the prefill write index
+   for the first position and at what value lands there.
+2. **Why the conv path degrades while V does not.** Both consume the same requantized weights and the same
+   hidden states; one compounds, one is exact to `1e-8`. The difference is the op (`d_conv=7` gated causal
+   conv + its state slicing) and the state layout — that is where the f32 bisection should start.
+3. **Isolate the output projection.** `output.weight` is requantized to Q8_0_C and the projection is
+   128000×2048. `result_norm` is not dumpable (appending a `Result` node aborts the NPU plugin), so this
+   needs a different hook than `GGML_OPENVINO_DUMP_BIN`.
+4. **F32 for a single op.** Force one op at a time into f32 (the RMS-norm chain, the short conv, the final
+   `MatMul`, the SDPA) and watch the cosine.
+5. **A different architecture as control.** A small pure-transformer model validated upstream on NPU would
+   still separate "NPU plugin numeric issue" from "LFM3-specific issue"; a second quantization of the same
+   model (item above) narrowed but did not close it.
 
 ---
 

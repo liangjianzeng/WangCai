@@ -30,7 +30,7 @@ working flag look broken.
 | `GGML_OPENVINO_NATIVE_SOFTPLUS` | `0`/`1` | native `SoftPlus` vs the composed form. |
 | `GGML_OPENVINO_DISABLE_REMOTE_OUTPUTS` | `0`/`1` | stop aliasing outputs to ggml buffers via remote tensors. |
 | `GGML_OPENVINO_LOG_UNSUPPORTED_OPS` | `0`/`1` | log ops that cannot be lowered, instead of failing obscurely. |
-| `GGML_OPENVINO_REQUANT_KQUANT` | `native`, `q4_sym128[_all]`, `q4_asym64[_all]` | requantization target for K-quant weights. **Caveat:** on NPU the code returns `Q4_0_128` before consulting this variable, so it has no effect there; the CPU is the place to use it (e.g. to reproduce the NPU's requant on a device that gives a coherent reference). |
+| `GGML_OPENVINO_REQUANT_KQUANT` | `native`, `q4_sym128[_all]`, `q4_asym64[_all]` | requantization target for K-quant weights. **Unset, the NPU forces grouped 4 bit on every weight while the CPU keeps the native layout** — so an NPU run and a CPU run of the "same" GGUF are not the same model. Setting any value here disables that override on the NPU as well, which is what makes a like-for-like CPU/NPU comparison possible (`q4_sym128_all` reproduces the NPU's policy on the CPU). `native` is not a way to dodge the problem on NPU: native Q4_K fails to compile there (`vpux-compiler: Channels count of input tensor shape and filter shape must be the same: 0 != 64`). |
 
 ## NPU plugin configuration
 

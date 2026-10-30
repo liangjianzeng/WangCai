@@ -8,6 +8,45 @@ Unreleased dates are the dates the change was verified on hardware, not the date
 
 ## [Unreleased] — baseline `abb76ab` (llama.cpp), OpenVINO 2026.4.1
 
+### Fixed — engine
+
+- The NPU requant override gated on `!is_opt("native")`, which swallowed **every**
+  `GGML_OPENVINO_REQUANT_KQUANT` value: default, `q4_sym128_all` and `q4_asym64_all` all returned
+  `Q4_0_128`. Three supposedly different NPU configurations produced byte-identical tensor dumps, so the
+  experiment meant to separate "requant policy" from "NPU arithmetic" was measuring one thing three times.
+  Now gated on `!rq`: no explicit choice keeps upstream's forced grouped 4 bit (native Q4_K does not
+  compile on NPU — `vpux-compiler: Channels count of input tensor shape and filter shape must be the same:
+  0 != 64`), and any explicit choice reaches the normal branches, making a like-for-like CPU/NPU
+  comparison possible.
+
+### Fixed — tooling
+
+- `tools/build.ps1` assigned to `$parallel` and `$clean`, which in PowerShell **are** the `[int]$Parallel`
+  and `[switch]$Clean` parameters (names are case-insensitive), so CI died before compiling anything with
+  `Cannot convert value "--parallel" to type "System.Int32"`. Renamed to `$parallelArg` / `$cleanArg`.
+
+### Corrected — documentation
+
+- The per-layer divergence table in [`docs/npu-internals.md`](docs/npu-internals.md) had been computed on
+  llama.cpp **warmup** passes. `prefill_0`, `prefill_1` and `decode_2` are byte-identical between runs of
+  the same model with different prompts, so the curve described synthetic input, not the prompt. Re-measured
+  on real chunks (`l0 0.9956 · l9 0.873 · l13 0.534 · l17 0.163`) and replaced; the section now opens with
+  the hash-compare recipe that classifies passes, and reports the new lead: **V is written exactly, K is
+  wrong only at row 0** (`cosine 0.288`, max abs `1.06e10`).
+- `docs/env-vars.md` stated that `GGML_OPENVINO_REQUANT_KQUANT` has no effect on NPU. True until the engine
+  fix above; the row now describes the override and how to decline it.
+
+### Added — measurements
+
+- Native-Q4_0 control, `LFM3-1.7B-QAD-Q4_0.gguf` (ModelScope `LiquidAI/LFM3-1.7B-GGUF`, verified at
+  1 049 615 680 bytes): a 220-token continuation is **byte-identical across native ggml CPU, OpenVINO-CPU
+  static and the NPU**, while a 64-token Chinese instruction run still degenerates on the NPU alone
+  (conv-state cosine `decode_2 0.989 → decode_9 0.51 → plateau ≈0.25`, top-1 diverging from step 10).
+  Recorded as a methodology rule: **a continuation task is a plumbing test, not a coherence test** — it
+  matches even when the device is wrong.
+- `LFM3-Omni-2B-GGUF` catalogued for the multimodal phase: `Q4_0` / `Q4_K_M` / `Q8_0` / `F16` checkpoints
+  plus `mmproj-LFM3-Omni-2B-{Q8_0,F16,BF16}.gguf` projectors (540 MB / 950 MB).
+
 ### Fixed — build
 
 - `find_package(OpenCL REQUIRED)` in the backend's `CMakeLists.txt` made the backend impossible to

@@ -54,13 +54,29 @@ word salad.
 | decode 3 | id5141 · 22.29 | **id342** · 14.91 (cosine `0.870`) |
 | decode 4 | id278 · 26.06 | **id711** · 11.32 (cosine `0.726`) |
 
-Same norm, lower peak → precision signature, not an indexing one. The first per-layer measurement
-(conv-state outputs of the **first prefill chunk**) shows cosine falling monotonically with depth —
-`0.9987` at layer 0, `0.72` at layer 9, `0.215` at layer 17 — i.e. a small per-layer error compounding
-through the residual stream, present before any decode step or state reuse. Ruled out and still-standing
+Same norm, lower peak → precision signature, not an indexing one. The per-layer measurement over the
+**real** prefill chunks of a ~220-token prompt (conv-state outputs) shows a small error at the bottom of
+the stack compounding upward — `l0 0.9956`, `l9 0.873`, `l13 0.534`, **`l17 0.163`** — and it is already
+there in the first chunk, before any decode step or state reuse. The conv path degrades; the attention
+writes largely do not: V is written exactly (max abs `2.7e-6` across all 200 rows), K sits at
+`0.90–0.9998` **except row 0**, which misses by eight orders of magnitude (`cosine 0.288`, max abs
+`1.06e10`). That single row is the most concrete lead in the investigation. Ruled out and still-standing
 conclusions are tabulated in
 [npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap), including the full NPUW/dynamic-quantization
 lever sweep (nothing fixes it; disabling those paths makes it strictly worse).
+
+**Classify the dump passes before reading any comparison.** `prefill_0`, `prefill_1` and `decode_2` are
+llama.cpp warmup: byte-identical between runs of the same model with different prompts. An earlier version
+of the table above was measured on warmup and had to be redone; the hash-compare recipe that separates the
+two is in [npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap).
+
+**A native-Q4_0 checkpoint separates two errors that were being conflated.** With
+`LFM3-1.7B-QAD-Q4_0.gguf` (ModelScope, QAD = quantization-aware distillation) the requant asymmetry mostly
+disappears, and the two remaining behaviours split cleanly by task: a 220-token continuation comes out
+**byte-identical on native CPU, OV-CPU static and the NPU**, while a 64-token Chinese instruction run still
+degenerates on the NPU alone (conv-state cosine `decode_2 0.989` → `decode_9 0.51` → plateau `≈0.25`,
+top-1 diverging from step 10 onward). A continuation is a plumbing test, not a coherence test — it matches
+even when the device is wrong.
 
 Reproduce:
 

@@ -59,18 +59,26 @@ Honest, measured, tracked in [docs/status.md](docs/status.md).
 | Build the OpenVINO backend without the GPU/OpenCL SDK | ✅ done |
 | LFM3-1.7B compiles and runs **end-to-end on the NPU** | ✅ done |
 | Hybrid (short-conv + SWA + full) attention addressing its KV rings correctly | ✅ done |
-| Numerical parity with the CPU reference on the NPU | 🟡 in progress |
+| Continuation task byte-identical to the CPU reference | ✅ done (Q4_0 weights) |
+| Numerical parity on an **instruction-following** task | 🟡 in progress — the one open item |
 | Prefill competitive with CPU | 🟡 73% of the reference; headroom still unexplained |
 | Decode competitive with CPU | 🟡 6× behind; the current performance target |
-| LFM3 omni modalities (audio in / vision in) | ⬜ planned |
+| LFM3 omni modalities (audio in / vision in) | ⬜ planned (official GGUF + `mmproj` on ModelScope) |
 
 What "in progress" means concretely: greedy generation on the NPU tracks the CPU reference for the
 first few tokens and then wanders. Cosine similarity against reference logits is `0.969` at the end of
-prefill and `0.73–0.87` during decode, with the logit distribution measurably flattened. Per-layer
-comparison now shows the divergence is **present in the first prefill chunk** and grows monotonically
-with depth (conv state: `0.999` at layer 0 → `0.72` at layer 9 → `0.22` at layer 17), which points at
-per-op arithmetic compounding through the residual stream rather than at state bookkeeping. See
-[docs/npu-internals.md](docs/npu-internals.md).
+prefill and `0.73–0.87` during decode, with the logit distribution measurably flattened. On **real**
+prefill chunks the divergence is present from the first one and grows with depth (conv state: `0.9956`
+at layer 0 → `0.873` at layer 9 → `0.163` at layer 17), which points at per-op arithmetic compounding
+through the residual stream rather than at state bookkeeping. The attention side is nearly innocent: V is
+written exactly (max abs `2.7e-6` over all 200 rows) and K holds at `0.90–0.9998` **except row 0**, which
+misses by eight orders of magnitude (`cosine 0.288`, max abs `1.06e10`) — the sharpest lead available.
+
+Two measurement rules earned the hard way, both in
+[docs/npu-internals.md](docs/npu-internals.md): `prefill_0/1` and `decode_2` are llama.cpp **warmup**
+passes (byte-identical across different prompts), so statistics over them measure nothing; and **a
+continuation task is not a coherence test** — it agrees byte-for-byte even when the device is wrong,
+which only an instruction-following prompt reveals.
 
 ## Measured numbers
 
