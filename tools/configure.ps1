@@ -89,7 +89,11 @@ if ($onWindows) {
 }
 else {
     $sh = Join-Path $tmp 'configure.sh'
-    $exports = if ($ninjaDir) { "export PATH=`"$ninjaDir`:$PATH`"" } else { '' }
+    # Single-quoted on purpose. In a double-quoted PowerShell string, $PATH is expanded by PowerShell -
+    # which has no such variable - so the generated script would read: export PATH="/path/to/ninja:"
+    # That erases PATH, and cmake then reports "No CMAKE_C_COMPILER could be found" on a runner that
+    # obviously has gcc. The Windows branch above gets away with %PATH% because that is not PS syntax.
+    $exports = if ($ninjaDir) { 'export PATH="' + $ninjaDir + ':$PATH"' } else { '' }
     @(
         '#!/usr/bin/env bash'
         'set -e'

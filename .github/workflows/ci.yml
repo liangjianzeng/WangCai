@@ -131,7 +131,9 @@ jobs:
         shell: pwsh
         run: |
           $log = Join-Path $env:RUNNER_TEMP 'build.log'
-          & pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target llama-cli -Target llama-bench *>&1 |
+          # Comma list, not repeated -Target flags: `pwsh -File script.ps1 -Target a -Target b` is a
+          # binding error ("specified more than once"). Array append only happens on a direct call.
+          & pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target llama-cli,llama-bench *>&1 |
               Tee-Object -FilePath $log | Out-Host
           $code = $LASTEXITCODE
           if ($code -ne 0) {
