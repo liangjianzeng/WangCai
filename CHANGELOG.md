@@ -69,7 +69,7 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 ### 新增 —— 仓库
 
-- `src/ggml-openvino/` 现在**纳入版本管理**：完整的后端目录（95 个文件）带着旺财的改动，于是引擎可以在
+- `src/ggml-openvino/` 现在**纳入版本管理**：完整的后端目录（95 个文件）带着汪柴的改动，于是引擎可以在
   "什么都不用应用"的前提下被直接阅读。`tools/bootstrap.ps1` 把钉住版本的 llama.cpp 克隆进 `src/llama/`
   （仍被 git 忽略）并用这个目录覆盖之，随后打印 `git diff --stat` 作为"代码确实落地了"的证据。`patches/`
   保留下来作为可评审的 diff 与上游化产物；`bootstrap.ps1 -UsePatch` 切回打补丁路径。来源与改动规矩见

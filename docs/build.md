@@ -82,7 +82,7 @@ fatal error C1083: cannot open include file "CL/cl2.hpp"
 可能根本做不到的修法（这里连那个头文件仓库的 git clone 都不可达）。而且它还是个错的修法：那些头文件所
 服务的 GPU 远程上下文代码，在 NPU 构建里永远不会被执行。
 
-旺财的修法是 `patches/ov_opencl_shim.hpp`，放在那四个文件旁边、取代 GPU 头文件被 include。它声明了用到的
+汪柴的修法是 `patches/ov_opencl_shim.hpp`，放在那四个文件旁边、取代 GPU 头文件被 include。它声明了用到的
 标量 typedef、**互不相同**的不透明句柄类型、被引用的枚举、所用到 OpenCL 入口点的内联桩，以及
 `ov::intel_gpu::ocl::ClContext` / `USMTensor`。细节与两个坑：
 

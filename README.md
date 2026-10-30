@@ -1,4 +1,4 @@
-# WangCai 旺财
+# WangCai 汪柴
 
 > **面向 Intel® Core™ Ultra 的纯 NPU 端侧推理引擎。**
 > 让被业界晾了多年的 *Intel® AI Boost* 重新产生价值。
@@ -58,7 +58,7 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | Prefill 追平 CPU | 🟡 已达参照的 73%，仍在找余量 |
 | Decode 追平 CPU | 🟡 落后 6 倍，当前主攻方向 |
 | LFM3 全模态（音频 / 视觉输入） | ⬜ 规划中（官方 GGUF 与 `mmproj` 已在 ModelScope） |
-| **端侧多模态助手「旺财」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
+| **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
 
 "进行中"的具体含义：NPU 上的贪心解码在最初几个 token 与 CPU 参照一致，随后漂移。与参照 logits 的
 余弦相似度为 `0.969`（prefill 结束）与 `0.73–0.87`（decode），且 logit 分布被明显"压平"。真实 chunk
@@ -118,14 +118,14 @@ src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 
 
 细节见 [docs/getting-started.md](docs/getting-started.md) 与 [docs/build.md](docs/build.md)。
 
-## 路线图：端侧多模态助手「旺财」
+## 路线图：端侧多模态助手「汪柴」
 
 <a id="wangcai-assistant"></a>
 
-一句话：**旺财 = 端侧多模态 AI 助手，NPU 引擎是它的低功耗心脏。**
+一句话：**汪柴 = 端侧多模态 AI 助手，NPU 引擎是它的低功耗心脏。**
 
 本仓库（WangCai）现在只做一件事：让大模型**完整跑在 Intel NPU 上**。这是"引擎"。但引擎不是终点——
-把它装进一个会说话、会看、会听、会推理的助手里，才是"旺财"。
+把它装进一个会说话、会看、会听、会推理的助手里，才是"汪柴"。
 
 ### 三层结构
 

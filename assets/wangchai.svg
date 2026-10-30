@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#6FE3C4" stop-opacity="0.75"/>
+      <stop offset="60%" stop-color="#6FE3C4" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#6FE3C4" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="coat" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FBD977"/>
+      <stop offset="100%" stop-color="#F2BC33"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" fill="#FFFFFF"/>
+  <circle cx="256" cy="252" r="226" fill="#FFF6DF"/>
+
+  <g stroke="#2A1712" stroke-width="10" stroke-linejoin="round" stroke-linecap="round">
+
+    <!-- tail: curled over the back -->
+    <path d="M318 428 C 384 442 408 396 388 366 C 374 346 344 352 342 376" fill="none" stroke="#2A1712" stroke-width="42"/>
+    <path d="M318 428 C 384 442 408 396 388 366 C 374 346 344 352 342 376" fill="none" stroke="#F2BC33" stroke-width="24"/>
+
+    <!-- body -->
+    <path d="M198 344 C 174 396 174 452 198 482 L 314 482 C 338 452 338 396 314 344 Z" fill="url(#coat)"/>
+    <ellipse cx="256" cy="440" rx="46" ry="40" fill="#F7EFDC" stroke="none"/>
+
+    <!-- ears (behind the head) -->
+    <polygon points="188,126 152,38 240,94" fill="url(#coat)"/>
+    <polygon points="324,126 360,38 272,94" fill="url(#coat)"/>
+    <polygon points="190,116 168,64 224,96" fill="#C8820F" stroke-width="6"/>
+    <polygon points="322,116 344,64 288,96" fill="#C8820F" stroke-width="6"/>
+
+    <!-- head -->
+    <path d="M256 76 C 332 76 394 128 404 206 C 414 288 372 356 300 376 C 272 384 240 384 212 376 C 140 356 98 288 108 206 C 118 128 180 76 256 76 Z" fill="url(#coat)"/>
+
+    <!-- muzzle -->
+    <ellipse cx="256" cy="300" rx="94" ry="66" fill="#F7EFDC" stroke="none"/>
+
+    <!-- eyes -->
+    <ellipse cx="204" cy="230" rx="33" ry="38" fill="#2A1712" stroke="none"/>
+    <ellipse cx="308" cy="230" rx="33" ry="38" fill="#2A1712" stroke="none"/>
+    <circle cx="193" cy="216" r="11" fill="#FFFFFF" stroke="none"/>
+    <circle cx="297" cy="216" r="11" fill="#FFFFFF" stroke="none"/>
+    <circle cx="214" cy="245" r="5" fill="#FFFFFF" stroke="none" opacity="0.85"/>
+    <circle cx="318" cy="245" r="5" fill="#FFFFFF" stroke="none" opacity="0.85"/>
+
+    <!-- nose + mouth -->
+    <path d="M256 264 C 275 264 288 275 288 287 C 288 300 269 313 256 313 C 243 313 224 300 224 287 C 224 275 237 264 256 264 Z" fill="#2A1712" stroke="none"/>
+    <path d="M256 313 L 256 324" fill="none" stroke-width="8"/>
+    <path d="M222 332 Q 256 360 290 332" fill="none" stroke-width="8"/>
+
+    <!-- paws holding the twig -->
+    <path d="M204 434 L 312 396" stroke="#8A5A2B" stroke-width="16"/>
+    <path d="M262 414 L 274 396" stroke="#8A5A2B" stroke-width="10"/>
+    <path d="M286 404 C 300 388 316 386 322 392 C 318 404 300 412 288 410 Z" fill="#7BAF4C" stroke-width="6"/>
+    <ellipse cx="214" cy="436" rx="26" ry="20" fill="#F7EFDC"/>
+    <ellipse cx="300" cy="400" rx="26" ry="20" fill="#F7EFDC"/>
+  </g>
+
+  <!-- the NPU that this whole project exists to wake up -->
+  <g>
+    <circle cx="116" cy="432" r="96" fill="url(#glow)"/>
+    <g stroke="#2A1712" stroke-width="7" stroke-linejoin="round">
+      <rect x="62" y="382" width="106" height="106" rx="12" fill="#1E6B4A"/>
+      <rect x="90" y="410" width="50" height="50" rx="7" fill="#123F2E"/>
+    </g>
+    <rect x="101" y="421" width="28" height="28" rx="5" fill="#6FE3C4"/>
+    <g fill="#E9B949">
+      <rect x="46" y="400" width="18" height="10" rx="4"/>
+      <rect x="46" y="424" width="18" height="10" rx="4"/>
+      <rect x="46" y="448" width="18" height="10" rx="4"/>
+      <rect x="166" y="400" width="18" height="10" rx="4"/>
+      <rect x="166" y="424" width="18" height="10" rx="4"/>
+      <rect x="166" y="448" width="18" height="10" rx="4"/>
+      <rect x="80" y="486" width="10" height="18" rx="4"/>
+      <rect x="104" y="486" width="10" height="18" rx="4"/>
+      <rect x="128" y="486" width="10" height="18" rx="4"/>
+    </g>
+    <g stroke="#E9B949" stroke-width="6" fill="none" stroke-linecap="round">
+      <path d="M140 421 L 156 421 L 156 404"/>
+      <path d="M115 449 L 115 470"/>
+    </g>
+  </g>
+
+  <g fill="#FFD84D">
+    <path d="M198 352 l6 14 14 6 -14 6 -6 14 -6 -14 -14 -6 14 -6 z"/>
+    <path d="M424 316 l5 12 12 5 -12 5 -5 12 -5 -12 -12 -5 12 -5 z"/>
+    <path d="M58 350 l4 10 10 4 -10 4 -4 10 -4 -10 -10 -4 10 -4 z"/>
+  </g>
+</svg>

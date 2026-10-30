@@ -1,4 +1,4 @@
-# WangCai 旺财
+# WangCai 汪柴
 
 > **Pure-NPU on-device inference engine for Intel® Core™ Ultra.**
 > Giving *Intel® AI Boost* — the accelerator the industry forgot — a second life.

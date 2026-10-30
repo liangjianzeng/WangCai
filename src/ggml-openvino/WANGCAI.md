@@ -1,6 +1,6 @@
 # `src/ggml-openvino` —— 引擎本体源码
 
-这个目录**就是旺财自己的代码**：ggml 的 OpenVINO 后端，把 `ggml_cgraph` 翻译成静态 OpenVINO 图，
+这个目录**就是汪柴自己的代码**：ggml 的 OpenVINO 后端，把 `ggml_cgraph` 翻译成静态 OpenVINO 图，
 放到 `Intel(R) AI Boost` 上执行。它被纳入版本管理，是为了让引擎可以被直接阅读和评审，不必先应用
 任何补丁。
 
@@ -12,7 +12,7 @@
 | | |
 |---|---|
 | 上游 | llama.cpp `abb76ab380c7f3f731e365a859fb4cc64e939bb8` 的 `ggml/src/ggml-openvino/` |
-| 内容 | 完整的上游目录（95 个文件，约 900 KB）**加上**旺财自己的改动 |
+| 内容 | 完整的上游目录（95 个文件，约 900 KB）**加上**汪柴自己的改动 |
 | 安装方式 | `tools/bootstrap.ps1` 把钉住版本的 llama.cpp 克隆到 `src/llama/`（被 git 忽略），再用本目录覆盖到 `ggml/src/ggml-openvino/` |
 | 历史形态 | [../../patches/0001-ggml-openvino-npu-adaptation.patch](../../patches/0001-ggml-openvino-npu-adaptation.patch) 是同一份改动的可评审 diff；`bootstrap.ps1 -UsePatch` 走打补丁而不是覆盖 |
 | 许可 | Apache-2.0（上游是 MIT，见 [../../LICENSE](../../LICENSE)） |
