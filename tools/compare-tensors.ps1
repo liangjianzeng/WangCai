@@ -17,6 +17,9 @@ param(
     [int]$Top = 5,
     [double]$Thresh = 0.25,
     [string]$Filter = '*.bin',
+    # Compare only the leading N elements. Triaging "which of 300 tensors diverges" does not need a
+    # full scan of every multi-megabyte cache buffer, and a leading slice is a fine indicator.
+    [int]$MaxElements = 0,
     [switch]$OnlyMismatched
 )
 
@@ -53,8 +56,11 @@ function Read-Elements([string]$path) {
     }
 }
 
-function Top-K($v, $k) {
-    $order = 0..($v.Length - 1) | Sort-Object -Descending { $v[$_] } | Select-Object -First $k
+function Top-K($v, $k, $limit) {
+    # Bounded by the compared prefix: sorting the whole buffer of a multi-megabyte cache tensor to
+    # print five numbers is the difference between seconds and minutes per tensor.
+    if ($limit -le 0 -or $limit -gt $v.Length) { $limit = $v.Length }
+    $order = 0..($limit - 1) | Sort-Object -Descending { $v[$_] } | Select-Object -First $k
     ($order | ForEach-Object { 'id{0}={1}' -f $_, ([Math]::Round($v[$_], 3)) }) -join '  '
 }
 
@@ -78,6 +84,7 @@ foreach ($name in $names) {
     }
 
     $n = [Math]::Min($ea.values.Length, $eb.values.Length)
+    if ($MaxElements -gt 0 -and $n -gt $MaxElements) { $n = $MaxElements }
     if ($n -eq 0) { Write-Output ("  SKIP  {0} (empty)" -f $name); continue }
     $va = $ea.values; $vb = $eb.values
 
