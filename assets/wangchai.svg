@@ -1,97 +1,49 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
   <!--
-    汪柴 (WangChai) — a Chinese rural dog sitting next to the accelerator this project exists to
-    wake up. Generated artwork: tools/make-logo.ps1 renders these exact coordinates to
-    assets/wangchai.png / assets/wangchai-avatar.png, so edit the geometry in both or in neither.
+    汪柴 (WangChai) — golden Shiba bust in the classic doge style: wide head with flaring
+    cheeks, big cream muzzle, orange inner ears, bold dark outline. Generated artwork:
+    tools/make-logo.ps1 renders these exact coordinates to assets/wangchai.png (1024) and
+    assets/wangchai-avatar.png (256), so edit the geometry in both or in neither.
   -->
   <defs>
-    <linearGradient id="coat" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#FBD977"/>
-      <stop offset="100%" stop-color="#F2BC33"/>
-    </linearGradient>
-    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-      <stop offset="0%" stop-color="#6FE3C4" stop-opacity="0.55"/>
-      <stop offset="60%" stop-color="#6FE3C4" stop-opacity="0.16"/>
-      <stop offset="100%" stop-color="#6FE3C4" stop-opacity="0"/>
+    <radialGradient id="coat" gradientUnits="userSpaceOnUse" cx="256" cy="250" r="330">
+      <stop offset="0%" stop-color="#FDD96B"/>
+      <stop offset="55%" stop-color="#F8CB4E"/>
+      <stop offset="100%" stop-color="#ECAC2D"/>
     </radialGradient>
   </defs>
-
   <rect width="512" height="512" fill="#FFFFFF"/>
-  <circle cx="256" cy="252" r="226" fill="#FFF6DF"/>
 
-  <g stroke="#2A1712" stroke-width="10" stroke-linejoin="round" stroke-linecap="round">
+  <g stroke="#211108" stroke-width="11" stroke-linejoin="round" stroke-linecap="round">
+    <!-- body: one gold mound cut by the bottom edge, cream bib over it -->
+    <path d="M 48 512 C 48 452, 116 420, 256 420 C 396 420, 464 452, 464 512 Z" fill="#F8CB4E"/>
+    <path d="M 144 512 C 144 454, 196 422, 256 422 C 316 422, 368 454, 368 512 Z" fill="#FBF3D4"/>
 
-    <!-- chest bib, under the chin -->
-    <ellipse cx="256" cy="429" rx="80" ry="61" fill="#F7EFDC"/>
+    <!-- ears: outer edge anchored on the head corner, inner base tucked under the dome -->
+    <path d="M 86 208 C 90 144, 98 88, 114 48 C 158 68, 196 100, 222 132 Z" fill="#F3BD40"/>
+    <path d="M 426 208 C 422 144, 414 88, 398 48 C 354 68, 316 100, 290 132 Z" fill="#F3BD40"/>
+    <path d="M 111 72 C 119 112, 128 146, 139 172 C 166 156, 196 140, 221 130 Z" fill="#EFA02E" stroke-width="0"/>
+    <path d="M 401 72 C 393 112, 384 146, 373 172 C 346 156, 316 140, 291 130 Z" fill="#EFA02E" stroke-width="0"/>
 
-    <!-- ears: erect, set wide — the rural-dog silhouette -->
-    <polygon points="186,132 134,18 252,92" fill="url(#coat)"/>
-    <polygon points="326,132 378,18 260,92" fill="url(#coat)"/>
-    <polygon points="190,120 158,50 232,94" fill="#C8820F" stroke-width="0"/>
-    <polygon points="322,120 354,50 280,94" fill="#C8820F" stroke-width="0"/>
+    <!-- head: wide dome, flaring cheeks, broad jaw -->
+    <path d="M 256 118 C 342 114, 408 142, 428 210 C 446 274, 444 342, 404 390 C 366 432, 314 452, 256 452 C 198 452, 146 432, 108 390 C 68 342, 66 274, 84 210 C 104 142, 170 114, 256 118 Z" fill="url(#coat)"/>
 
-    <!-- head -->
-    <path d="M256 76 C 332 76 394 128 404 206 C 414 288 372 356 300 376 C 272 384 240 384 212 376
-             C 140 356 98 288 108 206 C 118 128 180 76 256 76 Z" fill="url(#coat)"/>
+    <!-- cream mask: eye rings merging into the big muzzle -->
+    <path d="M 152 168 C 186 160, 210 176, 212 204 C 214 228, 210 254, 200 276 C 190 298, 164 306, 140 294 C 116 282, 106 254, 110 228 C 113 210, 118 176, 152 168 Z" fill="#FBF3D4" stroke-width="0"/>
+    <path d="M 360 168 C 326 160, 302 176, 300 204 C 298 228, 302 254, 312 276 C 322 298, 348 306, 372 294 C 396 282, 406 254, 402 228 C 399 210, 394 176, 360 168 Z" fill="#FBF3D4" stroke-width="0"/>
+    <path d="M 96 336 C 96 272, 152 252, 256 252 C 360 252, 416 272, 416 336 C 416 416, 344 452, 256 452 C 168 452, 96 416, 96 336 Z" fill="#FBF3D4" stroke-width="0"/>
 
-    <!-- muzzle -->
-    <ellipse cx="256" cy="300" rx="94" ry="66" fill="#F7EFDC" stroke-width="0"/>
-
-    <!-- eyes: big, dark, two highlights each -->
-    <ellipse cx="204" cy="230" rx="33" ry="38" fill="#2A1712" stroke-width="0"/>
-    <ellipse cx="308" cy="230" rx="33" ry="38" fill="#2A1712" stroke-width="0"/>
-    <circle cx="193" cy="216" r="11" fill="#FFFFFF" stroke-width="0"/>
-    <circle cx="297" cy="216" r="11" fill="#FFFFFF" stroke-width="0"/>
-    <circle cx="214" cy="245" r="5" fill="#FFFFFF" stroke-width="0" opacity="0.85"/>
-    <circle cx="318" cy="245" r="5" fill="#FFFFFF" stroke-width="0" opacity="0.85"/>
+    <!-- eyes: big, dark, glossy -->
+    <ellipse cx="166" cy="222" rx="34" ry="38" fill="#211108" stroke-width="0"/>
+    <ellipse cx="346" cy="222" rx="34" ry="38" fill="#211108" stroke-width="0"/>
+    <circle cx="153" cy="207" r="13" fill="#FFFFFF" stroke-width="0"/>
+    <circle cx="333" cy="207" r="13" fill="#FFFFFF" stroke-width="0"/>
+    <circle cx="178" cy="237" r="5" fill="#FFFFFF" stroke-width="0" opacity="0.9"/>
+    <circle cx="358" cy="237" r="5" fill="#FFFFFF" stroke-width="0" opacity="0.9"/>
 
     <!-- nose + mouth -->
-    <path d="M256 264 C 275 264 288 275 288 287 C 288 300 269 313 256 313 C 243 313 224 300 224 287
-             C 224 275 237 264 256 264 Z" fill="#2A1712" stroke-width="0"/>
-    <path d="M256 313 L 256 324" fill="none" stroke-width="8"/>
-    <path d="M222 332 C 244.7 350.7 267.3 350.7 290 332" fill="none" stroke-width="8"/>
-
-    <!-- the twig (柴) held across the chest, leaf on the end, paws over it -->
-    <path d="M150 456 L 372 440" fill="none" stroke="#8A5A2B" stroke-width="18"/>
-    <path d="M252 448 L 262 428" fill="none" stroke="#8A5A2B" stroke-width="10"/>
-    <path d="M352 430 C 372 412 392 410 398 420 C 386 436 366 440 352 436 Z" fill="#7BAF4C" stroke-width="6"/>
-    <ellipse cx="202" cy="438" rx="30" ry="24" fill="#F7EFDC"/>
-    <ellipse cx="312" cy="430" rx="30" ry="24" fill="#F7EFDC"/>
-    <path d="M192 422 L 189 438" fill="none" stroke-width="6"/>
-    <path d="M212 422 L 215 438" fill="none" stroke-width="6"/>
-    <path d="M302 414 L 299 430" fill="none" stroke-width="6"/>
-    <path d="M322 414 L 325 430" fill="none" stroke-width="6"/>
-  </g>
-
-  <!-- the NPU: board, die, glowing core, pins, traces -->
-  <g>
-    <circle cx="112" cy="414" r="96" fill="url(#glow)"/>
-    <g stroke="#2A1712" stroke-width="7" stroke-linejoin="round">
-      <rect x="58" y="364" width="106" height="106" rx="12" fill="#1E6B4A"/>
-      <rect x="86" y="392" width="50" height="50" rx="7" fill="#123F2E" stroke-width="6"/>
-    </g>
-    <rect x="97" y="403" width="28" height="28" rx="5" fill="#6FE3C4"/>
-    <g fill="#E9B949">
-      <rect x="42" y="382" width="18" height="10" rx="4"/>
-      <rect x="42" y="406" width="18" height="10" rx="4"/>
-      <rect x="42" y="430" width="18" height="10" rx="4"/>
-      <rect x="162" y="382" width="18" height="10" rx="4"/>
-      <rect x="162" y="406" width="18" height="10" rx="4"/>
-      <rect x="162" y="430" width="18" height="10" rx="4"/>
-      <rect x="76" y="468" width="10" height="18" rx="4"/>
-      <rect x="100" y="468" width="10" height="18" rx="4"/>
-      <rect x="124" y="468" width="10" height="18" rx="4"/>
-    </g>
-    <g stroke="#E9B949" stroke-width="6" fill="none" stroke-linecap="round">
-      <path d="M136 403 L 152 403 L 152 386"/>
-      <path d="M111 431 L 111 452"/>
-    </g>
-  </g>
-
-  <!-- sparkles: the dusty accelerator coming back to life -->
-  <g fill="#FFD84D">
-    <polygon points="440,206 446,220 460,226 446,232 440,246 434,232 420,226 434,220"/>
-    <polygon points="424,316 429,328 441,333 429,338 424,350 419,338 407,333 419,328"/>
-    <polygon points="58,350 62,360 72,364 62,368 58,378 54,368 44,364 54,360"/>
+    <path d="M 256 284 C 276 284, 291 295, 291 308 C 291 323, 271 333, 256 333 C 241 333, 221 323, 221 308 C 221 295, 236 284, 256 284 Z" fill="#211108" stroke-width="0"/>
+    <path d="M 256 333 L 256 349" fill="none" stroke-width="7"/>
+    <path d="M 194 351 C 230 370, 282 370, 318 351" fill="none" stroke-width="7"/>
   </g>
 </svg>

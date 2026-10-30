@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/wangchai.png" width="180" alt="WangChai: a Chinese rural dog beside the Intel AI Boost">
+  <img src="assets/wangchai.png" width="180" alt="WangChai: the golden Shiba mascot in the classic doge style">
 </p>
 
 # WangCai 汪柴

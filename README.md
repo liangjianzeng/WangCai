@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/wangchai.png" width="180" alt="汪柴：一只坐在 Intel AI Boost 旁边的中华田园犬">
+  <img src="assets/wangchai.png" width="180" alt="汪柴：doge 风格的柴犬吉祥物，本引擎的拟人化身">
 </p>
 
 # WangCai 汪柴
