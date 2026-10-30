@@ -33,21 +33,55 @@ $env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'
 
 ## Results
 
-| Execution path | Prompt eval | Decode | Coherence |
+### Prefill — measured at real token counts (`llama-bench`, `-r 1`, `-fa 1`)
+
+| Test | NPU (static) | OpenVINO CPU (dynamic) | `ggml` CPU reference |
+|---|---:|---:|---:|
+| `pp32` | 54.9 t/s | 335 t/s | 447 t/s |
+| `pp128` | 219 t/s | 567 t/s | 546 t/s |
+| `pp512` | **415 t/s** | 610 t/s | 570 t/s |
+| `pp1024` | `ZE_RESULT_ERROR_DEVICE_LOST` (see below) | `scatter_update` check (see below) | 572 t/s |
+| `tg32` | not reached at this size | — | 53.4 t/s |
+
+**Read this table, not the short-prompt one below.** At `pp512` — two fully populated 256-token
+chunks, i.e. no padding waste — the NPU reaches 73% of the native CPU reference and 68% of
+OpenVINO-on-CPU. The NPU is *not* bad at prefill; the earlier "6–12 t/s" figure in this document was
+an artifact of how prompt throughput is reported for a fixed-width static graph (next section).
+
+The remaining prefill headroom is real, though: 415 t/s on a 1.7 B model is ≈ 870 GFLOP per 256-token
+chunk, about **1.4 TOPS effective out of ~13 TOPS INT8**. Something is leaving an order of magnitude
+on the table — candidates in [npu-internals.md § 6](npu-internals.md#6-performance-observations).
+
+### Why short prompts report almost nothing on the NPU
+
+The static prefill graph is always `GGML_OPENVINO_PREFILL_CHUNK_SIZE = 256` columns wide. A 4-token
+prompt still pays for 256 columns, and llama.cpp reports `tokens actually processed / wall time`:
+
+| Sample | Reported prompt t/s | Wall time per 256-column chunk | Useful tokens |
 |---|---:|---:|---|
-| `ggml` CPU reference (`-dev none`) | 164.4 t/s | 54.1 t/s | coherent |
-| OpenVINO · CPU, dynamic graphs | 94.2 – 130 t/s | 21.7 – 29.2 t/s | coherent |
-| OpenVINO · **NPU, static graphs** | 6.0 – 12.2 t/s | **8.3 – 8.7 t/s** | diverges after ~3 tokens |
-| OpenVINO · CPU, static (`FORCE_STATIC`) | — | ~same as dynamic | coherent |
+| 4-token prompt | 5.99 | ~670 ms | 4 / 256 = 1.6% |
+| 8-token prompt | 12.19 | ~656 ms | 8 / 256 = 3.1% |
 
-Sample of the individual measurements behind the ranges:
+Same graph, same cost, 1.6% useful → the reported number is 60× lower than the graph's own throughput
+(~380 t/s of columns). **Never compare NPU prompt t/s against CPU prompt t/s on short prompts**: the
+CPU paths have no column padding, so the comparison measures padding, not hardware. Compare
+`llama-bench pp<N>` at N ≥ chunk size, or compare wall time per chunk.
 
-| Run | Prompt | Decode |
-|---|---:|---:|
-| NPU, 8-token prompt, 8 generated | 12.19 t/s (82.0 ms/tok) | 8.32 t/s (120.2 ms/tok) |
-| NPU, 4-token prompt, 31 generated | 5.99 t/s (167.0 ms/tok) | 8.67 t/s (115.3 ms/tok) |
-| OV-CPU, 4-token prompt, 31 generated | 94.22 t/s | 29.15 t/s |
-| CPU reference, same | 164.41 t/s | 54.05 t/s |
+Corollary for tuning: if your workload is dominated by short prompts, lower
+`GGML_OPENVINO_PREFILL_CHUNK_SIZE` (toward the typical prompt length) — it is a straight multiplier on
+short-prompt latency. It is part of the graph cache key, so each value costs one compile.
+
+### Decode
+
+| | t/s |
+|---|---:|
+| **NPU (static)** | **8.3 – 8.7** |
+| OpenVINO CPU, dynamic | 21.7 – 29.2 |
+| `ggml` CPU reference | 54.1 |
+
+Decode is where the project actually loses, and by 6× against the reference. At 1.7 B parameters that
+is ≈ 3.4 GFLOP/token, so ~0.03 TOPS effective — two orders of magnitude below the accelerator. This is
+the number to attack (roadmap Phase 2), not prefill.
 
 One-off costs:
 
@@ -59,16 +93,19 @@ One-off costs:
 
 ## What these numbers do *not* prove
 
-- **They are not a speed comparison and definitely not a competitive one.** Three backends on one
-  machine, one model, prompts of 4–8 tokens, 8–31 generated tokens, single run each, no warm-up
-  protocol, no confidence interval. Treat the ranges as "order of magnitude, directionally useful".
-- **The NPU decode figure is a working number, not a tuned one.** Losing to OpenVINO-CPU on a 1.7 B
+- **Single data points.** Three backends, one machine, one model, `-r 1`, no warm-up protocol, no
+  confidence interval. `llama-bench` prints `± 0.00` because there is one repetition. Order of
+  magnitude and direction only; re-run with `-r 3` before quoting anywhere.
+- **The NPU decode figure is a working number, not a tuned one.** Losing 6× to the CPU on a 1.7 B
   model means something is wrong in our static path or in the compile configuration, not that the
-  accelerator is out of ideas. See
-  [npu-internals.md § performance observations](npu-internals.md#6-performance-observations).
-- **Prompt-eval t/s is not comparable across prompt lengths.** The two NPU rows above differ by 2×
-  purely because of 8 vs 4 input tokens: the static graph always processes a full 256-token chunk, so
-  short prompts pay fixed cost. Any comparison must fix `-b`, prompt length and chunk size.
+  accelerator is out of ideas — and prefill at 73% of the reference proves the plugin is not
+  uniformly hopeless. See [npu-internals.md § 6](npu-internals.md#6-performance-observations).
+- **`pp1024` failures are not a throughput result.** They are an out-of-range KV write index: with
+  `llama-bench`'s default `-c -1` (model context 1024), `-p 1024 -n 32` needs 1056 cache slots. The
+  same shape that crashes at 1024 runs clean at 512 on the same device. On the CPU plugin this
+  surfaces as a `scatter_update` bounds check; on the NPU plugin the bad index takes the device down
+  with `ZE_RESULT_ERROR_DEVICE_LOST` — strictly worse failure mode for the same bug, and worth filing
+  upstream on its own. Always size `-c` ≥ `-p` + `-n`.
 - **Coherence and throughput were measured in the same runs but are independent**: the NPU numbers
   above were produced while the accuracy defect is present, which does not affect their timing
   meaningfully (same graph, same op count) but does mean both numbers will move when the defect is

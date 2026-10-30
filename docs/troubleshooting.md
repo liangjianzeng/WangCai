@@ -82,9 +82,18 @@ progress.
 
 ### `Check 'idxValue < static_cast<int64_t>(srcDimAxis) && ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`
 
-`llama-perplexity` on any OpenVINO device: its multi-output graph breaks the `SET_ROWS` lowering, and
-an index lands outside its axis. **Workaround:** none yet — perplexity is unusable as a metric here;
-use native CPU (`-dev none`) if you need perplexity, and text-level comparison for the NPU.
+A KV write index landed outside the cache. Reproduced from `llama-perplexity` on any OpenVINO device,
+and from `llama-bench -p 1024 -n 32` with a 1024 context — the same test at `-p 512` passes, which is
+what points at an out-of-range index rather than at the graph shape. **Workaround:** keep
+`-c` ≥ prompt + generated tokens and stay inside the cache; perplexity is unusable as a metric until
+this is fixed, so use native CPU (`-dev none`) for it and text/tensor comparison for the NPU.
+
+### `ZE_RESULT_ERROR_DEVICE_LOST` (`zeCommandQueueExecuteCommandLists`, code `0x70000001`)
+
+The NPU-side signature of the same out-of-range KV write: where the CPU plugin fails a bounds check,
+the NPU plugin takes the device down. Check `-c` against prompt + generated length first. A bad index
+that hangs the device rather than returning an error is a plugin robustness bug worth reporting
+upstream.
 
 ### `-fa 0` crashes the same scatter path
 
@@ -117,6 +126,15 @@ the outputs the graph already produces.
 
 Inline `2>&1 >` in PowerShell truncates the OpenVINO exception text. Redirect through
 `cmd.exe /c "llama-cli ... > log 2>&1"`.
+
+### Prompt throughput on the NPU looks hopeless (single-digit t/s)
+
+Almost certainly a measurement artifact, not a result. The static prefill graph is always
+`GGML_OPENVINO_PREFILL_CHUNK_SIZE` (256) columns wide, so a 4-token prompt pays for 256 columns while
+llama.cpp reports *useful* tokens per second — the same 0.66 s chunk reads as ~6 t/s. Measure with
+`llama-bench -p 512` (where the chunk is actually full), and for genuinely short-prompt workloads lower
+the chunk size. Never compare NPU prompt t/s with CPU prompt t/s on short prompts: you are comparing
+padding against no padding.
 
 ### Generation repeats one token (`>>>>>>>>>>>>>`) forever
 

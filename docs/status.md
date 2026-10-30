@@ -20,7 +20,8 @@ Point-in-time, measured, and falsifiable. Each claim lists the command that prov
 | **1.1** | **NPU output numerically on par with CPU reference** | 🟡 **open** | cosine to reference: prefill `0.969`, decode `0.73–0.87` |
 | 1.2 | Greedy matches reference token-for-token ≥ 64 tokens | 🟡 | diverges after 2–3 tokens |
 | 1.3 | Acceptance harness in CI | ⬜ | needs 1.1 |
-| 2.1 | NPU decode beats OpenVINO-CPU | ⬜ | 8.3–8.7 t/s vs 21.7–29.2 t/s |
+| 2.1 | NPU decode beats OpenVINO-CPU | ⬜ | decode 8.3–8.7 t/s vs 21.7–29.2 (CPU) / 54.1 (native) |
+| 2.1b | NPU prefill competitive | 🟡 | `pp512` 415 t/s = 73% of native reference; ~1.4 of ~13 TOPS used |
 | 2.2 | Warm start < 5 s | ⬜ | cache dir works, 36 s cold |
 | 3.x | Model-line breadth (0.3 B–8 B, long context) | ⬜ | |
 | 4.x | LFM3 omni modalities (audio in, vision in) | ⬜ | |
@@ -67,18 +68,28 @@ tools\top-token.ps1 -Dir tmp\dumps\cpu ; tools\top-token.ps1 -Dir tmp\dumps\npu
 tools\compare-tensors.ps1 -A tmp\dumps\cpu -B tmp\dumps\npu
 ```
 
-### 2. NPU decode is slower than OpenVINO-CPU (blocking for the thesis)
+### 2. NPU decode is 6× slower than the CPU reference (blocking for the thesis)
 
-8.3–8.7 t/s vs 21.7–29.2 t/s on the same model and machine. The whole argument for using the NPU is
-performance per watt; losing to the CPU on absolute throughput while the CPU stays free is not yet
-explained. Suspects, in order: stateless cache re-binding per step, activation quantization cost,
+8.3–8.7 t/s vs 54.1 t/s native / 21.7–29.2 t/s OpenVINO-CPU on the same model and machine — about
+**0.03 of the available TOPS**. The whole argument for using the NPU is performance per watt; losing to
+the CPU on absolute throughput while the CPU stays free is not yet explained. Note this is *specific*
+to decode: prefill at `pp512` is competitive (415 vs 570 t/s), so the plugin is not uniformly
+misconfigured. Suspects, in order: stateless cache re-binding per step, activation quantization cost,
 compile hints for decode-shaped graphs, the runtime-indexed conv-state `Gather`.
 
-### 3. `llama-perplexity` fails on every OpenVINO device
+### 3. Sequences longer than the KV cache take the OpenVINO backend down
 
-`Check 'idxValue < static_cast<int64_t>(srcDimAxis) ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`.
-Its multi-output graph breaks the `SET_ROWS` lowering. Consequence: perplexity cannot be used as an
-accuracy metric, which is exactly the metric wanted for defect 1. Not NPU-specific.
+`Check 'idxValue < static_cast<int64_t>(srcDimAxis) ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`
+whenever a KV write index lands outside the cache. Observed from `llama-perplexity` (any device) and
+from `llama-bench -p 1024 -n 32` with a 1024 context; the same test at `-p 512` runs clean, which is
+what points at an out-of-range index rather than at the graph shape. On the **NPU the same condition
+takes the device down** with `ZE_RESULT_ERROR_DEVICE_LOST` instead of failing a check.
+
+Consequences: perplexity is currently unusable as an accuracy metric (exactly the metric wanted for
+defect 1), and an out-of-range index is a device-level failure on NPU, which deserves an upstream
+report on its own. Root cause not established — the earlier claim in this document that "the
+multi-output graph breaks the `SET_ROWS` lowering" was **not supported** by the `-p 512` / `-p 1024`
+differential and has been withdrawn.
 
 ### 4. `GGML_OPENVINO_DEBUG_NODE` aborts the process on NPU
 

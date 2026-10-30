@@ -65,12 +65,17 @@ Intel Core Ultra 9 275HX · Intel AI Boost (NPU 3720) · 32 GB · OpenVINO 2026.
 LFM3-1.7B `Q4_K_M`（1049 MB）· 24 层（13 门控短卷积 + 5 滑动窗口@256 + 6 全局注意力）·
 `-c 1024 -fa 1 -np 1 --temp 0`
 
-| 执行路径 | Prompt | Decode | 备注 |
+| 执行路径 | Prefill（`pp512`） | Decode | 备注 |
 |---|---:|---:|---|
-| `ggml` 原生 CPU（`-dev none`） | 164.4 t/s | 54.1 t/s | 连贯性参照 |
-| OpenVINO · CPU 设备，动态图 | 94–130 t/s | 21.7–29.2 t/s | 输出连贯 |
-| **OpenVINO · NPU 设备，静态图** | 6.0–12.2 t/s | **8.3–8.7 t/s** | 跑通；精度进行中 |
+| `ggml` 原生 CPU（`-dev none`） | 570 t/s | 54.1 t/s | 连贯性参照 |
+| OpenVINO · CPU 设备，动态图 | 610 t/s | 21.7–29.2 t/s | 输出连贯 |
+| **OpenVINO · NPU 设备，静态图** | **415 t/s** | **8.3–8.7 t/s** | 跑通；精度进行中 |
 | OpenVINO · NPU 首次图编译（冷启动） | — | — | 一次性约 36 s，之后命中缓存 |
+
+NPU 的 prefill 达到 CPU 参照的 73%。**真正的短板是 decode**（落后参照 6 倍，仅约可用 TOPS 的
+0.03），这是当前性能主攻方向。另有一个陷阱：拿 4 个 token 的 prompt 去测，NPU 的 prompt 吞吐只会报出
+约 6 t/s——静态 prefill 图恒为 256 列宽，4 个有用 token 要付 256 列的代价。请测 `pp512` 及以上，
+算术细节见 [docs/benchmarks.md](docs/benchmarks.md)。
 
 复现方式见 [`tools/`](tools/README.md)。测量口径与"这些数字不能说明什么"：
 [docs/benchmarks.md](docs/benchmarks.md)。

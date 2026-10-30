@@ -60,11 +60,29 @@ Unreleased dates are the dates the change was verified on hardware, not the date
   distribution measurately flattened (top-1 `19.58` on CPU vs `17.53` on NPU). Greedy generation
   tracks the reference for 2–3 tokens and then diverges. See
   [docs/npu-internals.md](docs/npu-internals.md) for what has been ruled out.
-- NPU decode throughput (`8.3–8.7 t/s`) is below OpenVINO on CPU (`21.7–29.2 t/s`) for this 1.7 B
-  model. Not yet investigated; the recurrent-state write-back per step is the current suspicion.
-- `llama-perplexity` cannot run on the OpenVINO backend at all: its multi-output graph triggers
-  `ScatterUpdate ... indices value that points to non-existing output tensor element`. Unrelated to
-  the NPU; blocks using perplexity as an accuracy metric.
+- NPU decode throughput (`8.3–8.7 t/s`) is 6× below the CPU reference (`54.1 t/s`) and 2.5× below
+  OpenVINO on CPU (`21.7–29.2 t/s`) for this 1.7 B model — about 0.03 of the available TOPS. Prefill is
+  *not* affected in the same way (`pp512` 415 t/s vs 570 native), which localizes the problem to the
+  per-step path rather than to the compile configuration in general.
+
+- A sequence longer than the KV cache takes the OpenVINO backend down: `llama-perplexity` on any
+  device, and `llama-bench -p 1024 -n 32` with a 1024 context, fail with
+  `Check 'idxValue < static_cast<int64_t>(srcDimAxis) ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`
+  — an out-of-range KV write index. The same shape at `-p 512` runs clean. On the NPU the identical
+  condition produces `ZE_RESULT_ERROR_DEVICE_LOST` (`zeCommandQueueExecuteCommandLists`, `0x70000001`)
+  instead of a check failure. Blocks perplexity as an accuracy metric. *(An earlier entry here blamed
+  the multi-output graph for this; the `-p 512` / `-p 1024` differential does not support that, so the
+  claim is withdrawn.)*
+
+### Corrected
+
+- The published NPU prompt-eval figures (`6.0–12.2 t/s`) were an artifact, not a measurement of the
+  accelerator. The static prefill graph is always `GGML_OPENVINO_PREFILL_CHUNK_SIZE` (256) columns
+  wide, so a 4-token prompt pays for 256 columns while llama.cpp reports useful tokens per second —
+  60× below the graph's own column throughput. Measured at real token counts the NPU reaches
+  **415 t/s at `pp512`** (68% of OpenVINO-CPU, 73% of the native reference). Short-prompt prompt-t/s
+  on the NPU should not be compared with CPU numbers at all; see
+  [docs/benchmarks.md](docs/benchmarks.md).
 - Adding extra graph outputs via `GGML_OPENVINO_DEBUG_NODE` aborts the process on the NPU. Use
   `GGML_OPENVINO_DUMP_BIN`, which reads existing outputs instead.
 

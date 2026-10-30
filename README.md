@@ -70,12 +70,18 @@ Intel Core Ultra 9 275HX · Intel AI Boost (NPU 3720) · 32 GB · OpenVINO 2026.
 LLM3-1.7B `Q4_K_M` (1049 MB) · 24 layers (13 gated short-conv, 5 sliding-window@256, 6 global) ·
 `-c 1024 -fa 1 -np 1 --temp 0`
 
-| Execution path | Prompt eval | Decode | Notes |
+| Execution path | Prefill (`pp512`) | Decode | Notes |
 |---|---:|---:|---|
-| `ggml` CPU reference (`-dev none`) | 164.4 t/s | 54.1 t/s | coherence reference |
-| OpenVINO · CPU device, dynamic graphs | 94–130 t/s | 21.7–29.2 t/s | coherent |
-| **OpenVINO · NPU device, static graphs** | 6.0–12.2 t/s | **8.3–8.7 t/s** | runs; accuracy WIP |
+| `ggml` CPU reference (`-dev none`) | 570 t/s | 54.1 t/s | coherence reference |
+| OpenVINO · CPU device, dynamic graphs | 610 t/s | 21.7–29.2 t/s | coherent |
+| **OpenVINO · NPU device, static graphs** | **415 t/s** | **8.3–8.7 t/s** | runs; accuracy WIP |
 | OpenVINO · NPU, first graph compile (cold) | — | — | ~36 s one-off, then cached |
+
+Prefill on the accelerator reaches 73% of the CPU reference. **Decode is the real gap** (6× behind the
+reference, ~0.03 of the available TOPS) and is the current performance target. Beware the tempting
+shortcut: prompt throughput measured on a 4-token prompt reads ~6 t/s on the NPU, because the static
+prefill graph is always 256 columns wide and 4 useful tokens pay for 256. Measure `pp512` or larger —
+[benchmarks.md](docs/benchmarks.md) explains the arithmetic.
 
 Reproduce with [`tools/`](tools/README.md). Full methodology and caveats:
 [docs/benchmarks.md](docs/benchmarks.md).

@@ -43,21 +43,28 @@ The one thing that matters right now. NPU logits track the CPU reference through
 *Exit criteria:* greedy generation matches the CPU reference token-for-token for ≥ 64 tokens on the
 fixed prompt set, and per-layer cosine ≥ 0.99.
 
-## Phase 2 — make it fast · ⬜ next
+## Phase 2 — make it fast · 🟡 in progress
 
-Decode on NPU (`8.3–8.7 t/s`) currently loses to OpenVINO on CPU (`21.7–29.2 t/s`) for a 1.7 B model.
-That is the wrong sign and it is not yet investigated.
+Reframed by measurement: **prefill is already competitive** (`pp512` 415 t/s = 73% of the native CPU
+reference), so the accelerator and the compile configuration are not broken across the board. **Decode
+is the loss** — 8.3–8.7 t/s vs 54.1 native, about 0.03 of the available TOPS — and prefill's 1.4-of-13
+TOPS says there is headroom there too.
 
-- [ ] Attribute the per-step budget: stateless cache re-binding (K/V + 13 conv states in and out every
-      step) vs compute vs activation quantization.
-- [ ] Compile-hint sweep for a decode-shaped graph (`optimization-level`, funcall granularity, weights
-      bank strategy) using `GGML_OPENVINO_NPU_COMPILE_OVERRIDES`, one cache dir per cell.
-- [ ] Reduce per-step state traffic: batch the conv-state writes, avoid the runtime-indexed `Gather`
-      where a static slice suffices.
-- [ ] Revisit the prefill chunk size against `-b` (the static graph always pays for a full chunk;
-      measured prompt-eval swings 6→12 t/s between 4- and 8-token prompts).
-- [ ] Cold-start: 36 s compile is a terrible first impression. Ship a precompiled-graph cache with the
-      model, or at least document how to warm it.
+- [ ] **Attribute the decode budget per step.** Host↔NPU transfer of K/V for 11 layers plus 13 conv
+      states in and out, activation quantization, and NPUW funcall submit overhead for a ~1000-node
+      graph executed once per token. Numbers first, optimization second.
+- [ ] **Compile-hint sweep for a decode-shaped graph** (`optimization-level`, funcall granularity,
+      weights-bank strategy) via `GGML_OPENVINO_NPU_COMPILE_OVERRIDES`, one cache dir per cell.
+- [ ] **Cut per-step state traffic**: batch the conv-state writes; replace the runtime-indexed `Gather`
+      with a static slice where the index is known.
+- [ ] **Chunk size vs workload.** The static prefill graph always costs a full chunk, so short prompts
+      read absurdly slow (4 tokens in a 256-column graph reports ~6 t/s for a 0.66 s chunk). Ship a
+      sensible default per use size, and document `GGML_OPENVINO_PREFILL_CHUNK_SIZE` as the direct
+      multiplier it is.
+- [ ] **Cold start.** 36 s compile is a terrible first impression: ship a precompiled-graph cache with
+      the model, or warm it at install. Target warm start < 5 s.
+- [ ] **Fix the out-of-range KV write** (`scatter_update` check on CPU, `ZE_RESULT_ERROR_DEVICE_LOST`
+      on NPU). It blocks `llama-perplexity`, which is the accuracy metric wanted for Phase 1.
 
 *Exit criteria:* NPU decode beats OpenVINO-CPU on the same model, at comparable or lower package
 power, with a warm start under 5 s.

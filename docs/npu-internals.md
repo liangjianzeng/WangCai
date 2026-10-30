@@ -196,15 +196,43 @@ take appended results. Everything diagnostic in this tree reads outputs the grap
 
 ## 6. Performance observations
 
-Measured today, decode on NPU (`8.3–8.7 t/s`) is *slower* than OpenVINO on CPU (`21.7–29.2 t/s`) for a
-1.7 B model, which is the wrong sign: the accelerator should not lose to the CPU it was meant to
-replace. Not yet investigated. Candidate causes, roughly by suspicion:
+Two halves, and they deserve to be treated separately — conflating them produced a badly wrong
+conclusion in an earlier revision of this document.
 
-1. the stateless cache contract — every step re-binds and re-writes K/V and 13 conv states,
-2. activation quantization overhead per step (`NPU_COMPILER_DYNAMIC_QUANTIZATION`),
-3. `optimization-level` / compile hints not being set for a decode-shaped graph,
-4. the conv-state gather being expressed as a runtime-indexed `Gather` (static shape, but dynamic
-   index → no on-device optimization).
+**Prefill is fine.** At `pp512` (two full 256-token chunks, no padding waste) the NPU reaches
+**415 t/s**, vs 610 on OpenVINO-CPU and 570 on the native CPU reference — 68%/73%. The accelerator
+does what it is supposed to do on the compute-bound half of the workload.
+
+What is *not* explained is the absolute efficiency: 415 t/s on a 1.7 B model is ≈ 870 GFLOP per
+256-token chunk ≈ **1.4 TOPS effective out of ~13 TOPS INT8**. An order of magnitude is unaccounted
+for.
+
+**Decode is the problem.** `8.3–8.7 t/s` on NPU vs `21.7–29.2` on OpenVINO-CPU and `54.1` on the
+native CPU reference: a **6× loss to the CPU it was meant to replace**. At ≈ 3.4 GFLOP/token that is
+~0.03 TOPS — two orders of magnitude below the hardware. Whatever is wrong, it is wrong here.
+
+**And short-prompt numbers on the NPU are meaningless.** The static prefill graph is fixed at
+`GGML_OPENVINO_PREFILL_CHUNK_SIZE` columns (256 by default), so a 4-token prompt pays the full cost
+of 256 and llama.cpp reports `useful tokens / wall time`: the same 0.66 s chunk reads as 6 t/s for a
+4-token prompt and 12 t/s for an 8-token one. Any NPU-vs-CPU prompt comparison made on short prompts
+measures padding. Use `llama-bench -p 512` or larger; for short-prompt workloads, shrink the chunk
+size — it is a direct multiplier (and part of the graph cache key, so budget one compile per value).
+
+Candidate causes for the decode gap, roughly by suspicion:
+
+1. the stateless cache contract — every step re-binds and re-writes K/V for 11 layers plus 13 conv
+   states, in and out, as graph inputs and outputs,
+2. activation quantization cost per step (`NPU_COMPILER_DYNAMIC_QUANTIZATION`), which for a single
+   token is pure overhead against very little arithmetic,
+3. `optimization-level` / compile hints not being set for a decode-shaped graph, and NPUW funcall
+   granularity — ~1000-node graphs executed per token with per-invocation submit overhead,
+4. the conv-state write-back being expressed as a runtime-indexed `Gather` (static shape, dynamic
+   index → nothing on-device can optimize it away).
 
 Cold compile is ~36 s per graph; warm (cache dir hit) most of that disappears, which is why a
 persistent `GGML_OPENVINO_CACHE_DIR` is mandatory rather than advisory.
+
+**Related robustness finding:** an out-of-range KV write index — e.g. `-p 1024 -n 32` against a 1024
+context — makes the CPU plugin fail its `scatter_update` bounds check, and makes the NPU plugin drop
+the device with `ZE_RESULT_ERROR_DEVICE_LOST`. Same bug, and on the NPU it is the worse of the two
+failure modes.
