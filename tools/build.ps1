@@ -23,7 +23,11 @@ if (-not (Test-Path (Join-Path $build 'build.ninja'))) {
     throw "not configured yet - run tools\configure.ps1 -OpenVinoDir <path> first"
 }
 
-$targets = ($Target -join ' ')
+# Accept both spellings from the caller: an array @('llama-cli','llama-bench') and the single string
+# 'llama-cli,llama-bench' that `pwsh -File tools/build.ps1 -Target llama-cli,llama-bench` produces —
+# -File does not split on commas, so the whole thing arrives as one element and ninja then reports
+# `unknown target 'llama-cli,llama-bench'`. CI hit exactly that.
+$targets = (($Target | ForEach-Object { $_ -split '[,\s]+' } | Where-Object { $_ }) -join ' ')
 # Not $parallel / $clean: PowerShell variable names are case-insensitive, so those collide with the
 # [int]$Parallel and [switch]$Clean parameters and assigning a string to them fails with
 # "Cannot convert value '--parallel' to type System.Int32" before a single compile line runs.
