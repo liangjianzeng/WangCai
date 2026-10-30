@@ -389,8 +389,16 @@ std::optional<ExtraQuantType> ggml_openvino_get_requant_type(const ggml_tensor *
         return std::nullopt;
     }
     if (strncmp(tensor->name, "token_embd.weight", 17) == 0) {
-        return ((ggml_openvino_is_npu() && tensor->type == GGML_TYPE_Q6_K) ? ExtraQuantType::F16 :
-                                                                             ExtraQuantType::Q8_0_C);
+        // F16 on the NPU regardless of the source type: a Q8_0 checkpoint arrives with its
+        // embedding table already in Q8_0, and the Q8_0_C cluster layout there makes the NPUW
+        // graph fail at execute time (L0 pfnAppendGraphExecute, ZE_RESULT_ERROR_UNINITIALIZED)
+        // even though the same layout works for output.weight. The vocab table is read-once
+        // per token, so F16 costs ~2x the bytes of Q8_0_C on a 152k x 2048 table (~600 MB)
+        // -- acceptable, and it keeps every model family on one known-good path.
+        return ((ggml_openvino_is_npu() && (tensor->type == GGML_TYPE_Q6_K ||
+                                            tensor->type == GGML_TYPE_Q8_0))
+                    ? ExtraQuantType::F16
+                    : ExtraQuantType::Q8_0_C);
     }
     if (strncmp(tensor->name, "output.weight", 13) == 0) {
         return ExtraQuantType::Q8_0_C;
@@ -439,6 +447,14 @@ std::optional<ExtraQuantType> ggml_openvino_get_requant_type(const ggml_tensor *
     // i.e. the plugin cannot take the grouped-Q4_K-with-zero-point layout, which is presumably why
     // upstream forces grouped 4 bit here at all.
     if (ggml_openvino_is_npu() && !rq) {
+        // A group size larger than the row cannot be expressed. LFM3 carries attn_gate.weight
+        // [2048, 16] -- half of one Q8_0 block -- and forcing it into group-128 repacking yields
+        // a weight node whose scales the L0 driver rejects at AppendGraphExecute
+        // (ZE_RESULT_ERROR_UNINITIALIZED on a graph that compiled fine). Narrow weights go to
+        // F16 instead; they are tiny (2048x16 = 64 KB), so the memory cost is nil.
+        if (tensor->ne[0] < 128) {
+            return ExtraQuantType::F16;
+        }
         return ExtraQuantType::Q4_0_128;
     }
 

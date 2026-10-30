@@ -1095,6 +1095,33 @@ std::shared_ptr<ov::Node> extract_quantized_weights(const ggml_tensor * tensor,
     // Create the OpenVINO weight subgraph. 3D expert weights (MoE) are routed through the
     // GatherMatmul-oriented path: dequantized in f16, with constant folding disabled on the chain.
     ov::Output<ov::Node> weight_node;
+    // Validate the packed weight data before it reaches the driver: a NaN/Inf scale (a
+    // degenerate group -- all-zero row, half-full last block) makes the L0 driver fail at
+    // AppendGraphExecute with an anonymous ZE_RESULT_ERROR_UNINITIALIZED, which is otherwise
+    // untraceable back to the tensor that caused it.
+    {
+        const auto count_bad_f16 = [](const ov::Tensor & t) {
+            size_t bad = 0;
+            const auto * p = t.data<ov::float16>();
+            const size_t n = t.get_size();
+            for (size_t i = 0; i < n; i++) {
+                const uint16_t bits = *reinterpret_cast<const uint16_t *>(&p[i]);
+                const uint16_t exp = (bits >> 10) & 0x1F;
+                if (exp == 0x1F) {
+                    bad++;
+                }
+            }
+            return bad;
+        };
+        const size_t bad_scales = count_bad_f16(scales);
+        const size_t bad_zp = zp.get_size() ? count_bad_f16(zp) : 0;
+        if (bad_scales || bad_zp) {
+            GGML_LOG_ERROR("%s: tensor '%s' (%s): %zu bad scales, %zu bad zero points -- the "
+                           "driver will likely reject this graph at execute time\n",
+                           __func__, tensor->name, ggml_type_name(tensor->type), bad_scales, bad_zp);
+        }
+    }
+
     if (is_u4) {
         weight_node = make_int4_weights(weights, scales, zp, weights_per_block, use_bias, for_gather_matmul);
     } else {
@@ -1194,6 +1221,29 @@ std::shared_ptr<ov::Node> requantize_to_buffers(const ggml_tensor * tensor,
 
     // Create the OpenVINO weight subgraph
     ov::Output<ov::Node> weight_node;
+    // Same validation as the extract path below: a non-finite scale is untraceable once the
+    // driver turns it into an anonymous ZE_RESULT_ERROR_UNINITIALIZED at execute time.
+    {
+        const auto count_bad_f16 = [](const ov::Tensor & t) {
+            size_t bad = 0;
+            const auto * p = t.data<ov::float16>();
+            const size_t n = t.get_size();
+            for (size_t i = 0; i < n; i++) {
+                const uint16_t bits = *reinterpret_cast<const uint16_t *>(&p[i]);
+                if (((bits >> 10) & 0x1F) == 0x1F) {
+                    bad++;
+                }
+            }
+            return bad;
+        };
+        const size_t bad_scales = count_bad_f16(scales);
+        const size_t bad_zp = zp.get_size() ? count_bad_f16(zp) : 0;
+        if (bad_scales || bad_zp) {
+            GGML_LOG_ERROR("%s: tensor '%s' (%s): %zu bad scales, %zu bad zero points -- the "
+                           "driver will likely reject this graph at execute time\n",
+                           __func__, tensor->name, ggml_type_name(tensor->type), bad_scales, bad_zp);
+        }
+    }
     if (is_u4) {
         weight_node = make_int4_weights(weights, scales, zp, block_size);
     } else {
