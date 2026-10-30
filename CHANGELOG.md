@@ -8,6 +8,16 @@ Unreleased dates are the dates the change was verified on hardware, not the date
 
 ## [Unreleased] — baseline `abb76ab` (llama.cpp), OpenVINO 2026.4.1
 
+### Fixed — build
+
+- `find_package(OpenCL REQUIRED)` in the backend's `CMakeLists.txt` made the backend impossible to
+  *configure* on a machine without an OpenCL SDK (`Could NOT find OpenCL (missing: OpenCL_LIBRARY
+  OpenCL_INCLUDE_DIR)`) — i.e. on every NPU-only machine. The dependency was fictional: every `cl*`
+  entry point the backend calls has an inline stub in `ov_opencl_shim.hpp`, so there is nothing to link
+  against. It is now found-if-present and optional, and the configure step prints what it decided. This
+  survived local development only because a CUDA toolkit on the PATH had left an `OpenCL.lib` for
+  `find_package` to trip over; CI found it.
+
 ### Fixed — tooling
 
 - `configure.ps1` and `build.ps1` assigned `$isWindows`, which under PowerShell 7 collides with the

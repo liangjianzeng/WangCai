@@ -107,10 +107,10 @@ jobs:
           $log = Join-Path $env:RUNNER_TEMP 'bootstrap.log'
           & pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/bootstrap.ps1 -Commit $env:LLAMA_COMMIT *>&1 |
               Tee-Object -FilePath $log | Out-Host
-          if ($LASTEXITCODE -ne 0) {
-              $tail = ((Get-Content $log | Select-Object -Last 15) -join ' || ') -replace '[\r\n]', ' '
-              Write-Output "::error::bootstrap exit=$LASTEXITCODE :: $tail"
-              exit $LASTEXITCODE
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+              & ./tools/ci-fail.ps1 -Log $log -Exit $code -Label bootstrap `
+                  -Pattern 'fatal:|error:|failed|does not apply' -Context 3
           }
 
       - name: Configure
@@ -122,13 +122,9 @@ jobs:
           $log = Join-Path $env:RUNNER_TEMP 'configure.log'
           & pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/configure.ps1 -OpenVinoDir $env:OPENVINO_CMAKE_DIR *>&1 |
               Tee-Object -FilePath $log | Out-Host
-          if ($LASTEXITCODE -ne 0) {
-              $pick = (Get-Content $log | Select-String -Pattern 'CMake Error|CMake Warning at|Could NOT find|error:|Cannot|not found' |
-                       Select-Object -First 12 | ForEach-Object { $_.Line.Trim() }) -join ' || '
-              if (-not $pick) { $pick = ((Get-Content $log | Select-Object -Last 15) -join ' || ') }
-              $pick = $pick -replace '[\r\n]', ' '
-              Write-Output "::error::configure exit=$LASTEXITCODE :: $pick"
-              exit $LASTEXITCODE
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+              & ./tools/ci-fail.ps1 -Log $log -Exit $code -Label configure
           }
 
       - name: Build
@@ -137,13 +133,9 @@ jobs:
           $log = Join-Path $env:RUNNER_TEMP 'build.log'
           & pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/build.ps1 -Target llama-cli -Target llama-bench *>&1 |
               Tee-Object -FilePath $log | Out-Host
-          if ($LASTEXITCODE -ne 0) {
-              $pick = (Get-Content $log | Select-String -Pattern 'error C|error LNK|undefined reference|fatal error|FAILED:' |
-                       Select-Object -First 12 | ForEach-Object { $_.Line.Trim() }) -join ' || '
-              if (-not $pick) { $pick = ((Get-Content $log | Select-Object -Last 15) -join ' || ') }
-              $pick = $pick -replace '[\r\n]', ' '
-              Write-Output "::error::build exit=$LASTEXITCODE :: $pick"
-              exit $LASTEXITCODE
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+              & ./tools/ci-fail.ps1 -Log $log -Exit $code -Label build
           }
 
       - name: Confirm the backend registered its devices

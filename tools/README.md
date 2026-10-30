@@ -100,3 +100,29 @@ Always do step 1 before trusting step 2. Pass counts differ between runs, and co
 device against pass N of the other produces confident nonsense. `compare-tensors.ps1` reads the
 `.txt` sidecar written next to each dump for the element type (f32 and f16 supported; anything else is
 skipped by name rather than silently misread).
+
+### Row mode, and why whole-buffer KV comparison is a trap
+
+A KV cache tensor is `[1,1,ctx,heads*head_dim]`: the rows are positions, and a chunk writes only the
+rows it was given. Everything past the last written position holds whatever the buffer happened to
+contain — on a fresh allocation, often zeros on *both* sides. Whole-tensor statistics over that region
+are not measurements:
+
+```
+cache_v_l20   cosine=0.135  maxDiff=0.0000      # both sides zero: "0.135" is 0/0, not divergence
+cache_k_l2    cosine=0.998  maxDiff=45091        # one row disagrees, the rest is padding
+```
+
+`-RowSize` compares row by row instead — one row = one position = `n_kv_heads × head_dim` (512 for
+LFM3-1.7B), and prints per-row cosine and max-abs plus `leading-clean`, how many rows from the start
+agree within `-RowTol` (default 0.05):
+
+```powershell
+# rows 0..25 of the K cache written by the first prefill chunk
+tools\compare-tensors.ps1 -A dbg\cpu\prefill_0_cache_k_l2.bin -B dbg\npu\prefill_0_cache_k_l2.bin `
+    -RowSize 512 -MaxRows 26
+```
+
+Read `leading-clean` first: if the chunk wrote N rows, that is the only region worth reading, and a
+tensor whose clean rows stop at the write boundary is telling you about the write, not the arithmetic.
+Use `-MaxElements` with it to keep the scan (and the f16 decode) bounded.

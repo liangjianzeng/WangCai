@@ -97,6 +97,33 @@ referenced, inline stubs for the OpenCL entry points used, and `ov::intel_gpu::o
 - `USMTensor::get() const` returning `void*` from `ov::Tensor::data()` needs a `const_cast`, and the
   header needs `<string>`.
 
+### …and its CMake half
+
+Fixing the headers is only half of it. The backend's `CMakeLists.txt` also carried
+
+```cmake
+find_package(OpenCL REQUIRED)
+target_link_libraries(ggml-openvino PRIVATE … OpenCL::OpenCL)
+```
+
+so configuring failed on any machine without an OpenCL SDK — `Could NOT find OpenCL (missing:
+OpenCL_LIBRARY OpenCL_INCLUDE_DIR)` — which is every NPU-only machine. It went unnoticed during local
+development because a CUDA toolkit on the PATH had left an `OpenCL.lib` where `find_package` could
+trip over it, and CI only found it once the failure was reported as an annotation.
+
+The shim makes this dependency fictional: every `cl*` entry point the backend calls
+(`clGetContextInfo`, `clGetDeviceInfo`, `clGetExtensionFunctionAddressForPlatform`,
+`clCreateCommandQueueWithProperties`, `clReleaseCommandQueue`, `clFinish`) has an inline stub that
+throws `gpu_path_unavailable`, so there is nothing to link against. Upstream's `REQUIRED` is therefore
+now optional in [`src/ggml-openvino/CMakeLists.txt`](../src/ggml-openvino/CMakeLists.txt): found is
+preferred (a build that restores the real Khronos headers links the real library), absent is fine, and
+the configure step says so:
+
+```
+-- OpenCL host library not found - building the OpenVINO backend without it (the GPU
+   remote-context path is stubbed; NPU and CPU builds are unaffected)
+```
+
 ## Building
 
 ```powershell
