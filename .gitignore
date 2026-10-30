@@ -1,0 +1,65 @@
+# Build outputs
+src/
+build/
+build-*/
+out/
+*.obj
+*.dll
+*.exe
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# OpenVINO runtime drop and NPU compiled-graph caches (regenerable, multi-GB)
+ov/
+*cache*/
+*.nv12
+*.noh
+leif_cache/
+
+# Tensor dumps produced by GGML_OPENVINO_DUMP_BIN and the diagnostic logs around them
+dbg/
+dumps/
+*.bin
+!docs/**/*.bin
+*.log
+cgraph_ov*.txt
+IR_*.xml
+IR_*.bin
+
+# Model weights — never commit
+*.gguf
+*.ggml
+*.safetensors
+models/
+
+# Python venvs used to unpack the OpenVINO wheel
+.venv/
+venv/
+__pycache__/
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+*.user
+Thumbs.db
+.DS_Store
+
+# Agent / assistant project memory — private engineering notes, never committed here
+# (see the private docs repo; these must not appear in the public clone)
+AGENTS.md
+agents.md
+**/AGENTS.md
+CLAUDE.md
+**/CLAUDE.md
+.claude/
+.workbuddy/
+.qoder/
+
+# Local scratch
+*.orig
+*.rej
+tmp/
+.envrc.local

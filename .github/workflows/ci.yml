@@ -1,0 +1,100 @@
+name: CI
+
+# Hosted runners have no Intel NPU, so this workflow cannot test the thing this project is about.
+# What it can guarantee cheaply: the patch set still applies to the pinned llama.cpp, the OpenVINO
+# backend still compiles on Windows and Linux, and the tooling still parses.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  LLAMA_COMMIT: abb76ab380c7f3f731e365a859fb4cc64e939bb8
+  OPENVINO_VERSION: 2026.4.1
+
+jobs:
+  scripts:
+    name: PowerShell tooling parses
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse every script
+        shell: pwsh
+        run: |
+          $bad = @()
+          Get-ChildItem tools -Filter *.ps1 | ForEach-Object {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errs) | Out-Null
+            if ($errs -and $errs.Count) {
+              $bad += $_.Name
+              $errs | ForEach-Object { Write-Host ("  {0}: {1}" -f $_.Extent.StartLineNumber, $_.Message) }
+            }
+          }
+          if ($bad) { throw "parse errors in: $($bad -join ', ')" }
+          Write-Host 'all tools/*.ps1 parse cleanly'
+
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install OpenVINO runtime + build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install "openvino==${OPENVINO_VERSION}" ninja cmake
+          echo "OpenVINO version:"; python -c "import openvino; print(openvino.__version__)"
+
+      - name: Bootstrap vendored llama.cpp
+        shell: pwsh
+        run: |
+          tools/bootstrap.ps1 -Commit $env:LLAMA_COMMIT
+          if ($LASTEXITCODE) { throw 'bootstrap failed' }
+
+      - name: Configure (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          $cmakeDir = (python -c "import openvino, os; print(os.path.join(os.path.dirname(openvino.__file__), 'cmake'))").Trim()
+          tools/configure.ps1 -OpenVinoDir $cmakeDir
+          if ($LASTEXITCODE) { throw 'configure failed' }
+
+      - name: Configure (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        shell: pwsh
+        run: |
+          $cmakeDir = (python -c "import openvino, os; print(os.path.join(os.path.dirname(openvino.__file__), 'cmake'))").Trim()
+          tools/configure.ps1 -OpenVinoDir $cmakeDir
+          if ($LASTEXITCODE) { throw 'configure failed' }
+
+      - name: Build
+        shell: pwsh
+        run: |
+          tools/build.ps1 -Target llama-cli, llama-bench
+          if ($LASTEXITCODE) { throw 'build failed' }
+
+      - name: Confirm the backend registered its devices
+        shell: pwsh
+        run: |
+          $bin = Join-Path (Join-Path (Join-Path 'src' 'llama') 'build') 'bin'
+          $exe = if ($IsWindows) { 'llama-cli.exe' } else { 'llama-cli' }
+          $path = (Get-ChildItem $bin -Filter 'libopenvino*' | Select-Object -First 1).DirectoryName
+          if ($path) { $env:PATH = "$path$([IO.Path]::PathSeparator)$env:PATH" }
+          & (Join-Path $bin $exe) --list-devices

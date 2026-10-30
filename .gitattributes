@@ -1,0 +1,20 @@
+# Normalize line endings; keep the artifacts that must be byte-exact as they are.
+* text=auto eol=lf
+
+*.ps1    text eol=crlf
+*.bat    text eol=crlf
+*.cmd    text eol=crlf
+
+*.patch  text eol=lf -diff
+*.dll    binary
+*.exe    binary
+*.gguf   binary
+*.bin    binary
+*.lib    binary
+
+*.md     text
+*.yml    text
+*.yaml   text
+
+# GitHub language stats
+tools/*.ps1  linguist-language=PowerShell
