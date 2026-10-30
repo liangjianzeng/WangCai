@@ -54,7 +54,10 @@ word salad.
 | decode 3 | id5141 · 22.29 | **id342** · 14.91 (cosine `0.870`) |
 | decode 4 | id278 · 26.06 | **id711** · 11.32 (cosine `0.726`) |
 
-Same norm, lower peak → precision signature, not an indexing one. Ruled out and still-standing
+Same norm, lower peak → precision signature, not an indexing one. The first per-layer measurement
+(conv-state outputs of the **first prefill chunk**) shows cosine falling monotonically with depth —
+`0.9987` at layer 0, `0.72` at layer 9, `0.215` at layer 17 — i.e. a small per-layer error compounding
+through the residual stream, present before any decode step or state reuse. Ruled out and still-standing
 conclusions are tabulated in
 [npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap), including the full NPUW/dynamic-quantization
 lever sweep (nothing fixes it; disabling those paths makes it strictly worse).

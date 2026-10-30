@@ -10,7 +10,8 @@ not here, open an issue with the artifacts from [../CONTRIBUTING.md](../CONTRIBU
 From `openvino/runtime/intel_gpu/ocl/ocl_wrapper.hpp:50`, pulled in by the OpenVINO backend. The GPU
 remote-context headers are not needed on an NPU build but are included unconditionally.
 
-**Fix:** apply the patch set and drop `ov_opencl_shim.hpp` into `ggml/src/ggml-openvino/` — see
+**Fix:** build through `tools/bootstrap.ps1`, which installs [`src/ggml-openvino/`](../src/ggml-openvino/)
+(including `ov_opencl_shim.hpp`) onto the pinned llama.cpp — see
 [build.md](build.md#the-opencl-header-problem). Downloading the Khronos headers also works if you can
 reach the headers repository.
 

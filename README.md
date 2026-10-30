@@ -1,160 +1,161 @@
 # WangCai 旺财
 
-> **Pure-NPU on-device inference engine for Intel® Core™ Ultra.**
-> Giving *Intel® AI Boost* — the accelerator the industry forgot — a second life.
+> **面向 Intel® Core™ Ultra 的纯 NPU 端侧推理引擎。**
+> 让被业界晾了多年的 *Intel® AI Boost* 重新产生价值。
 
-**English** · [简体中文](README_zh.md)
-
----
-
-WangCai runs quantized LLMs **entirely on the Intel NPU** (`Intel(R) AI Boost`), with no CPU
-fallback for the transformer body and no discrete GPU in the picture. The token stream goes in,
-the whole forward pass — prefill *and* decode — is compiled once into static OpenVINO graphs and
-executed on the NPU.
-
-The current target line is **[LFM3](https://www.liquid.ai)** from Liquid AI: a hybrid
-short-convolution / sliding-window / global-attention family that ships as an omni-modal stack.
-The first milestone is the **text (LLM) path**, which is what this repository documents today.
-
-```
-prompt ──► llama.cpp (tokenize, build ggml cgraph)
-                    │
-                    ▼
-        ggml-openvino  ── translates the cgraph into an OpenVINO op graph
-                    │       (op_table + per-op lowering, static-shape mode)
-                    ▼
-        OpenVINO NPU plugin (NPUW)  ── compiles to a LEIF graph, runs on AI Boost
-                    │
-                    ▼
-        logits ──► llama.cpp sampler ──► tokens
-```
+**简体中文** · [English](README_en.md)
 
 ---
 
-## Why
+WangCai 让量化后的大模型**完整跑在 Intel NPU（`Intel(R) AI Boost`）上**：Transformer 主干不回退
+CPU，也不依赖任何独立显卡。token 进来之后，prefill 与 decode 都被一次性编译成静态 OpenVINO 图，
+在 NPU 上执行。
 
-Every Intel Core Ultra laptop ships an NPU rated in the tens of TOPS, and for the last several
-generations it has been, charitably, under-utilized by the open-source LLM ecosystem. The usual
-"AI PC" story ends with the NPU being used for a webcam effect while the LLM runs on the CPU.
+当前的模型线是 Liquid AI 的 **[LFM3](https://www.liquid.ai)**：一套"短卷积 + 滑动窗口注意力 +
+全局注意力"混合结构的全模态（omni-modal）模型族。第一个里程碑是其中的**文本（LLM）链路**，也是本
+仓库目前的全部工作内容。
 
-The NPU is genuinely attractive for this workload: decode is memory-bandwidth-bound and the
-accelerator has its own high-bandwidth path plus a fixed-function array that sips power while the
-CPU cores stay free for the rest of the system. Getting there is not a matter of flipping a switch
-— the accelerator wants **static shapes, a single sequence, and no dynamic control flow**, which is
-exactly the opposite of how LLM runtimes are usually written.
+```
+prompt ──► llama.cpp（分词、构建 ggml cgraph）
+                    │
+                    ▼
+        ggml-openvino ── 把 cgraph 翻译成 OpenVINO 算子图
+                    │      （op_table + 逐算子降级，静态形状模式）
+                    ▼
+        OpenVINO NPU 插件（NPUW）── 编译为 LEIF 图，在 AI Boost 上执行
+                    │
+                    ▼
+        logits ──► llama.cpp 采样器 ──► token
+```
 
-WangCai's bet: the gap is an *engineering* gap, not a hardware one.
+引擎源码就在仓库里：[`src/ggml-openvino/`](src/ggml-openvino/)（背景与改动清单见
+[`src/ggml-openvino/WANGCAI.md`](src/ggml-openvino/WANGCAI.md)）。
 
-## Status
+---
 
-Honest, measured, and tracked in [docs/status.md](docs/status.md).
+## 为什么做这件事
 
-| Milestone | Status |
+每一台 Intel Core Ultra 笔记本里都有一颗几十 TOPS 的 NPU，但在过去几代产品里，它在开源 LLM 生态
+中的存在感约等于零——典型的 "AI PC" 叙事最后都变成：NPU 拿去做人像虚化，LLM 在 CPU 上硬扛。
+
+这颗芯片对这类负载其实非常合适：decode 是访存瓶颈型工作，NPU 有自己的高带宽通路和定式计算阵列，
+功耗极低，还能把 CPU 核心完整留给系统其它部分。难的不是"要不要用"，而是它要求**静态形状、单
+序列、无动态控制流**——这恰好是常规 LLM 运行时的反面。
+
+WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
+
+## 当前状态
+
+诚实、可复现，明细见 [docs/status.md](docs/status.md)。
+
+| 里程碑 | 状态 |
 |---|---|
-| Build the OpenVINO backend without the GPU/OpenCL SDK | ✅ done |
-| LFM3-1.7B graph compiles and runs **end-to-end on the NPU** | ✅ done |
-| Hybrid (short-conv + SWA + full) attention masked correctly on static graphs | ✅ done |
-| Numerical parity with the CPU reference on the NPU | 🟡 in progress |
-| Throughput tuning past the first working number | ⬜ next |
-| LFM3 omni modalities (audio in / vision in) | ⬜ planned |
+| 不装 GPU/OpenCL SDK 也能编出 OpenVINO 后端 | ✅ 完成 |
+| LFM3-1.7B 在 **NPU 上端到端跑通** | ✅ 完成 |
+| 混合结构（短卷积 + SWA + 全局注意力）在静态图下正确寻址 KV 环 | ✅ 完成 |
+| NPU 与 CPU 参照的数值一致性 | 🟡 进行中 |
+| Prefill 追平 CPU | 🟡 已达参照的 73%，仍在找余量 |
+| Decode 追平 CPU | 🟡 落后 6 倍，当前主攻方向 |
+| LFM3 全模态（音频输入 / 视觉输入） | ⬜ 规划中 |
 
-What "in progress" means concretely: greedy generation on the NPU agrees with the CPU reference on
-the first few tokens and then wanders. The cosine similarity against reference logits is `0.969` at
-the end of prefill and `0.73–0.87` during decode, with the logit distribution measurably flattened.
-[docs/npu-internals.md](docs/npu-internals.md) documents how that was localized and what is
-currently ruled in and out.
+"进行中"的具体含义：NPU 上的贪心解码在最初几个 token 与 CPU 参照一致，随后开始漂移。与参照
+logits 的余弦相似度为 `0.969`（prefill 结束）与 `0.73–0.87`（decode），且 logit 分布被明显"压平"。
+新的逐层比对显示**发散从第一个 prefill chunk 就存在**，因此嫌疑集中在单次前向的数值执行，而不是
+跨步的状态记账。定位过程见 [docs/npu-internals.md](docs/npu-internals.md)。
 
-## Measured numbers
+## 实测数据
 
 Intel Core Ultra 9 275HX · Intel AI Boost (NPU 3720) · 32 GB · OpenVINO 2026.4.1
-LLM3-1.7B `Q4_K_M` (1049 MB) · 24 layers (13 gated short-conv, 5 sliding-window@256, 6 global) ·
-`-c 1024 -fa 1 -np 1 --temp 0`
+LFM3-1.7B `Q4_K_M`（1049 MB）· 24 层（13 门控短卷积 + 5 滑动窗口@256 + 6 全局注意力）· `-fa 1 -np 1`
 
-| Execution path | Prefill (`pp512`) | Decode | Notes |
+| 执行路径 | Prefill（`llama-bench pp512`） | Decode | 备注 |
 |---|---:|---:|---|
-| `ggml` CPU reference (`-dev none`) | 570 t/s | 54.1 t/s | coherence reference |
-| OpenVINO · CPU device, dynamic graphs | 610 t/s | 21.7–29.2 t/s | coherent |
-| **OpenVINO · NPU device, static graphs** | **415 t/s** | **8.3–8.7 t/s** | runs; accuracy WIP |
-| OpenVINO · NPU, first graph compile (cold) | — | — | ~36 s one-off, then cached |
+| `ggml` 原生 CPU（`-dev none`） | 570 t/s | 54.1 t/s | 连贯性参照 |
+| OpenVINO · CPU 设备，动态图 | 610 t/s | 21.7–29.2 t/s | 输出连贯 |
+| **OpenVINO · NPU 设备，静态图** | **415 t/s** | **8.3–8.7 t/s** | 跑通；精度进行中 |
+| OpenVINO · NPU 首次图编译（冷启动） | — | — | 一次性约 36 s，之后命中缓存 |
 
-Prefill on the accelerator reaches 73% of the CPU reference. **Decode is the real gap** (6× behind the
-reference, ~0.03 of the available TOPS) and is the current performance target. Beware the tempting
-shortcut: prompt throughput measured on a 4-token prompt reads ~6 t/s on the NPU, because the static
-prefill graph is always 256 columns wide and 4 useful tokens pay for 256. Measure `pp512` or larger —
-[benchmarks.md](docs/benchmarks.md) explains the arithmetic.
+两点必须说清楚：
 
-Reproduce with [`tools/`](tools/README.md). Full methodology and caveats:
-[docs/benchmarks.md](docs/benchmarks.md).
+- **NPU 的 prefill 不是问题**：pp512 达到原生参照的 73%。真正的短板是 **decode**，只用到可用 TOPS
+  的约 0.03。
+- **别拿短 prompt 的 t/s 说事**：静态 prefill 图恒为 256 列宽，4 个 token 也要付 256 列的代价，而
+  llama.cpp 按"有效 token / 秒"上报，于是同一个 0.66 s 的 chunk 会被报成 ~6 t/s。要么测 `pp512`
+  及以上，要么按 prompt 长度调 `GGML_OPENVINO_PREFILL_CHUNK_SIZE`。算术细节见
+  [docs/benchmarks.md](docs/benchmarks.md)。
 
-## Quick start
+复现方式见 [`tools/`](tools/README.md)。
+
+## 快速开始
 
 ```powershell
-# 1. toolchain: Visual Studio 2022 BuildTools (MSVC), CMake + Ninja, OpenVINO runtime
-git clone https://github.com/ggml-org/llama.cpp src/llama
-cd src/llama; git checkout abb76ab
-git apply ..\..\patches\0001-ggml-openvino-npu-adaptation.patch
-copy ..\..\patches\ov_opencl_shim.hpp ggml\src\ggml-openvino\
+# 1. 工具链：VS 2022 BuildTools（MSVC）、CMake + Ninja、OpenVINO 运行时（可用 PyPI wheel 解包）
+pip download openvino==2026.4.1 --no-deps -d .\ovdl
+Expand-Archive .\ovdl\openvino-2026.4.1-*.whl -DestinationPath .\ov     # → .\ov\openvino\cmake
 
-# 2. configure + build (Release, OpenVINO backend only)
-..\..\tools\configure.ps1 -OpenVinoDir C:\openvino\openvino\cmake
-..\..\tools\build.ps1
+# 2. 取引擎源码：克隆固定版本的 llama.cpp 到 src/llama，并把 src/ggml-openvino 覆盖上去
+git clone https://github.com/liangjianzeng/WangCai
+cd WangCai
+tools\bootstrap.ps1
 
-# 3. run on the NPU
+# 3. 配置 + 构建（Release，仅启用 OpenVINO 后端）
+tools\configure.ps1 -OpenVinoDir ..\ov\openvino\cmake
+tools\build.ps1
+
+# 4. 在 NPU 上跑
 $env:GGML_OPENVINO_DEVICE = 'NPU'
 $env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'
-.\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 -dev OPENVINO3 -st -p 'hello'
+src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 -dev OPENVINO3 -st -p '用一句话介绍长城。'
 ```
 
-Details in [docs/getting-started.md](docs/getting-started.md) and [docs/build.md](docs/build.md).
+细节见 [docs/getting-started.md](docs/getting-started.md) 与 [docs/build.md](docs/build.md)。
 
-## Documentation
+## 仓库结构
 
-| Document | What it answers |
+```
+src/ggml-openvino/    引擎本体：ggml OpenVINO 后端（上游 + WangCai 改动），可直接阅读
+patches/              同一份改动的补丁形式（评审与上游化用）+ 逐 hunk 说明
+tools/                bootstrap / configure / build / run-npu / npu-sweep / compare-tensors / top-token
+docs/                 上手、构建、架构、NPU 内部机制、环境变量、基准、状态、排障、路线图
+prompts/              中英样例 prompt（UTF-8）
+src/llama/            vendored 的 llama.cpp（.gitignore 排除，由 bootstrap 生成）
+```
+
+## 文档
+
+| 文档 | 回答什么 |
 |---|---|
-| [Getting started](docs/getting-started.md) | hardware, model files, first NPU run |
-| [Build from source](docs/build.md) | toolchain, OpenVINO dev files, the CL-header problem |
-| [Architecture](docs/architecture.md) | how a ggml cgraph becomes a static NPU graph |
-| [NPU internals](docs/npu-internals.md) | the hard parts: static shapes, KV rings, conv state, NPUW |
-| [Environment variables](docs/env-vars.md) | upstream knobs + the ones WangCai adds |
-| [Benchmarks](docs/benchmarks.md) | numbers, how they were taken, what they do *not* prove |
-| [Troubleshooting](docs/troubleshooting.md) | every error we hit and how it was resolved |
-| [Roadmap](docs/roadmap.md) | accuracy parity, throughput, then omni modalities |
+| [快速上手](docs/getting-started.md) | 硬件、模型文件、第一次 NPU 运行 |
+| [源码构建](docs/build.md) | 工具链、OpenVINO 开发包、CL 头文件之坑 |
+| [架构](docs/architecture.md) | 一张 ggml cgraph 如何变成静态 NPU 图 |
+| [NPU 内部机制](docs/npu-internals.md) | 硬骨头：静态形状、KV 环、conv 状态、NPUW |
+| [环境变量](docs/env-vars.md) | 上游开关 + WangCai 新增的开关 |
+| [基准测试](docs/benchmarks.md) | 数字、取数口径、以及它们不能证明什么 |
+| [当前状态](docs/status.md) | 今天到底什么能用，附验证命令 |
+| [故障排查](docs/troubleshooting.md) | 我们踩过的每一个报错及解法 |
+| [路线图](docs/roadmap.md) | 先精度、再吞吐、然后全模态 |
 
-## What WangCai actually changes
-
-Two things, both small enough to read:
-
-1. **Patches to `ggml/src/ggml-openvino/`** — 7 files, +213 lines on top of llama.cpp `abb76ab`
-   ([patch](patches/0001-ggml-openvino-npu-adaptation.patch), [notes](patches/README.md)):
-   makes the backend buildable for an NPU-only target, makes hybrid sliding-window + full-attention
-   models address their KV rings correctly under static shapes, and adds device-comparison
-   instrumentation (raw output dumps, position-derived masks, NPU compile-config overrides).
-2. **`tools/`** — build/run/diagnose scripts and an element-wise tensor comparison harness that made
-   the accuracy work possible.
-
-Everything else is upstream [llama.cpp](https://github.com/ggml-org/llama.cpp) and
-[OpenVINO](https://github.com/openvinotoolkit/openvino).
-
-## Hardware requirements
+## 硬件要求
 
 | | |
 |---|---|
-| SoC | Intel Core Ultra (Series 1/2) with `Intel(R) AI Boost` — `PCI\VEN_8086&DEV_AD1D` class device |
-| Driver | Intel NPU driver matching the installed OpenVINO release |
-| OS | Windows 11 (Linux path is upstream-supported; untested here) |
-| RAM | ≥ 8 GB free per 2 B of model; 16 GB comfortable for 1–4 B models |
+| SoC | 带 `Intel(R) AI Boost` 的 Intel Core Ultra（Series 1/2），设备类 `PCI\VEN_8086&DEV_AD1D` |
+| 驱动 | 与所装 OpenVINO 版本匹配的 Intel NPU 驱动 |
+| 系统 | Windows 11（Linux 路径上游支持，本机未验证） |
+| 内存 | 每 2 GB 模型至少 8 GB 空闲；1–4 B 模型 16 GB 舒适 |
 
-## Contributing
+## 参与贡献
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Repro reports with a `GGML_OPENVINO_DUMP_BIN` capture and a
-`tools/compare-tensors.ps1` output are worth more than a thousand "it doesn't work" issues.
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。一份带 `GGML_OPENVINO_DUMP_BIN` 转储与
+`tools/compare-tensors.ps1` 输出的复现材料，比一千句"跑不通"更有价值。
 
-## License
+被推翻的假设同样欢迎——它们进 [CHANGELOG.md](CHANGELOG.md)，很多时候比修复更省后来人的时间。
 
-Apache-2.0 — see [LICENSE](LICENSE). Upstream llama.cpp (MIT) and OpenVINO (Apache-2.0) terms
-continue to apply to their respective code.
+## 许可
 
-## Acknowledgements
+Apache-2.0，见 [LICENSE](LICENSE)。上游 llama.cpp（MIT）与 OpenVINO（Apache-2.0）各自的条款继续适用。
 
-The ggml-org llama.cpp maintainers, and the OpenVINO NPU team — the OpenVINO backend inside
-llama.cpp is the reason this project is a patch set rather than a rewrite.
+## 致谢
+
+llama.cpp 的 ggml-org 维护者，以及 OpenVINO NPU 团队——llama.cpp 里的 OpenVINO 后端，是这个项目
+能只是一组补丁而不是一次重写的原因。

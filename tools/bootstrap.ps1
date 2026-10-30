@@ -1,12 +1,19 @@
 <#
-    bootstrap.ps1 - create the vendored llama.cpp checkout and apply the WangCai patch set.
-    Idempotent: re-running only re-applies the patches if they are missing.
+    bootstrap.ps1 - create the vendored llama.cpp checkout and install the WangCai backend sources.
+
+    src/ggml-openvino/ in this repository is the authoritative copy of the engine's code. It is
+    overlaid onto the pinned llama.cpp checkout, which makes the build reproducible and lets anyone
+    read the engine without applying anything. patches/ remains as the readable history of the change
+    (and the artifact for upstreaming); -UsePatch applies that patch instead of the overlay, which is
+    the way to check that the two are still equivalent.
+
     ASCII only: Windows PowerShell parses .ps1 as ANSI, so non-ASCII literals break the parser.
 #>
 param(
     [string]$Commit = 'abb76ab380c7f3f731e365a859fb4cc64e939bb8',
     [string]$Url = 'https://github.com/ggml-org/llama.cpp',
-    [switch]$Force
+    [switch]$Force,
+    [switch]$UsePatch
 )
 
 $ErrorActionPreference = 'Stop'
@@ -33,14 +40,19 @@ function Invoke-Git {
 $repo  = Split-Path -Parent $PSScriptRoot
 # Nested Join-Path everywhere (never 'src\llama') so the scripts also work on the Linux path that
 # the upstream OpenVINO backend supports.
-$src   = Join-Path $repo 'src'
-$llama = Join-Path $src 'llama'
-$pdir  = Join-Path $repo 'patches'
-$patch = Join-Path $pdir '0001-ggml-openvino-npu-adaptation.patch'
-$shim  = Join-Path $pdir 'ov_opencl_shim.hpp'
+$src      = Join-Path $repo 'src'
+$engine   = Join-Path $src 'ggml-openvino'      # WangCai's own source, tracked in this repo
+$llama    = Join-Path $src 'llama'              # vendored clone, git-ignored
+$pdir     = Join-Path $repo 'patches'
+$patch    = Join-Path $pdir '0001-ggml-openvino-npu-adaptation.patch'
+$shim     = Join-Path $pdir 'ov_opencl_shim.hpp'
+$ovtarget = Join-Path (Join-Path (Join-Path $llama 'ggml') 'src') 'ggml-openvino'
 
-foreach ($f in @($patch, $shim)) {
-    if (-not (Test-Path $f)) { throw "missing patch artifact: $f" }
+if ($UsePatch) {
+    foreach ($f in @($patch, $shim)) { if (-not (Test-Path $f)) { throw "missing patch artifact: $f" } }
+}
+elseif (-not (Test-Path (Join-Path $engine 'utils.cpp'))) {
+    throw "missing engine sources in $engine - was the repository checked out completely?"
 }
 
 if ((Test-Path $llama) -and $Force) { Remove-Item $llama -Recurse -Force }
@@ -48,7 +60,7 @@ if (-not (Test-Path (Join-Path $llama '.git'))) {
     New-Item -ItemType Directory -Force -Path $src | Out-Null
     Write-Host "cloning $Url -> $llama"
     # core.autocrlf=false at clone time, not afterwards: Windows runners default to autocrlf=true,
-    # which materializes the worktree with CRLF and then every LF-context hunk in our patch fails to
+    # which materializes the worktree with CRLF and then every LF-context hunk in the patch fails to
     # match, for a reason that has nothing to do with the patch.
     Invoke-Git clone --quiet --config core.autocrlf=false $Url $llama
     if ($script:GIT_EXIT -ne 0) { throw 'git clone failed' }
@@ -73,8 +85,7 @@ try {
         throw "git checkout $Commit failed"
     }
 
-    $ovdir = Join-Path (Join-Path (Join-Path $llama 'ggml') 'src') 'ggml-openvino'
-    if (-not (Test-Path (Join-Path $ovdir 'ov_opencl_shim.hpp'))) {
+    if ($UsePatch) {
         Invoke-Git apply --check --verbose $patch
         if ($script:GIT_EXIT -ne 0) {
             Write-Host ''
@@ -82,20 +93,31 @@ try {
             Write-Host 'The OpenVINO backend moves between llama.cpp releases: this is a rebase of'
             Write-Host 'the hunks against your revision, not a broken tree. Try the pinned commit,'
             Write-Host 'or re-derive the hunks - see patches/README.md.'
-            # Line endings are the other common cause: LF-context hunks cannot match a CRLF worktree.
             Write-Host ('  core.autocrlf = ' + ((& git config --get core.autocrlf) | Select-Object -First 1))
-            Write-Host '  (if that prints true, delete src/llama and re-run: the clone must be made with core.autocrlf=false)'
             throw 'git apply --check failed'
         }
         Invoke-Git apply $patch
         if ($script:GIT_EXIT -ne 0) { throw 'git apply failed' }
-        Copy-Item $shim $ovdir
-        Write-Host 'patched: ggml/src/ggml-openvino (+ ov_opencl_shim.hpp)'
+        Copy-Item $shim $ovtarget
+        Write-Host 'installed via patches/'
     }
     else {
-        Write-Host 'already patched (ov_opencl_shim.hpp present) - nothing to do'
+        if (-not (Test-Path $ovtarget)) { throw "no ggml/src/ggml-openvino in the checkout - wrong revision?" }
+        # Overlay file by file, preserving the upstream layout (openvino/op/... etc).
+        Get-ChildItem $engine -Recurse -File | ForEach-Object {
+            $rel = $_.FullName.Substring($engine.Length).TrimStart('\', '/')
+            $dest = Join-Path $ovtarget $rel
+            $dd = Split-Path $dest -Parent
+            if (-not (Test-Path $dd)) { New-Item -ItemType Directory -Force -Path $dd | Out-Null }
+            Copy-Item $_.FullName $dest -Force
+        }
+        $count = (Get-ChildItem $engine -Recurse -File).Count
+        Write-Host "overlaid $count files from src/ggml-openvino onto ggml/src/ggml-openvino"
     }
 
+    # Prove the engine code actually landed, instead of trusting the copy.
+    Invoke-Git diff --stat -- ggml/src/ggml-openvino
+    Invoke-Git status --porcelain -- ggml/src/ggml-openvino | ForEach-Object { Write-Host ("    | " + $_) }
     Write-Host ('HEAD: ' + ((& git rev-parse HEAD) | Select-Object -First 1))
     Write-Host 'next: tools/configure.ps1 -OpenVinoDir <path-to-openvino/cmake>'
 }

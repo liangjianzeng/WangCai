@@ -8,6 +8,16 @@ Unreleased dates are the dates the change was verified on hardware, not the date
 
 ## [Unreleased] — baseline `abb76ab` (llama.cpp), OpenVINO 2026.4.1
 
+### Added — repository
+
+- `src/ggml-openvino/` is now **tracked**: the complete backend directory (95 files) with WangCai's
+  changes applied, so the engine can be read without applying anything. `tools/bootstrap.ps1` clones
+  the pinned llama.cpp into `src/llama/` (still git-ignored) and overlays this directory, then prints
+  `git diff --stat` as proof the code landed. `patches/` stays as the reviewable diff and the upstreaming
+  artifact; `bootstrap.ps1 -UsePatch` switches back to patch application.
+  See `src/ggml-openvino/WANGCAI.md` for provenance and editing rules.
+- README is now Chinese-first with `README_en.md` as the secondary language document.
+
 ### Added — build
 
 - `patches/ov_opencl_shim.hpp`: a self-contained stand-in for `<CL/cl.h>` and
@@ -54,6 +64,12 @@ Unreleased dates are the dates the change was verified on hardware, not the date
   single-token decode) and generates end to end on `Intel(R) AI Boost`.
 
 ### Known issues
+
+- First per-layer measurement of the accuracy defect (`prefill_0`, conv-state outputs): cosine
+  `0.9987` at layer 0 → `0.72` at layer 9 → `0.215` at layer 17. The error exists at the first layer and
+  compounds, so it is per-op precision, not a broken op deep in the graph and not state bookkeeping.
+  K/V comparisons are not yet meaningful (unwritten rows read as zeros/garbage); the comparison tool
+  needs row slicing.
 
 - NPU output is not yet numerically on par with the CPU reference: cosine similarity to reference
   logits is `0.969` at the end of prefill and `0.73–0.79` in the first decode steps, with the logit

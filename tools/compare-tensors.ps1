@@ -73,6 +73,9 @@ else { @(Split-Path $A -Leaf) }
 
 $worst = @()
 foreach ($name in $names) {
+    # Only .bin holds raw tensor bytes; the .txt sidecars describe them. A custom -Filter that also
+    # matches sidecars would otherwise have them read as f32 and reported as tensors full of 3e+32.
+    if ([IO.Path]::GetExtension($name) -ne '.bin') { continue }
     $pa = Join-Path $dirA $name
     $pb = Join-Path $dirB $name
     if (-not (Test-Path $pa) -or -not (Test-Path $pb)) { Write-Output ("  SKIP  {0} (missing on one side)" -f $name); continue }

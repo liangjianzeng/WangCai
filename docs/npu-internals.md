@@ -125,6 +125,39 @@ A flattened-but-norm-preserving logit distribution is a precision signature, not
 signature: an off-by-one row or a mis-sliced window produces a *different* distribution, not a scaled
 one.
 
+### Per-layer divergence (first measurement)
+
+Every graph output of the **first prefill chunk** dumped on both devices
+(`GGML_OPENVINO_DUMP_BIN`, `tools/compare-tensors.ps1 -MaxElements 120000`) — the recurrent state
+outputs `cache_r_l*` are the informative ones, because each is a function of everything below it:
+
+| Layer | cosine | | Layer | cosine |
+|---|---:|---|---|---:|
+| `l0` | 0.9987 | | `l11` | 0.635 |
+| `l1` | 0.989 | | `l13` | 0.419 |
+| `l3` | 0.976 | | `l15` | 0.295 |
+| `l5` | 0.944 | | `l17` | **0.215** |
+| `l7` | 0.850 | | `l19` | 0.360 |
+| `l9` | 0.720 | | `l21` / `l23` | 0.256 / 0.662 |
+
+Two conclusions:
+
+1. **Layer 0 is already different** (`0.9987`, max abs error 0.083 on order-1 values). Nothing deep in
+   the stack is broken; every layer contributes a small error and the residual stream compounds it —
+   which is exactly the signature of the flattened logits observed above, and of precision rather than
+   indexing.
+2. **The divergence is present before any decode step and before any state is reused**, so the whole
+   cross-step state-chaining area (conv-state gather, `chunk_valid_len`, decode slicing) is exonerated
+   for this defect. It still needs to be right, but it is not what makes the output wrong.
+
+*Caveat to respect when reproducing:* the K/V outputs were **not** usable here. `cache_v_l20` reports
+cosine `0.135` with `maxDiff = 0.0000` — both buffers are zero in the region compared, i.e. rows that
+this chunk never wrote; several `cache_k` tensors show `maxDiff` in the millions, which is uninitialized
+memory beyond the written rows. A meaningful K/V comparison must slice to the valid rows (and account
+for the write index being `cache_idx`, not `0..n`). The tool does not slice yet; that is the next
+tooling task, and until it exists, treat only `cache_r_*` and `result_*` as trustworthy per-layer
+signals.
+
 ### What has been ruled out
 
 | Hypothesis | Test | Verdict |
@@ -162,10 +195,11 @@ better flag" and towards something structural in how this model's graph is execu
 
 ### Where to take it next
 
-1. **Per-layer divergence.** `GGML_OPENVINO_DUMP_BIN` already dumps every graph output, which includes
-   all K/V/conv-state writes. Compare CPU-static vs NPU per layer, per *row*, and find the first layer
-   that diverges materially. Aggregate statistics are not enough — compare row slices of the valid
-   region.
+1. **Row-sliced per-layer comparison.** The conv-state comparison above is the first cut and it already
+   says where the error lives (every layer, compounding). What is missing is a trustworthy K/V
+   comparison: `compare-tensors.ps1` must slice to the rows a chunk actually wrote, following the
+   `cache_idx` write positions, instead of comparing whole buffers whose unwritten regions are zeros or
+   uninitialized garbage.
 2. **Isolate the output projection.** `output.weight` is requantized to Q8_0_C and the projection is
    128000×2048. Compare `result_norm` against `result_output` between devices: if the hidden state
    matches and only the logits differ, the defect is localized to the final `MatMul` + requant.

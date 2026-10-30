@@ -1,5 +1,5 @@
 # Build outputs
-src/
+src/llama/          # vendored upstream clone, recreated by tools/bootstrap.ps1
 build/
 build-*/
 out/
@@ -10,6 +10,8 @@ out/
 *.exp
 *.pdb
 *.ilk
+
+# src/ggml-openvino/ IS tracked: it is WangCai's own source (the patched OpenVINO backend).
 
 # OpenVINO runtime drop and NPU compiled-graph caches (regenerable, multi-GB)
 ov/

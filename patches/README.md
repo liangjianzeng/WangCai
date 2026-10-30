@@ -12,7 +12,22 @@ stays reviewable.
 All hunks are inside `ggml/src/ggml-openvino/`. No llama.cpp core, sampler, or ggml-CPU file is
 touched.
 
-## Apply
+## How this relates to `src/ggml-openvino/`
+
+The engine's source is **in the repository** at [`src/ggml-openvino/`](../src/ggml-openvino/) — the
+full upstream backend directory with WangCai's changes applied, so it can be read and reviewed without
+applying anything. `tools/bootstrap.ps1` clones the pinned llama.cpp into `src/llama/` and **overlays**
+that directory onto `ggml/src/ggml-openvino/`, then prints `git diff --stat` so you can see exactly what
+changed relative to pristine upstream.
+
+This directory is the same change expressed as a diff — the artifact for review and for upstreaming.
+To use it instead of the overlay (e.g. to verify the two are still equivalent):
+
+```powershell
+tools\bootstrap.ps1 -UsePatch
+```
+
+or by hand:
 
 ```powershell
 git clone https://github.com/ggml-org/llama.cpp src/llama
@@ -95,11 +110,13 @@ shim.
 
 ## Regenerating the patch
 
-From a patched llama.cpp checkout:
+From a patched llama.cpp checkout — and remember the patch and `src/ggml-openvino/` are two views of
+one change, so both must move together:
 
 ```powershell
 git diff -- ggml/src/ggml-openvino > ..\..\patches\0001-ggml-openvino-npu-adaptation.patch
 Copy-Item ggml\src\ggml-openvino\ov_opencl_shim.hpp ..\..\patches\
+Copy-Item ggml\src\ggml-openvino\* ..\..\src\ggml-openvino\ -Recurse -Force
 ```
 
 Keep the hunks in one file per concern; if a change is orthogonal (a new knob, a new lowering), make
