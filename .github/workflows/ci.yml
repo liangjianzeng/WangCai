@@ -42,6 +42,31 @@ jobs:
           if ($bad) { throw "parse errors in: $($bad -join ', ')" }
           Write-Host 'all tools/*.ps1 parse cleanly'
 
+      - name: No assignments to read-only automatic variables
+        shell: pwsh
+        run: |
+          # PowerShell 7 defines $IsWindows/$IsLinux/... as read-only automatic variables, and PowerShell
+          # variable names are case-insensitive: `$isWindows = ($env:OS -eq 'Windows_NT')` in configure.ps1
+          # parses everywhere, runs everywhere on Windows PowerShell 5.1, and dies at run time on pwsh 7
+          # with "Cannot overwrite variable IsWindows" - which, invoked through `pwsh -File`, surfaced as
+          # nothing but a failed Configure step. Parse checks do not catch it; this does.
+          Write-Host ("validating under PowerShell " + $PSVersionTable.PSVersion)
+          $banned = 'IsWindows','IsLinux','IsMacOS','IsCoreCLR','PSScriptRoot','PSCommandPath',
+                    'PSVersionTable','Host','PID','ExecutionContext','PSHome','Error','Event',
+                    'EventArgs','Matches','OmpThread','Switch','Foreach','PsUICulture','UICulture'
+          $pattern = '\$\s*(' + ($banned -join '|') + ')\s*(\+|\-|\*|/|\?)?='
+          $hits = @()
+          Get-ChildItem tools -Filter *.ps1 | ForEach-Object {
+            $n = $_.Name
+            Select-String -Path $_.FullName -Pattern $pattern -AllMatches | ForEach-Object {
+              foreach ($m in $_.Matches) {
+                $hits += ('{0}:{1}  ${2}' -f $n, $_.LineNumber, $m.Groups[1].Value)
+              }
+            }
+          }
+          if ($hits) { $hits | ForEach-Object { Write-Host ('  ' + $_) }; throw 'assigning to read-only automatic variables' }
+          Write-Host 'no read-only automatic variables are assigned'
+
   build:
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

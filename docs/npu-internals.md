@@ -150,13 +150,27 @@ Two conclusions:
    cross-step state-chaining area (conv-state gather, `chunk_valid_len`, decode slicing) is exonerated
    for this defect. It still needs to be right, but it is not what makes the output wrong.
 
-*Caveat to respect when reproducing:* the K/V outputs were **not** usable here. `cache_v_l20` reports
-cosine `0.135` with `maxDiff = 0.0000` — both buffers are zero in the region compared, i.e. rows that
-this chunk never wrote; several `cache_k` tensors show `maxDiff` in the millions, which is uninitialized
-memory beyond the written rows. A meaningful K/V comparison must slice to the valid rows (and account
-for the write index being `cache_idx`, not `0..n`). The tool does not slice yet; that is the next
-tooling task, and until it exists, treat only `cache_r_*` and `result_*` as trustworthy per-layer
-signals.
+*Caveat, and what slicing showed.* The K/V numbers above were **not** usable as printed. Running the
+comparison in row mode (`-RowSize 512`, one row = one position = 4 KV heads × 128) revealed that this
+prompt wrote only **two rows**; every other row is zero on both sides, which is what produced
+`cache_v_l20 cosine=0.135, maxDiff=0.0000` and the `maxDiff` in the millions. On the rows that were
+actually written:
+
+| Tensor | rows 0–1 | reading |
+|---|---|---|
+| `cache_v_l16`, `cache_v_l20` | max abs diff `8.6e-8`, `1.8e-7` | V writes are essentially exact |
+| `cache_k_l2`, `cache_k_l8` | cosine `0.998` / `0.994` (row 0) | small relative error |
+| `cache_k_l12` | cosine `0.974` (row 0) → `0.308` (row 1) | row 1 materially worse |
+
+So the attention state writes are close, and the large divergences live in the **short-conv path**
+(`cache_r_l*`), which is the same path that degrades monotonically with depth. Two caveats remain
+honest about: the prompt was two tokens, so a `d_conv=7` causal conv state is dominated by the
+zero-padded region and its relative error is amplified by small magnitudes; and K magnitudes of order
+`1e4` were seen on *both* devices, so they are a model property, not an NPU artifact.
+
+**Next measurement:** re-dump with a ~240-token prompt (one full 256-column chunk) so the conv state is
+filled with real data and K/V have hundreds of written rows, then repeat the row profile. Until that
+exists, the depth curve is directional evidence, not a localization.
 
 ### What has been ruled out
 

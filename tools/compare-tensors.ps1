@@ -20,6 +20,15 @@ param(
     # Compare only the leading N elements. Triaging "which of 300 tensors diverges" does not need a
     # full scan of every multi-megabyte cache buffer, and a leading slice is a fine indicator.
     [int]$MaxElements = 0,
+    # Row mode. A KV cache tensor is [1,1,ctx,heads*head_dim]: positions are the rows, and a chunk
+    # writes only the rows it was given. Whole-tensor statistics over the unwritten tail are
+    # meaningless - both sides hold whatever was in the buffer, which reads as zeros (cosine 0.13
+    # with maxDiff 0.0000) or as garbage (maxDiff in the millions). With -RowSize set to the row
+    # stride (e.g. 512 for 4 KV heads x 128) the tool prints per-row cosine and max-abs, and the
+    # written region becomes self-evident: `leading-clean` is how many rows from the start agree.
+    [int]$RowSize = 0,
+    [int]$MaxRows = 48,
+    [double]$RowTol = 0.05,
     [switch]$OnlyMismatched
 )
 
@@ -91,6 +100,31 @@ foreach ($name in $names) {
     if ($n -eq 0) { Write-Output ("  SKIP  {0} (empty)" -f $name); continue }
     $va = $ea.values; $vb = $eb.values
 
+    if ($RowSize -gt 0) {
+        $rows = [Math]::Floor($n / $RowSize)
+        if ($rows -lt 1) { Write-Output ('  {0,-38} n={1} < RowSize' -f $name, $n); continue }
+        $cs = @(); $ms = @(); $clean = 0; $done = $false
+        for ($r = 0; $r -lt $rows; $r++) {
+            $o = $r * $RowSize
+            $d2 = 0.0; $x2 = 0.0; $y2 = 0.0; $md = 0.0
+            for ($i = 0; $i -lt $RowSize; $i++) {
+                $x = $va[$o + $i]; $y = $vb[$o + $i]
+                $d2 += $x * $y; $x2 += $x * $x; $y2 += $y * $y
+                $dd = [Math]::Abs($x - $y); if ($dd -gt $md) { $md = $dd }
+            }
+            $rc = if ($x2 -gt 0 -and $y2 -gt 0) { $d2 / [Math]::Sqrt($x2 * $y2) } else { 0.0 }
+            if ($r -lt $MaxRows) { $cs += ('{0:F4}' -f $rc); $ms += ('{0:G3}' -f $md) }
+            if (-not $done) { if ($md -le $RowTol) { $clean++ } else { $done = $true } }
+        }
+        if ($OnlyMismatched -and $clean -ge $rows) { continue }
+        Write-Output ('  {0,-38} rows={1} leading-clean={2} (tol {3})' -f $name, $rows, $clean, $RowTol)
+        if ($cs.Count) {
+            Write-Output ('      cos  : ' + ($cs -join ' '))
+            Write-Output ('      maxd : ' + ($ms -join ' '))
+        }
+        continue
+    }
+
     $dot = 0.0; $na = 0.0; $nb = 0.0; $maxd = 0.0; $maxi = -1; $nd = 0
     for ($i = 0; $i -lt $n; $i++) {
         $x = $va[$i]; $y = $vb[$i]
@@ -106,8 +140,8 @@ foreach ($name in $names) {
     $bad = ($cos -lt 0.999) -or ($nd -gt 0)
     if (-not $OnlyMismatched -or $bad) {
         Write-Output $line
-        Write-Output ('      A top{0}: {1}' -f $Top, (Top-K $va $Top))
-        Write-Output ('      B top{0}: {1}' -f $Top, (Top-K $vb $Top))
+        Write-Output ('      A top{0}: {1}' -f $Top, (Top-K $va $Top $n))
+        Write-Output ('      B top{0}: {1}' -f $Top, (Top-K $vb $Top $n))
         $ia = 0; $ib = 0; $ba = -1e300; $bb = -1e300
         for ($i = 0; $i -lt $n; $i++) { if ($va[$i] -gt $ba) { $ba = $va[$i]; $ia = $i }; if ($vb[$i] -gt $bb) { $bb = $vb[$i]; $ib = $i } }
         $agree = if ($ia -eq $ib) { 'AGREE' } else { 'DIFFER' }

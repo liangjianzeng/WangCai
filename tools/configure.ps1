@@ -25,7 +25,7 @@ if (-not $LlamaDir) { $LlamaDir = Join-Path (Join-Path $repo 'src') 'llama' }
 if ($RelWithDebInfo) { $BuildType = 'RelWithDebInfo' }
 $build = Join-Path $LlamaDir 'build'
 $OpenVinoDir = (Resolve-Path $OpenVinoDir).Path
-$isWindows = ($env:OS -eq 'Windows_NT')
+$onWindows = ($env:OS -eq 'Windows_NT')
 
 if (-not (Test-Path (Join-Path $OpenVinoDir 'OpenVINOConfig.cmake'))) {
     throw "no OpenVINOConfig.cmake in $OpenVinoDir - point -OpenVinoDir at the cmake/ dir of an OpenVINO package or unpacked wheel"
@@ -34,7 +34,7 @@ if (-not (Test-Path (Join-Path $OpenVinoDir 'OpenVINOConfig.cmake'))) {
 # Windows needs a Visual Studio developer environment; locate vcvars64.bat through vswhere so a
 # non-default VS install/layout still works. Linux/macOS use the native toolchain directly.
 $prologue = ''
-if ($isWindows) {
+if ($onWindows) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found - install VS 2022 Build Tools with the C++ workload" }
     $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
@@ -75,7 +75,7 @@ if ("$cmakeLine" -match '\b([4-9])\.\d+') {
 $cmakeArgs = $cmakeArgs -join ' '
 
 Write-Output "configuring $LlamaDir (OpenVINO=$OpenVinoDir, build=$BuildType)"
-if ($isWindows) {
+if ($onWindows) {
     $pathPre = if ($ninjaDir) { "set `"PATH=$ninjaDir;%PATH%`"" } else { '' }
     $bat = Join-Path $tmp 'configure.bat'
     @(

@@ -8,6 +8,23 @@ Unreleased dates are the dates the change was verified on hardware, not the date
 
 ## [Unreleased] — baseline `abb76ab` (llama.cpp), OpenVINO 2026.4.1
 
+### Fixed — tooling
+
+- `configure.ps1` and `build.ps1` assigned `$isWindows`, which under PowerShell 7 collides with the
+  read-only automatic variable `$IsWindows` (names are case-insensitive) and aborts with
+  `Cannot overwrite variable IsWindows`. Both worked on Windows PowerShell 5.1 and failed on every CI
+  runner — a "local green, CI red" that took five runs to find because the child `pwsh -File` swallowed
+  the message. Renamed to `$onWindows`; the `scripts` CI job now greps for assignments to read-only
+  automatic variables, and build steps re-raise the captured failure as a `::error::` annotation so the
+  real line is visible through the public check-runs API.
+- CI installs `cmake<4` (CMake 4 removed `cmake_minimum_required(<3.5)` compatibility, still declared by
+  llama.cpp's vendored projects and OpenVINO's packaged config files), and `configure.ps1` passes
+  `-DCMAKE_POLICY_VERSION_MINIMUM=3.5` when it detects CMake ≥ 4.
+- `compare-tensors.ps1`: skips `.txt` sidecars (a custom `-Filter` read them as f32 and reported tensors
+  full of `3e+32`); `Top-K` is now bounded by the compared prefix (it was sorting multi-megabyte buffers
+  to print five numbers); new `-RowSize`/`-MaxRows`/`-RowTol` row mode, which is what makes KV-cache
+  comparison meaningful — whole-buffer statistics over the rows a chunk never wrote are not.
+
 ### Added — repository
 
 - `src/ggml-openvino/` is now **tracked**: the complete backend directory (95 files) with WangCai's

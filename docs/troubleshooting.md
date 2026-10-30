@@ -159,3 +159,23 @@ applied. This exact false alarm cost a "the model is broken" detour.
 
 Windows PowerShell parses `.ps1` files as ANSI, so non-ASCII literals (Chinese text, `…`) corrupt the
 parser. Keep scripts ASCII-only and pass non-ASCII prompts through a UTF-8 file with `-f`.
+
+### `Cannot overwrite variable IsWindows because it is read-only or constant`
+
+PowerShell 7 defines `$IsWindows`, `$IsLinux`, `$IsMacOS`, `$PSScriptRoot`, … as **read-only automatic
+variables**, and PowerShell is case-insensitive, so a perfectly ordinary
+
+```powershell
+$isWindows = ($env:OS -eq 'Windows_NT')     # works on 5.1, throws on 7
+```
+
+parses cleanly, runs fine on Windows PowerShell 5.1, and dies the moment it executes under `pwsh` 7.
+Invoked as `pwsh -File tools/configure.ps1`, that surfaced as a failed CI step whose only visible message
+was "Process completed with exit code 1" — the real line was swallowed by the child process.
+
+Two rules, both enforced by the `scripts` CI job:
+
+1. Do not name a variable after a read-only automatic variable. `$onWindows`, not `$isWindows`.
+2. Any script CI runs must be smoke-tested under **both** hosts — 5.1 accepts things 7 rejects and vice
+   versa. Failing steps tee their child's output and re-raise it as a `::error::` annotation, which is
+   what made this one findable at all.

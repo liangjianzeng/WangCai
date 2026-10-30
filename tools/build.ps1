@@ -18,7 +18,7 @@ if (Test-Path 'Variable:PSNativeCommandUseErrorActionPreference') {
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $LlamaDir) { $LlamaDir = Join-Path (Join-Path $repo 'src') 'llama' }
 $build = Join-Path $LlamaDir 'build'
-$isWindows = ($env:OS -eq 'Windows_NT')
+$onWindows = ($env:OS -eq 'Windows_NT')
 if (-not (Test-Path (Join-Path $build 'build.ninja'))) {
     throw "not configured yet - run tools\configure.ps1 -OpenVinoDir <path> first"
 }
@@ -32,7 +32,7 @@ New-Item -ItemType Directory -Force -Path $tmp | Out-Null
 $log = Join-Path $tmp 'build.log'
 
 Write-Output "building: $targets"
-if ($isWindows) {
+if ($onWindows) {
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
     $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
             -property installationPath | Select-Object -First 1)
