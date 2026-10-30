@@ -60,7 +60,19 @@ $cmakeArgs = @(
     '-DGGML_CUDA=OFF', '-DGGML_VULKAN=OFF', '-DGGML_SYCL=OFF', '-DGGML_OPENCL=OFF', '-DGGML_RPC=OFF',
     '-DGGML_CCACHE=OFF', '-DLLAMA_CURL=OFF',
     '-DOpenVINO_DIR="' + $OpenVinoDir + '"'
-) -join ' '
+)
+
+# CMake 4 removed compatibility with cmake_minimum_required(<3.5). llama.cpp's vendored projects and
+# the packaged OpenVINO config files still declare older minimums, so with CMake 4 the configure dies
+# with a message about removed compatibility rather than anything about this project. Pinning the
+# policy floor keeps it usable; installing cmake<4 is the other option (what CI does).
+$cmakeLine = (& cmake --version 2>$null | Select-Object -First 1)
+Write-Host ("cmake: " + $cmakeLine)
+if ("$cmakeLine" -match '\b([4-9])\.\d+') {
+    Write-Host 'cmake >= 4 detected - passing CMAKE_POLICY_VERSION_MINIMUM=3.5'
+    $cmakeArgs += '-DCMAKE_POLICY_VERSION_MINIMUM=3.5'
+}
+$cmakeArgs = $cmakeArgs -join ' '
 
 Write-Output "configuring $LlamaDir (OpenVINO=$OpenVinoDir, build=$BuildType)"
 if ($isWindows) {
