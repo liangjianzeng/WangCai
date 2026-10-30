@@ -15,6 +15,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Keep cmake's own diagnostics: under EAP=Stop, PowerShell 7.3+ turns a non-zero native exit into a
+# terminating error before the $LASTEXITCODE check below can report it.
+if (Test-Path 'Variable:PSNativeCommandUseErrorActionPreference') {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $LlamaDir) { $LlamaDir = Join-Path (Join-Path $repo 'src') 'llama' }
 if ($RelWithDebInfo) { $BuildType = 'RelWithDebInfo' }

@@ -10,6 +10,22 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# PowerShell 7.3+ turns a non-zero native exit code into a terminating error under EAP=Stop, which
+# would pre-empt every $LASTEXITCODE check below and hide git's own message. Keep git's output,
+# decide on the exit code ourselves.
+if (Test-Path 'Variable:PSNativeCommandUseErrorActionPreference') {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
+
+function Invoke-Git {
+    param([Parameter(Mandatory = $true, ValueFromRemainingArguments = $true)][string[]]$GitArgs)
+    Write-Output ("  $ git " + ($GitArgs -join ' '))
+    $out = & git @GitArgs 2>&1
+    $code = $LASTEXITCODE
+    foreach ($line in $out) { Write-Output ("    | " + $line) }
+    return $code
+}
+
 $repo  = Split-Path -Parent $PSScriptRoot
 # Nested Join-Path everywhere (never 'src\llama') so the scripts also work on the Linux path that
 # the upstream OpenVINO backend supports.
@@ -27,27 +43,34 @@ if ((Test-Path $llama) -and $Force) { Remove-Item $llama -Recurse -Force }
 if (-not (Test-Path (Join-Path $llama '.git'))) {
     New-Item -ItemType Directory -Force -Path $src | Out-Null
     Write-Output "cloning $Url -> $llama"
-    git clone $Url $llama
-    if ($LASTEXITCODE -ne 0) { throw "git clone failed" }
+    if ((Invoke-Git clone --quiet $Url $llama) -ne 0) { throw 'git clone failed' }
 }
 
 Push-Location $llama
 try {
-    git checkout $Commit
-    if ($LASTEXITCODE -ne 0) { throw "git checkout $Commit failed (git fetch --all first?)" }
+    # The pinned revision is a specific upstream commit; make sure it is present locally before
+    # checking it out, otherwise a shallow or aged clone fails with a message that looks like a typo.
+    if ((Invoke-Git rev-parse --verify -q "$Commit^{commit}") -ne 0) {
+        Invoke-Git fetch --all --tags --quiet | Out-Null
+    }
+    if ((Invoke-Git checkout --quiet --detach $Commit) -ne 0) {
+        Write-Output "could not check out $Commit; tip of the default branch:"
+        Invoke-Git log --oneline --decorate -3 | Out-Null
+        throw "git checkout $Commit failed"
+    }
 
     $ovdir = Join-Path (Join-Path (Join-Path $llama 'ggml') 'src') 'ggml-openvino'
     if (-not (Test-Path (Join-Path $ovdir 'ov_opencl_shim.hpp'))) {
-        git apply --check $patch
-        if ($LASTEXITCODE -ne 0) {
+        $check = Invoke-Git apply --check --verbose $patch
+        if ($check -ne 0) {
             Write-Output ''
-            Write-Output 'The patch does not apply cleanly. The OpenVINO backend moves between'
-            Write-Output 'llama.cpp releases: this is a rebase of the hunks, not a broken tree.'
-            Write-Output 'Try the pinned commit, or re-derive the hunks against your revision.'
+            Write-Output 'The patch does not apply cleanly (see the git apply output above).'
+            Write-Output 'The OpenVINO backend moves between llama.cpp releases: this is a rebase of'
+            Write-Output 'the hunks against your revision, not a broken tree. Try the pinned commit,'
+            Write-Output 'or re-derive the hunks - see patches/README.md.'
             throw 'git apply --check failed'
         }
-        git apply $patch
-        if ($LASTEXITCODE -ne 0) { throw 'git apply failed' }
+        if ((Invoke-Git apply $patch) -ne 0) { throw 'git apply failed' }
         Copy-Item $shim $ovdir
         Write-Output 'patched: ggml/src/ggml-openvino (+ ov_opencl_shim.hpp)'
     }
@@ -55,8 +78,8 @@ try {
         Write-Output 'already patched (ov_opencl_shim.hpp present) - nothing to do'
     }
 
-    git rev-parse HEAD | ForEach-Object { Write-Output "HEAD: $_" }
-    Write-Output 'next: tools\configure.ps1 -OpenVinoDir <path-to-openvino\cmake>'
+    Write-Output ("HEAD: " + (git rev-parse HEAD))
+    Write-Output 'next: tools/configure.ps1 -OpenVinoDir <path-to-openvino/cmake>'
 }
 finally {
     Pop-Location

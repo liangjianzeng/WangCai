@@ -27,6 +27,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# A non-zero llama-cli exit (a compute error, for instance) is data here, not a terminating error:
+# PowerShell 7.3+ would abort before the log below gets parsed and reported.
+if (Test-Path 'Variable:PSNativeCommandUseErrorActionPreference') {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 $repo = Split-Path -Parent $PSScriptRoot
 $bin  = Join-Path (Join-Path (Join-Path (Join-Path $repo 'src') 'llama') 'build') 'bin'
 $exe  = if ($env:OS -eq 'Windows_NT') { 'llama-cli.exe' } else { 'llama-cli' }

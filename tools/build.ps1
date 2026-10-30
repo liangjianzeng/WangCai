@@ -10,6 +10,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+# Under EAP=Stop, PowerShell 7.3+ raises a terminating error on a non-zero native exit before the
+# EXITCODE=0 scan below can report which compile line failed.
+if (Test-Path 'Variable:PSNativeCommandUseErrorActionPreference') {
+    $PSNativeCommandUseErrorActionPreference = $false
+}
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $LlamaDir) { $LlamaDir = Join-Path (Join-Path $repo 'src') 'llama' }
 $build = Join-Path $LlamaDir 'build'
