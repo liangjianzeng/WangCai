@@ -102,20 +102,27 @@ interleaved-SWA 缓存为**全量缓存**与 **SWA 子缓存**各建一个写索
 注意力 mask 的同名冲突是同一类失败——mask 那次已经在
 `get_tensor_graph_input_ov_name()` 里按张量身份区分过，索引张量当时被漏掉了。
 
-**修复**：同一个函数里，按 `SET_ROWS` 目的缓存所在层的 SWA 归属给索引参数追加 `_swa` 后缀
-（`ggml-decoder.cpp`）。修复后 `-p 1024 -n 32 -fa 1` 三条路径全部通过：
+**修复**（2026-10-31，两轮迭代后的最终形态）：同一个函数里按 `SET_ROWS` 目的缓存所在层的 SWA 归属给
+索引参数追加 `_swa` 后缀——但**只对 prefill 图与动态路径**。静态 decode 图必须保持单一合并参数：
+NPUW 对它的参数表结构敏感，多出一个（环长以内数值完全相同的）参数，编译出的设备图每个 decode 步都
+输出 NaN——同样的改名在 prefill 图上则逐字节惰性。decode 图的越界改由图内的 `Mod(索引, 环行数)` 解决：
+环内恒等（数值与修复前一致），越环回绕（有界、不崩，与 prefill 同一近似口径）。改名还要求
+**每相位各自的 decoder 对象**：`ptr` 与 `ptr_prefill` 若在首 pass 是 prefill 时别名到同一对象，
+下一个 decode pass 会经 `update_io` 把它重注册成 decode 命名，再下一个 prefill pass 就会绑到不存在的
+名字上（`utils.h` 的 `ptr_prefill` 注释）。
+
+修复后 `-p 1024 -n 32 -fa 1` 三条路径全部通过：
 
 | 执行路径 | pp1024 | tg32 |
 |---|---:|---:|
 | 原生 ggml CPU（参照） | 605 t/s | 56.7 t/s |
 | OpenVINO · CPU 动态 | 626 t/s | 30.5 t/s |
-| OpenVINO · NPU 静态 | 385 t/s | 15.3 t/s |
+| OpenVINO · NPU 静态 | 368 t/s | 14.5 t/s |
 
 `llama-perplexity` 因此解锁，可以重新用作精度指标。附带说明：在环长以内（如 670 token 的 p220），
-两套索引张量的数值相同，修复不改变任何数值——修复前后的 NPU prefill 转储逐字节一致。另一条边界要
-诚实记下：越环之后 llama.cpp 的 SWA 环靠**回绕**维持，而静态图只能表达对 768 行的连续读——所以修复
-带来的是"索引在界内、设备不崩、≤768 精确"，超过 768 的 SWA 位置的环映射在静态图里仍是近似的，这要
-等"静态图表达滑动环"的设计工作（Phase 2 的状态流量削减与之同源）。
+两套索引张量的数值相同，修复不改变任何数值——修复前后 NPU prefill 的 K/V 转储中，**第 1 行起逐位
+相同（余弦 1.0000），唯独第 0 行不同**——见 [npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap)
+的新发现：第 0 行根本没被真实 prompt 写过。
 
 ### 4. `GGML_OPENVINO_DEBUG_NODE` 在 NPU 上让进程中止 —— 已改为显式拒绝（2026-10-31）
 

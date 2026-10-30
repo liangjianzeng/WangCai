@@ -14,6 +14,7 @@
 #include <openvino/op/constant.hpp>
 #include <openvino/op/convert.hpp>
 #include <openvino/op/gather.hpp>
+#include <openvino/op/mod.hpp>
 #include <openvino/op/reshape.hpp>
 #include <openvino/op/scatter_elements_update.hpp>
 #include <openvino/op/scatter_update.hpp>
@@ -66,8 +67,28 @@ OutputVector translate_set_rows(const NodeContext & context) {
         res = std::make_shared<ov::op::v3::ScatterElementsUpdate>(dst, broadcasted_indices, data, axes);
     } else {
         auto row_size = context.get_input_shape(2)[3].get_length();
-        auto ind_squeezed = std::make_shared<ov::op::v0::Squeeze>(
+        std::shared_ptr<ov::Node> ind_squeezed = std::make_shared<ov::op::v0::Squeeze>(
             indices, ov::op::v0::Constant::create(ov::element::i64, {3}, {0, 1, 2}));
+        // The static decode graph keeps the two interleaved-SWA write-index inputs merged into
+        // one parameter: NPUW compiles that graph's numerics correctly only in the one-parameter
+        // shape it was first validated with, and adding the second (value-equal below the ring)
+        // parameter makes every decode-step output come back NaN on the device -- while the same
+        // rename on the prefill graph, and on both graphs of the dynamic path, is harmless. See
+        // the rename's comment in get_tensor_graph_input_ov_name() (ggml-decoder.cpp).
+        //
+        // The merged parameter carries the full-attention cache's cell ids, which outgrow the
+        // SWA ring's row count once the sequence passes n_swa -- the exact out-of-bounds scatter
+        // this file used to crash on. Wrap the index in a Mod against the destination's row
+        // count: the identity for every id a decode step can hold (cells stay below -c), the
+        // ring wrap for the SWA destinations past it.
+        const auto & idx_name = context.get_input_names().at(1);
+        const auto dst_shape = context.get_input_shape(2);
+        if (context.is_static() && !context.is_prefill() && dst_shape[2].is_static() &&
+            (idx_name == "attn_inp_k_idxs" || idx_name == "attn_inp_v_idxs")) {
+            const auto dst_rows = dst_shape[2].get_length();
+            ind_squeezed = std::make_shared<ov::op::v1::Mod>(
+                ind_squeezed, ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {dst_rows}));
+        }
         auto data_reshaped = std::make_shared<ov::op::v1::Reshape>(
             data,
             ov::op::v0::Constant::create(ov::element::i64, {4},

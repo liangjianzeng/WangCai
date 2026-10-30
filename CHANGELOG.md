@@ -16,10 +16,13 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   于是拿着全量缓存的 cell id（线性长到 `-c`）散射进只有 `n_swa` 大小的环——序列总长一越过 768（LFM3 的
   3×256），CPU 插件死于 `scatter_update.cpp:915` 断言，NPU 插件直接 `ZE_RESULT_ERROR_DEVICE_LOST`；
   `llama-perplexity` 也因此一直无法用作精度指标。这与注意力 mask 的同名冲突是同一类失败（mask 那次已按
-  张量身份区分），这次在 `get_tensor_graph_input_ov_name()` 里按 SET_ROWS 目的缓存所在层补上 `_swa`
-  后缀。原生 ggml 后端按张量指针绑定，所以从未受影响——这也是它此前未被怀疑的原因。修复后
-  `-p 1024 -n 32 -fa 1` 三条路径全通：原生 605 / OV-CPU 626 / NPU 385 t/s（pp1024）。
-  证据：`GGML_OPENVINO_DEBUG_INPUT` 抓到第二 ubatch 的绑定值为 512..1023、cgraph 里 SWA 缓存仅 768 行。
+  张量身份区分）。最终形态：prefill 图与动态路径按目的缓存所在层加 `_swa` 后缀；**静态 decode 图保持
+  单一合并参数**（NPUW 对该图参数表结构敏感，多一个数值等价的参数会让每个 decode 步输出 NaN），越界
+  改由图内 `Mod(索引, 环行数)` 处理——环内恒等，越环回绕。改名还要求每相位各自的 decoder 对象
+  （`ptr`/`ptr_prefill`），否则一个对象被两相位经 `update_io` 反复重注册后必炸。原生 ggml 后端按张量
+  指针绑定，所以从未受影响。修复后 `-p 1024 -n 32 -fa 1` 三条路径全通：原生 605 / OV-CPU 626 /
+  NPU 368 t/s（pp1024）。证据：`GGML_OPENVINO_DEBUG_INPUT` 抓到第二 ubatch 的绑定值为 512..1023、
+  cgraph 里 SWA 缓存仅 768 行。
 - **`GGML_OPENVINO_DEBUG_NODE` 在 NPU 上改为显式拒绝（status.md 缺陷 4，2026-10-31 验证）。** 附加
   `Result` 节点此前会让 NPUW 在编译期死掉；现于 `translate_session.cpp` 直接拒绝并提示改用
   `GGML_OPENVINO_DUMP_BIN`。附带的新测量：在 OpenVINO 2026.4.1 上硬中止不再复现，但带附加 Result 编译

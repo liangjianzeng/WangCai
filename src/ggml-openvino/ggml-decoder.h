@@ -247,7 +247,23 @@ public:
     virtual void visit_subgraph(
         std::function<void(std::shared_ptr<GgmlDecoder>, int node_idx)> node_visitor) const override;
 
-    ggml_tensor * get_input_ggml_tensor(const std::string & name) const { return m_inputs.at(name); }
+    ggml_tensor * get_input_ggml_tensor(const std::string & name) const {
+        // Name the missing key: a bare map::at turns every binding mismatch into an anonymous
+        // "invalid map<K, T> key", which is exactly the failure this project can least afford.
+        auto it = m_inputs.find(name);
+        if (it == m_inputs.end()) {
+            std::string registered;
+            for (const auto & entry : m_inputs) {
+                if (entry.first.rfind("attn_inp", 0) == 0) {
+                    registered += " " + entry.first;
+                }
+            }
+            throw std::out_of_range("ggml-openvino: no ggml tensor is bound for graph input '" + name +
+                                    "' (this decoder has:" + registered + ", is_prefill=" +
+                                    (m_is_prefill ? "1" : "0") + ")");
+        }
+        return it->second;
+    }
 
     virtual int get_op_case(int node_idx) const override { return m_node_info_list[node_idx].node_op_case; }
 
@@ -327,6 +343,8 @@ public:
     virtual bool is_static() const override { return m_is_static; }
 
     virtual bool is_stateful() const override { return m_is_stateful; }
+
+    virtual bool is_prefill() const override { return m_is_prefill; }
 
     int get_static_n_tokens() const { return m_is_prefill ? m_prefill_chunk_size : 1; }
 

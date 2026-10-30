@@ -86,13 +86,26 @@ struct decoder_runtime_ctx {
 
     std::shared_ptr<std::mutex> mutex;
     std::shared_ptr<GgmlOvDecoder> ptr;
+    // The static path's prompt-phase decoder, kept next to ptr: once the interleaved-SWA
+    // write-index rename applies to the prefill graph only, the two phases register different
+    // parameter names, so one decoder object mutated through m_is_prefill can no longer serve
+    // both. ptr serves decode (and the whole dynamic path); ptr_prefill serves prefill.
+    std::shared_ptr<GgmlOvDecoder> ptr_prefill;
 };
 
 struct ov_compiled_graph {
     ov::CompiledModel decode;
     ov::CompiledModel prefill;
+    // Parameter/result names of the single model this entry holds on the dynamic path. The
+    // static prefill/decode pair carries its own per-graph lists below: the two models no longer
+    // share a parameter list once the interleaved-SWA write-index rename applies to prefill only
+    // (see get_tensor_graph_input_ov_name), so binding one graph against the other's names fails.
     std::vector<std::string> input_names;
     std::vector<std::string> output_names;
+    std::vector<std::string> input_names_prefill;
+    std::vector<std::string> output_names_prefill;
+    std::vector<std::string> input_names_decode;
+    std::vector<std::string> output_names_decode;
 };
 
 // Only compilation and cache publication use this mutex. Requests, decoders and
@@ -115,8 +128,11 @@ struct ov_runtime_context {
     std::unordered_map<graph_key, std::shared_ptr<decoder_runtime_ctx>, graph_key_hash> decoder_cache;
     std::unordered_map<graph_key, std::shared_ptr<ov::InferRequest>, graph_key_hash> infer_request_cache;
     std::unordered_map<graph_key, std::shared_ptr<ov::InferRequest>, graph_key_hash> infer_request_cache_prefill;
+    // The decode list also serves the dynamic path (a single graph, never prefill-split).
     std::unordered_map<graph_key, std::vector<std::string>, graph_key_hash> ov_input_names_cache;
     std::unordered_map<graph_key, std::vector<std::string>, graph_key_hash> ov_output_names_cache;
+    std::unordered_map<graph_key, std::vector<std::string>, graph_key_hash> ov_input_names_cache_prefill;
+    std::unordered_map<graph_key, std::vector<std::string>, graph_key_hash> ov_output_names_cache_prefill;
     size_t stateful_kv_size;
     std::map<std::string, std::string> kv_state_input_name_map;
     // compute-only copies of graphs that carry unselected ggml_build_forward_select() branches

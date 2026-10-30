@@ -1576,7 +1576,13 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
 
     if (cache_hit) {
         std::map<std::string, std::shared_ptr<ov::Node>> model_weights;
-        ggml_decoder->m_is_prefill = is_prefill;
+        // Each phase binds against its own decoder: the two phases register different parameter
+        // names once the SWA write-index rename applies to prefill only (see the comment on
+        // ptr_prefill in utils.h). Do NOT mutate m_is_prefill here -- update_io() re-registers
+        // the maps under whatever mode the object carries, and a mutated mode would rebuild the
+        // prefill decoder's inputs under the decode naming (or vice versa) behind the binding's
+        // back.
+        ggml_decoder = (is_prefill && entry->ptr_prefill) ? entry->ptr_prefill : entry->ptr;
         ggml_decoder->set_model_params(m_params);
         ggml_decoder->set_compute_params(c_params);
         if (old_m_params.kv_buffer_changed(m_params) || !ggml_decoder->is_bound_to(cgraph)) {
@@ -1587,8 +1593,19 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
             infer_request =
                 is_prefill ? r_ctx->infer_request_cache_prefill.at(key) : r_ctx->infer_request_cache.at(key);
-            ov_input_names_local = r_ctx->ov_input_names_cache.at(key);
-            ov_output_names_local = r_ctx->ov_output_names_cache.at(key);
+            auto & input_names_map =
+                is_prefill ? r_ctx->ov_input_names_cache_prefill : r_ctx->ov_input_names_cache;
+            auto & output_names_map =
+                is_prefill ? r_ctx->ov_output_names_cache_prefill : r_ctx->ov_output_names_cache;
+            if (input_names_map.count(key) == 0 || output_names_map.count(key) == 0) {
+                GGML_LOG_ERROR("ggml-openvino: no bound parameter-name list for key (is_prefill=%d, input=%d, "
+                               "output=%d) - the other phase's compile never published one\n",
+                               (int) is_prefill, (int) input_names_map.count(key),
+                               (int) output_names_map.count(key));
+                throw std::out_of_range("ggml-openvino: parameter-name list missing for the requested phase");
+            }
+            ov_input_names_local = input_names_map.at(key);
+            ov_output_names_local = output_names_map.at(key);
         }
 
         decoder_end_time = ggml_time_us();
@@ -1606,8 +1623,15 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         auto shared_cache = r_ctx->compiled_cache;
         std::unique_lock<std::mutex> compile_lock(shared_cache->mutex);
         auto weight_names = get_weight_names(cgraph);
-        auto local_decoder = std::make_shared<GgmlOvDecoder>(cgraph, m_params, c_params, weight_names, is_static,
-                                                             stateful, false, is_prefill, prefill_chunk_size);
+        // One decoder per phase (see ptr_prefill in utils.h): the prefill graph registers the
+        // renamed SWA write-index parameters, the decode graph the merged ones.
+        auto local_decoder_prefill = std::make_shared<GgmlOvDecoder>(
+            cgraph, m_params, c_params, weight_names, is_static, stateful, false, true, prefill_chunk_size);
+        auto local_decoder_decode =
+            no_kv_cache ? local_decoder_prefill :
+                          std::make_shared<GgmlOvDecoder>(cgraph, m_params, c_params, weight_names, is_static,
+                                                          stateful, false, false, prefill_chunk_size);
+        auto & local_decoder = is_prefill ? local_decoder_prefill : local_decoder_decode;
         const std::string shared_key =
             cache_enabled ? compiled_graph_key(cgraph, *local_decoder, device, prefill_chunk_size) : "";
         auto shared_it = shared_cache->graphs.find(shared_key);
@@ -1618,10 +1642,13 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
                                       prefill_request :
                                       std::make_shared<ov::InferRequest>(compiled.decode.create_infer_request());
             ggml_decoder = local_decoder;
-            entry->ptr = ggml_decoder;
+            entry->ptr_prefill = local_decoder_prefill;
+            entry->ptr = local_decoder_decode;
             infer_request = is_prefill ? prefill_request : decode_request;
-            ov_input_names_local = compiled.input_names;
-            ov_output_names_local = compiled.output_names;
+            // The prefill and decode models carry different parameter lists once the SWA
+            // write-index rename applies to prefill only; bind against the matching one.
+            ov_input_names_local = is_prefill ? compiled.input_names_prefill : compiled.input_names_decode;
+            ov_output_names_local = is_prefill ? compiled.output_names_prefill : compiled.output_names_decode;
             r_ctx->infer_request_cache_prefill[key] = prefill_request;
             r_ctx->infer_request_cache[key] = decode_request;
             r_ctx->ov_input_names_cache[key] = ov_input_names_local;
@@ -1692,27 +1719,62 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             model = is_prefill ? model_prefill : model_decode;
             ggml_decoder = is_prefill ? ggml_decoder_prefill : ggml_decoder_decode;
             infer_request = is_prefill ? infer_request_prefill : infer_request_decode;
-            entry->ptr = ggml_decoder;
+            // Store each phase's OWN decoder. Storing the current pass's decoder in ptr aliased
+            // ptr with ptr_prefill whenever the first pass was a prefill; the next decode pass
+            // then re-registered that one object with the merged (decode) parameter names via
+            // update_io, and the following prefill pass bound against names its decoder no
+            // longer had.
+            entry->ptr_prefill = ggml_decoder_prefill;
+            entry->ptr = ggml_decoder_decode;
 
-            for (const auto & ov_param : model->get_parameters()) {
-                ov_input_names_local.push_back(ov_param->get_friendly_name());
+            // Capture the two graphs' parameter/result lists separately: once the interleaved-SWA
+            // write-index rename applies to the prefill graph only, the pair no longer shares one
+            // parameter list, and binding a graph against the other's names fails.
+            std::vector<std::string> ov_input_names_prefill_local;
+            std::vector<std::string> ov_output_names_prefill_local;
+            for (const auto & ov_param : model_prefill->get_parameters()) {
+                ov_input_names_prefill_local.push_back(ov_param->get_friendly_name());
             }
-            for (const auto & ov_output : model->get_results()) {
-                ov_output_names_local.push_back(ov_output->get_friendly_name());
+            for (const auto & ov_output : model_prefill->get_results()) {
+                ov_output_names_prefill_local.push_back(ov_output->get_friendly_name());
             }
+            std::vector<std::string> ov_input_names_decode_local;
+            std::vector<std::string> ov_output_names_decode_local;
+            for (const auto & ov_param : model_decode->get_parameters()) {
+                ov_input_names_decode_local.push_back(ov_param->get_friendly_name());
+            }
+            for (const auto & ov_output : model_decode->get_results()) {
+                ov_output_names_decode_local.push_back(ov_output->get_friendly_name());
+            }
+            if (no_kv_cache) {
+                // One model serves both phases: keep the lists identical so either lookup works.
+                ov_input_names_prefill_local = ov_input_names_decode_local;
+                ov_output_names_prefill_local = ov_output_names_decode_local;
+            }
+            ov_input_names_local = is_prefill ? ov_input_names_prefill_local : ov_input_names_decode_local;
+            ov_output_names_local = is_prefill ? ov_output_names_prefill_local : ov_output_names_decode_local;
 
             if (!shared_key.empty()) {
                 shared_cache->graphs.emplace(
-                    shared_key, ov_compiled_graph{compiled_model_decode, compiled_model_prefill, ov_input_names_local,
-                                                  ov_output_names_local});
+                    shared_key,
+                    ov_compiled_graph{compiled_model_decode,
+                                      compiled_model_prefill,
+                                      {},
+                                      {},
+                                      ov_input_names_prefill_local,
+                                      ov_output_names_prefill_local,
+                                      ov_input_names_decode_local,
+                                      ov_output_names_decode_local});
             }
 
             if (cache_enabled) {
                 std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
                 r_ctx->infer_request_cache_prefill[key] = infer_request_prefill;
                 r_ctx->infer_request_cache[key] = infer_request_decode;
-                r_ctx->ov_input_names_cache[key] = ov_input_names_local;
-                r_ctx->ov_output_names_cache[key] = ov_output_names_local;
+                r_ctx->ov_input_names_cache[key] = ov_input_names_decode_local;
+                r_ctx->ov_output_names_cache[key] = ov_output_names_decode_local;
+                r_ctx->ov_input_names_cache_prefill[key] = ov_input_names_prefill_local;
+                r_ctx->ov_output_names_cache_prefill[key] = ov_output_names_prefill_local;
             }
         }
     }

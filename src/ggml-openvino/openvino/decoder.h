@@ -121,6 +121,9 @@ public:
 
     virtual bool is_stateful() const = 0;
 
+    // True for the prompt-processing (chunked) graph, false for the one-token decode graph.
+    virtual bool is_prefill() const { return false; }
+
     virtual bool is_splited_model() const = 0;
 
     virtual int is_swa_layer(int layer) const = 0;

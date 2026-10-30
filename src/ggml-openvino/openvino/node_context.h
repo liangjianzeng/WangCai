@@ -160,6 +160,8 @@ public:
 
     bool is_static() const { return m_decoder->is_static(); }
 
+    bool is_prefill() const { return m_decoder->is_prefill(); }
+
     bool is_stateful() const { return m_decoder->is_stateful(); }
 
     int get_ssm_state_size() const { return m_decoder->get_ssm_state_size(); }

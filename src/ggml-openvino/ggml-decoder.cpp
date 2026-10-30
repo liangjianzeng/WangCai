@@ -229,15 +229,26 @@ static std::string get_tensor_graph_input_ov_name(const GgmlOvDecoder * decoder,
         // name-collision failure mode as the attention masks below; disambiguate by the cache
         // the SET_ROWS writes into, walking its leaf to the layer number the decoder already
         // classified.
+        //
+        // NOT on the static decode graph: NPUW compiles that graph's numerics correctly only in
+        // the one-parameter shape it was first validated with -- adding the second (value-equal
+        // below the ring) parameter makes every decode-step output come back NaN on the device
+        // while the same rename on the prefill graph is byte-for-byte inert. There the merged
+        // parameter stays, and translate_set_rows() wraps its use in a Mod against the ring size
+        // instead, which is the identity below the ring and the ring wrap above it.
         auto * dst = op->src[2];
         while (dst != nullptr && dst->op == GGML_OP_VIEW) {
             dst = dst->src[0];
         }
-        if (dst != nullptr) {
-            const auto layer = extract_layer_from_name(std::string(dst->name));
-            if (layer.has_value() && decoder->is_swa_layer(layer.value())) {
-                return get_tensor_ov_name(cgraph, tensor) + "_swa";
+        const bool dst_is_swa = [&] {
+            if (dst == nullptr) {
+                return false;
             }
+            const auto layer = extract_layer_from_name(std::string(dst->name));
+            return layer.has_value() && decoder->is_swa_layer(layer.value());
+        }();
+        if (dst_is_swa && !(decoder->is_static() && !decoder->is_prefill())) {
+            return get_tensor_ov_name(cgraph, tensor) + "_swa";
         }
     }
     if (GgmlOvDecoder::is_inp_mask(tensor, op)) {
