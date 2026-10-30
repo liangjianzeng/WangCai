@@ -120,6 +120,8 @@ src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 
 
 ## 路线图：端侧多模态助手「旺财」
 
+<a id="wangcai-assistant"></a>
+
 一句话：**旺财 = 端侧多模态 AI 助手，NPU 引擎是它的低功耗心脏。**
 
 本仓库（WangCai）现在只做一件事：让大模型**完整跑在 Intel NPU 上**。这是"引擎"。但引擎不是终点——

@@ -1,112 +1,98 @@
-# Contributing to WangCai
+# 参与 WangCai 贡献
 
-Thanks for spending your time on the least-loved accelerator in the laptop.
+谢谢你愿意把时间花在笔记本里最不受待见的那颗加速器上。
 
-## Before you open an issue
+## 提交缺陷之前
 
-Most "it doesn't work" reports in this project resolve to one of three things, and the difference
-between them is not visible from the console:
+本项目里大多数"跑不通"的报告，最终都归到下面三种之一，而它们的区别**在控制台里看不出来**：
 
-1. the graph never compiled (an `ov::Exception` / `Check ... failed` line is present),
-2. it compiled and ran but the numbers are wrong (silent),
-3. it ran fine but on the wrong device (silent).
+1. 图根本没编译出来（有 `ov::Exception` / `Check ... failed` 这类行），
+2. 编译并运行了，但数值是错的（静默），
+3. 跑得好好的，但跑在了错误的设备上（静默）。
 
-So please include:
+所以请附上：
 
 ```powershell
-# which device actually got used
+# 实际被用到的设备
 .\build\bin\llama-cli.exe --list-devices
 
-# the run itself, with the device-decision log
+# 运行本身，带设备决策日志
 $env:GGML_OPENVINO_DEVICE = 'NPU'
-$env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'      # fresh dir per config, see below
+$env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'      # 每种配置一个新目录，见下
 .\build\bin\llama-cli.exe -m models\<model>.gguf -c 1024 -n 32 --temp 0 -fa 1 -dev OPENVINO3 -st -p '...' 2>&1 |
     Tee-Object issue.log
 ```
 
-and, if the output is nonsense rather than an exception, the two artifacts that make a report
-actionable:
+如果结果是胡话而不是异常，请再附上这两样能让报告真正可跟进的材料：
 
 ```powershell
-$env:GGML_OPENVINO_DUMP_BIN = 'D:\dumps\npu'   # raw per-output tensors
-# ... run once ...
-# ... then the same run with GGML_OPENVINO_DEVICE=CPU, dumping to D:\dumps\cpu ...
+$env:GGML_OPENVINO_DUMP_BIN = 'D:\dumps\npu'   # 逐输出原始张量
+# ... 跑一次 ...
+# ... 然后用 GGML_OPENVINO_DEVICE=CPU 跑同一次，转储到 D:\dumps\cpu ...
 ..\tools\compare-tensors.ps1 -A D:\dumps\cpu -B D:\dumps\npu
 ```
 
-Also state: OS build, `Intel(R) AI Boost` driver version, OpenVINO version, llama.cpp commit, whether
-the patch applied cleanly, and the model file with its size and quantization.
+同时说明：系统版本、`Intel(R) AI Boost` 驱动版本、OpenVINO 版本、llama.cpp commit、补丁能否干净应用，
+以及模型文件的大小与量化方式。
 
-**Use a fresh `GGML_OPENVINO_CACHE_DIR` per configuration.** A stale compiled-graph cache silently
-reuses a graph built under a different flag set, which is the single most confusing failure mode in
-this project — it makes a flag look like it did nothing.
+**每种配置用一个全新的 `GGML_OPENVINO_CACHE_DIR`。** 过期的编译图缓存会悄无声息地复用一张在别的 flag
+组合下编译出来的图——这是本项目里最让人困惑的失效模式，它会让一个 flag 看起来"完全没起作用"。
 
-## Setting up a dev tree
+## 搭一个开发树
 
 ```powershell
 git clone https://github.com/liangjianzeng/WangCai
 cd WangCai
-tools\bootstrap.ps1        # clones llama.cpp at the pinned commit and applies the patches
+tools\bootstrap.ps1        # 克隆钉住 commit 的 llama.cpp 并应用补丁
 tools\configure.ps1 -OpenVinoDir C:\openvino\openvino\cmake
 tools\build.ps1
 ```
 
-The build is Release + Ninja + MSVC. Incremental rebuilds of the backend are ~1–2 min; a cold
-configure is ~3 min. See [docs/build.md](docs/build.md) for the toolchain versions that are known
-good, and for why the OpenVINO *runtime* wheel is an acceptable source of the development headers.
+构建是 Release + Ninja + MSVC。后端增量重编约 1–2 分钟；冷配置约 3 分钟。已知可用的工具链版本，以及
+"为什么 OpenVINO *运行时* wheel 可以当作开发头文件的来源"，都写在 [docs/build.md](docs/build.md)。
 
-## The iteration loop you actually want
+## 你真正想要的迭代循环
 
-NPU graph compilation costs ~36 s cold for LFM3-1.7B, and there is no way to avoid it. So debug
-everything that can be debugged off-device:
+LFM3-1.7B 的 NPU 图编译冷启动要约 36 s，而且没法绕开。所以凡是能在设备外调试的，都在设备外调：
 
-- `GGML_OPENVINO_FORCE_STATIC=1` with `GGML_OPENVINO_DEVICE=CPU` runs the **static NPU code path on
-  the CPU**, no NPU compile, seconds instead of minutes. Translation bugs reproduce there; plugin
-  bugs do not. That split is how "static-mode mask sizing" and "NPU numeric behaviour" got separated.
-- `tools/npu-sweep.ps1` runs a matrix of env overrides with an isolated cache dir per cell and prints
-  one line per cell.
-- `tools/compare-tensors.ps1` compares two dumps by cosine similarity, top-1 agreement and element
-  count above a threshold. Aggregate statistics mislead; cosine does not.
+- `GGML_OPENVINO_FORCE_STATIC=1` 配 `GGML_OPENVINO_DEVICE=CPU`，**在 CPU 上跑 NPU 的静态代码路径**，
+  不用 NPU 编译，从分钟级降到秒级。翻译期的 bug 在那里能复现，插件自身的 bug 不能。"静态模式的 mask
+  尺寸"与"NPU 的数值行为"就是靠这道切口分开的。
+- `tools/npu-sweep.ps1` 跑一张环境变量覆盖矩阵，每格一个独立缓存目录，每格打印一行。
+- `tools/compare-tensors.ps1` 按余弦相似度、top-1 一致率、以及超过阈值的元素个数比对两份转储。聚合统计量
+  会骗人，余弦不会。
 
-## Style and structure
+## 风格与结构
 
-- Match the surrounding llama.cpp style: 4-space indent, 120 columns, `snake_case` functions,
-  `m_`-prefixed members. The backend is upstream code; keep diffs readable for an upstream PR.
-- Every behavioural change needs an env-var escape hatch that restores upstream behaviour, and an
-  entry in [docs/env-vars.md](docs/env-vars.md). Register new variables in the table in
-  `ggml-openvino-extra.cpp` — an unregistered name reads as unset with no error.
-- Comments should explain the constraint that forced the code, not the code. The useful comment in
-  this tree is "llama.cpp pads the mask to the largest KV buffer, so a static graph must take the
-  width from the consuming cache", not "set mask_kv".
-- No `#ifdef`-based feature flags where an env var does the job; no dead code left behind "just in
-  case".
+- 与周围的 llama.cpp 风格保持一致：4 空格缩进、120 列、函数用 `snake_case`、成员带 `m_` 前缀。这个后端是
+  上游代码，diff 要为"拿去提上游 PR"保持可读。
+- 每一处行为改动都需要一个能恢复上游行为的环境变量逃生门，并在 [docs/env-vars.md](docs/env-vars.md) 里
+  登记一条。新变量要注册进 `ggml-openvino-extra.cpp` 的表——没注册的变量会被读成"未设置"而且不报错。
+- 注释要解释"是什么约束逼出了这段代码"，而不是复述代码。本代码树里有价值的注释长这样："llama.cpp 会把
+  mask 补齐到最大的那块 KV 缓冲区，所以静态图必须从消费方的缓存取宽度"，而不是"设置 mask_kv"。
+- 一个环境变量能解决的事，不要上 `#ifdef` 特性开关；也不要"以防万一"地留下死代码。
 
-## What to work on
+## 可以做什么
 
-The [roadmap](docs/roadmap.md) lists things that are individually tractable. Two are especially
-suitable for a first contribution because they are measurement tasks with a defined answer, not
-open-ended debugging:
+[路线图](docs/roadmap.md) 列的都是各自可独立完成的事。其中两条特别适合第一次贡献，因为它们是"有确定答案的
+测量任务"，而不是无边界的排障：
 
-- quantify the accuracy gap per layer (the dump harness makes this a day of work, not a week),
-- find why NPU decode is ~2.5× slower than OpenVINO-CPU on this model.
+- 逐层量化精度差距（有了转储仪表，这是一天的活，不是一周的活），
+- 找出为什么 NPU 解码在这个模型上比 OpenVINO-CPU 慢约 2.5 倍。
 
-## Repository hygiene
+## 仓库卫生
 
-Agent/assistant project-memory files (`AGENTS.md`, `CLAUDE.md`, `.claude/`, and similar) are
-**git-ignored** in this repository. They carry machine inventories, internal endpoints and build
-pipeline notes that do not belong in a public clone. Keep them in your private docs repo; if a
-decision from them needs to be public, write it up as a document in `docs/` instead of letting the
-memory file drift back into the index. Check `git status --ignored` before your first commit.
+智能体 / 助手的项目记忆文件（`AGENTS.md`、`CLAUDE.md`、`.claude/` 及同类）在本仓库是 **git 忽略**的。它们
+带着机器清单、内网端点和构建流水备注，这些不属于一个公开克隆。把它们留在你的私有文档仓里；如果其中某个
+决定需要公开，就写成 `docs/` 下的一篇文档，而不是让记忆文件漂回索引里。第一次提交之前先 `git status
+--ignored` 看一眼。
 
-## Pull requests
+## Pull Request
 
-- One concern per PR; link the issue or the roadmap item.
-- Include the measured before/after. "Faster" without a `t/s` number and the command line that
-  produced it is not a result.
-- If you changed graph construction, include both a CPU-static and an NPU run.
-- Update [CHANGELOG.md](CHANGELOG.md); rejected hypotheses are as valuable as fixes, and belong
-  there too.
+- 一个 PR 只谈一件事；链接对应的 issue 或路线图条目。
+- 附上改动前后的实测数据。没有 `t/s` 数字和产出它的命令行的"更快了"，不算结果。
+- 如果你改了图构建，请同时给出一次 CPU 静态和一次 NPU 运行。
+- 更新 [CHANGELOG.md](CHANGELOG.md)；被推翻的假设与修复同样有价值，也该写在那里。
 
-By contributing you certify that you wrote the contribution or have the right to submit it under the
-Apache-2.0 license, and you understand that the project and the contribution are public and that a
-record is kept indefinitely.
+贡献即表示你声明：该贡献由你本人所写，或你有权在 Apache-2.0 许可下提交它；并且你理解本项目与该贡献都是
+公开的，且记录会被无限期保留。

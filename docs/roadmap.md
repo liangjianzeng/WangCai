@@ -95,7 +95,7 @@
 ## Phase 6 —— 端侧多模态助手「旺财」 · ⬜ 规划中
 
 引擎不是终点。旺财的终局形态是一个**由 NPU 低功耗驱动的端侧轻量级多模态 AI 助手**：应用层复用 TongYiLite
-（Flutter），引擎层就是本仓库。三层结构见 [README](../README.md#路线图端侧多模态助手旺财)。
+（Flutter），引擎层就是本仓库。三层结构见 [README](../README.md#wangcai-assistant)。
 
 - [ ] **与 TongYiLite 已有的 Windows 移植方案对齐**（`Windows移植_CPU_GPU_NPU_实施方案_2026-10-30.md`）：
       要么复用它，要么显式写明与它的关系，避免出现两份互相矛盾的规划。

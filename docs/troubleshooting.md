@@ -1,181 +1,188 @@
-# Troubleshooting
+# 故障排查
 
-Every error we actually hit, in the order they tend to appear, with the resolution. If your message is
-not here, open an issue with the artifacts from [../CONTRIBUTING.md](../CONTRIBUTING.md).
+我们真正踩过的每一个报错，按它们通常出现的顺序排列，附解决办法。如果你的报错不在这里，请带上
+[../CONTRIBUTING.md](../CONTRIBUTING.md) 里要求的材料开一个 issue。
 
-## Build
+## 构建
 
 ### `fatal error C1083: cannot open include file "CL/cl2.hpp"`
 
-From `openvino/runtime/intel_gpu/ocl/ocl_wrapper.hpp:50`, pulled in by the OpenVINO backend. The GPU
-remote-context headers are not needed on an NPU build but are included unconditionally.
+来自 `openvino/runtime/intel_gpu/ocl/ocl_wrapper.hpp:50`，由 OpenVINO 后端牵引进来。NPU 构建并不需要 GPU
+远程上下文的头文件，但它们是无条件被 include 的。
 
-**Fix:** build through `tools/bootstrap.ps1`, which installs [`src/ggml-openvino/`](../src/ggml-openvino/)
-(including `ov_opencl_shim.hpp`) onto the pinned llama.cpp — see
-[build.md](build.md#the-opencl-header-problem). Downloading the Khronos headers also works if you can
-reach the headers repository.
+**解法：** 通过 `tools/bootstrap.ps1` 构建，它会把 [`src/ggml-openvino/`](../src/ggml-openvino/)（含
+`ov_opencl_shim.hpp`）安装到钉住版本的 llama.cpp 上——见
+[build.md](build.md#the-opencl-header-problem)。如果你能访问那个头文件仓库，直接下 Khronos 头文件也行。
 
-### `C2668: ambiguous call to overloaded function` in `ClContext` construction
+### `ClContext` 构造处 `C2668: ambiguous call to overloaded function`
 
-Someone typedef'd `cl_context` and `cl_command_queue` both to `void*`. The `ClContext` constructors are
-overloaded on them. **Fix:** distinct opaque types (`struct _cl_context *`, `struct _cl_command_queue *`).
-The shim already does this; it bites when the shim gets hand-rewritten.
+有人把 `cl_context` 和 `cl_command_queue` 都 typedef 成了 `void*`。而 `ClContext` 的构造函数正是对它们做
+重载的。**解法：** 用互不相同的不透明类型（`struct _cl_context *`、`struct _cl_command_queue *`）。shim
+里已经这么做了；手写改写 shim 时会踩到。
 
-### `No CMAKE_C_COMPILER could be found` right after `vcvars64.bat` succeeded
+### `vcvars64.bat` 明明成功了，紧接着却报 `No CMAKE_C_COMPILER could be found`
 
-PowerShell quote-eating on `cmd /c "call vcvars64.bat && cmake ..."`. **Fix:** put the commands in a
-`.bat` file and run `cmd.exe /c that.bat`. `tools/configure.ps1` does.
+PowerShell 在 `cmd /c "call vcvars64.bat && cmake ..."` 上把引号内容吃了。**解法：** 把命令放进一个 `.bat`
+文件，然后跑 `cmd.exe /c that.bat`。`tools/configure.ps1` 就是这么做的。
 
 ### `-- UI: download dist.tar.gz.sha256 ... Timeout was reached` / `HF download failed`
 
-Noise. `llama-server`'s embedded web UI assets, unreachable CDN. The build succeeds; the binaries work.
-Gate on the exit code, not on the word "failed".
+噪音。那是 `llama-server` 的内嵌 web UI 资产，CDN 不可达。构建是成功的，产物可用。以退出码为准，不要看到
+"failed" 这个词就当失败。
 
-### `error: invalid argument: -cnv` (or `-d`)
+### `error: invalid argument: -cnv`（或 `-d`）
 
-This llama.cpp revision has no `-cnv` (chat is the default; `-st` is single turn) and `-d` is not a
-flag — device selection is `-dev` / `--device`.
+这个 llama.cpp 版本没有 `-cnv`（chat 是默认行为，`-st` 是单轮），`-d` 也不是一个 flag——设备选择用
+`-dev` / `--device`。
 
-## Model loading
+### `ninja: build stopped: subcommand failed`，但日志里没有编译错误
+
+多半不是代码问题：你在**跑测还没结束的时候做了构建**。`llama-*.exe` / `llama-*.dll` 被运行中的进程占着，
+链接步写不进去。**解法：** 等跑测结束再构建，或者换一条产物输出路径。本项目为此白重建过一次。
+
+## 模型加载
 
 ### `tensor 'blk.NN.xxx.weight' data is not within the file bounds, model is corrupted or incomplete`
 
-Truncated download. Check the file size against the source before debugging anything else — a corrupt
-GGUF will otherwise convincingly imitate a backend defect.
+下载不完整。在调试任何别的东西之前，先把文件大小与来源核对一遍——一个坏掉的 GGUF 能惟妙惟肖地模仿后端
+缺陷。
 
-## Device selection
+## 设备选择
 
-### The NPU does not appear in `Available devices`
+### `Available devices` 里看不到 NPU
 
-NPU driver missing or too old for the installed OpenVINO. Check:
+NPU 驱动缺失，或者相对已安装的 OpenVINO 太旧。检查：
 
 ```powershell
 Get-PnpDevice -Class ComputeAccelerator | Format-Table FriendlyName, Status, InstanceId
 ```
 
-You want `Intel(R) AI Boost` in `OK` state. Then verify the OpenVINO version matches the driver's
-supported range, and that `openvino.dll` plus the plugin DLLs are on `PATH` at run time.
+你要看到 `Intel(R) AI Boost` 处于 `OK` 状态。然后确认 OpenVINO 版本落在驱动支持的范围内，并且运行期
+`openvino.dll` 与插件 DLL 都在 `PATH` 上。
 
-### It runs, but the numbers look CPU-like
+### 能跑，但数字长得像 CPU
 
-It ran on the CPU. Confirm with `--list-devices`, the backend line in the log, and a
-`GGML_OPENVINO_DUMP_BIN` comparison — tensors from two devices are never bit-identical.
+它其实跑在 CPU 上。用 `--list-devices`、日志里的 backend 那行、以及一次 `GGML_OPENVINO_DUMP_BIN` 比对来
+确认——来自两台设备的张量不可能逐位相同。
 
-### A flag appears to do nothing
+### 某个 flag 看起来毫无作用
 
-Stale compiled-graph cache. Use a **fresh** `GGML_OPENVINO_CACHE_DIR` per configuration. Second
-suspect: the variable is not registered in the env table in `ggml-openvino-extra.cpp`, which makes it
-read as unset with no warning.
+编译图缓存过期了。每种配置都要用一个**全新**的 `GGML_OPENVINO_CACHE_DIR`。第二嫌疑：该变量没有登记进
+`ggml-openvino-extra.cpp` 的环境变量表，于是它被读成"未设置"且没有任何警告。
 
-## Graph compilation
+## 图编译
 
 ### `Check 'attention_mask_input_correctness' failed at ... scaled_dot_product_attention_shape_inference.hpp:92`
 
-Mask width disagrees with K/V — for example mask `[1,1,256,1024]` against K/V `[1,16,768,128]`. Typical
-for hybrid sliding-window + full-attention models. **Fix:** `get_mask_ctx_size()`
-([npu-internals § 2](npu-internals.md#2-hybrid-models-address-two-kv-rings-with-one-mask-tensor)).
+mask 宽度与 K/V 不一致——例如 mask 是 `[1,1,256,1024]` 而 K/V 是 `[1,16,768,128]`。在滑动窗口 + 全局注意力的
+混合结构模型上很典型。**解法：** `get_mask_ctx_size()`
+（[npu-internals § 2](npu-internals.md#2-hybrid-models-address-two-kv-rings-with-one-mask-tensor)）。
 
 ### `Check 'is_dynamic || port_partial_shape == tensor_shape' failed at ... zero_infer_request.cpp:1250: got [1,1,256,1024] expecting [1,1,256,768]`
 
-The compiled parameter shape and the bound tensor disagree. Both sides must be derived from the same
-helper; fixing only one produces the *other* error above, which is how this bug gets mistaken for
-progress.
+编译进参数的形状与被绑定的张量不一致。两侧必须由同一个 helper 推导；只改一侧会得到**上面**那条另一个方向
+的报错——这个 bug 正是这样被误当成"有进展"的。
 
 ### `Check 'idxValue < static_cast<int64_t>(srcDimAxis) && ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`
 
-A KV write index landed outside the cache. Reproduced from `llama-perplexity` on any OpenVINO device,
-and from `llama-bench -p 1024 -n 32` with a 1024 context — the same test at `-p 512` passes, which is
-what points at an out-of-range index rather than at the graph shape. **Workaround:** keep
-`-c` ≥ prompt + generated tokens and stay inside the cache; perplexity is unusable as a metric until
-this is fixed, so use native CPU (`-dev none`) for it and text/tensor comparison for the NPU.
+一个 KV 写入索引落到了缓存之外。在任意 OpenVINO 设备上跑 `llama-perplexity` 都能复现，1024 上下文下跑
+`llama-bench -p 1024 -n 32` 也能复现——同样的测试在 `-p 512` 下通过，这正是把嫌疑指向越界索引而非图形状的
+依据。**临时办法：** 让 `-c` ≥ prompt + 生成 token 数，留在缓存之内；这个问题修好之前 perplexity 不能用作
+指标，所以它请用原生 CPU（`-dev none`）跑，而 NPU 用文本 / 张量比对来评。
 
-### `ZE_RESULT_ERROR_DEVICE_LOST` (`zeCommandQueueExecuteCommandLists`, code `0x70000001`)
+### `ZE_RESULT_ERROR_DEVICE_LOST`（`zeCommandQueueExecuteCommandLists`，code `0x70000001`）
 
-The NPU-side signature of the same out-of-range KV write: where the CPU plugin fails a bounds check,
-the NPU plugin takes the device down. Check `-c` against prompt + generated length first. A bad index
-that hangs the device rather than returning an error is a plugin robustness bug worth reporting
-upstream.
+同一次越界 KV 写入在 NPU 侧的签名：CPU 插件会失败一条边界检查，而 NPU 插件直接把设备干掉。先检查 `-c`
+与 prompt + 生成长度的关系。一个坏索引不返回错误而是把设备挂住，是值得上游上报的插件健壮性 bug。
 
-### `-fa 0` crashes the same scatter path
+### `-fa 0` 会在同一条 scatter 路径上崩溃
 
-Deliberate on llama.cpp's side: with flash attention off it flattens V to one element per row because
-the write-back only needs one column. Do not "fix" the scatter; run `-fa 1`.
+这是 llama.cpp 那边的有意行为：关掉 flash attention 后它把 V 摊成每行一个元素，因为写回只需要一列。不要
+去"修"scatter，跑 `-fa 1`。
 
-### `state is only supported with stateless` when using `-np 2`
+### 用 `-np 2` 时报 `state is only supported with stateless`
 
-The static path is single-sequence. Use `-np 1`; multi-sequence on NPU would require a rework of the
-cache contract.
+静态路径是单序列的。用 `-np 1`；要在 NPU 上做多序列，得把缓存契约整体重做。
 
-## Execution
+## 执行
 
-### `ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY` (`pfnAppendGraphExecute`, code `0x70000002`)
+### `ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY`（`pfnAppendGraphExecute`，code `0x70000002`）
 
-Seen when setting `NPU_COMPILER_DYNAMIC_QUANTIZATION=NO`: the unquantized graph does not fit the NPU's
-host-side budget. Either keep dynamic quantization on or shrink the model/context.
+设在 `NPU_COMPILER_DYNAMIC_QUANTIZATION=NO` 时出现：未量化的图放不进 NPU 的主机侧预算。要么保持动态量化
+开启，要么缩小模型 / 上下文。
 
-### `ov::Exception` from `core.cpp:120` at compile time
+### 编译期 `core.cpp:120` 抛 `ov::Exception`
 
-The plugin rejected the requested configuration. `NPU_USE_NPUW=NO` and
-`NPUW_DQ=NO,NPUW_DQ_FULL=YES` both land here — the compressed-weights path is required for this model.
+插件拒绝了你请求的配置。`NPU_USE_NPUW=NO` 和 `NPUW_DQ=NO,NPUW_DQ_FULL=YES` 都会落到这里——对这个模型而言
+压缩权重那条路径是必需的。
 
-### The process aborts during compile when using `GGML_OPENVINO_DEBUG_NODE`
+### 用 `GGML_OPENVINO_DEBUG_NODE` 时进程在编译期中止
 
-The NPU plugin cannot take appended `Result` nodes. **Fix:** use `GGML_OPENVINO_DUMP_BIN`, which reads
-the outputs the graph already produces.
+NPU 插件不接受追加的 `Result` 节点。**解法：** 用 `GGML_OPENVINO_DUMP_BIN`，它读的是图本来就产出的输出。
 
-### The log file is empty after a crash
+### 崩溃之后日志文件是空的
 
-Inline `2>&1 >` in PowerShell truncates the OpenVINO exception text. Redirect through
-`cmd.exe /c "llama-cli ... > log 2>&1"`.
+PowerShell 里内联的 `2>&1 >` 会把 OpenVINO 的异常文本截断。改为经由 `cmd.exe /c "llama-cli ... > log 2>&1"`
+重定向。
 
-### Prompt throughput on the NPU looks hopeless (single-digit t/s)
+### NPU 上的 prompt 吞吐看起来惨不忍睹（个位数 t/s）
 
-Almost certainly a measurement artifact, not a result. The static prefill graph is always
-`GGML_OPENVINO_PREFILL_CHUNK_SIZE` (256) columns wide, so a 4-token prompt pays for 256 columns while
-llama.cpp reports *useful* tokens per second — the same 0.66 s chunk reads as ~6 t/s. Measure with
-`llama-bench -p 512` (where the chunk is actually full), and for genuinely short-prompt workloads lower
-the chunk size. Never compare NPU prompt t/s with CPU prompt t/s on short prompts: you are comparing
-padding against no padding.
+几乎可以肯定是测量假象，不是结果。静态 prefill 图永远是 `GGML_OPENVINO_PREFILL_CHUNK_SIZE`（256）列宽，
+所以 4 个 token 也要付 256 列的钱，而 llama.cpp 上报的是*有效* token 每秒——同样一个 0.66 s 的 chunk 会被
+读成约 6 t/s。请用 `llama-bench -p 512`（此时 chunk 才是真的满）来测；对于确实很短的 prompt 场景，把 chunk
+调小。绝不要在短 prompt 上比较 NPU 与 CPU 的 prompt t/s：你比的是"有填充"对"无填充"。
 
-### Generation repeats one token (`>>>>>>>>>>>>>`) forever
+### 生成无限重复同一个 token（`>>>>>>>>>>>>>`）
 
-A weights/execution failure signature, not a sampling problem. It appeared whenever NPUW dequantization
-was disabled (`NPUW_DQ=NO`, `NPUW_DQ_FULL=YES`, `NPUW_FOLD=NO`). Restore the defaults.
+这是权重 / 执行失效的特征，不是采样问题。每次禁用 NPUW 反量化（`NPUW_DQ=NO`、`NPUW_DQ_FULL=YES`、
+`NPUW_FOLD=NO`）时它都会出现。恢复默认值。
 
-### Coherent on CPU, garbage on NPU, no exception
+### CPU 上连贯、NPU 上是垃圾，且不抛异常
 
-The open defect — see [npu-internals § 4](npu-internals.md#4-the-accuracy-gap). Diagnostic order:
-confirm device, then dump both devices and compare pass-by-pass (`tools/compare-tensors.ps1`,
-`tools/top-token.ps1`), then bisect with `GGML_OPENVINO_FORCE_STATIC=1` on CPU.
+就是那个未解决的缺陷——见 [npu-internals § 4](npu-internals.md#4-the-accuracy-gap)。诊断顺序：先确认设备，
+然后两台设备都转储并逐 pass 比对（`tools/compare-tensors.ps1`、`tools/top-token.ps1`），最后在 CPU 上用
+`GGML_OPENVINO_FORCE_STATIC=1` 做二分。
 
-### Garbage on **every** device including native CPU
+### **每台**设备（包括原生 CPU）上都是垃圾
 
-You are driving an instruct model with raw completion. Use `llama-cli -st` so the chat template is
-applied. This exact false alarm cost a "the model is broken" detour.
+你在用裸续写驱动一个 instruct 模型。请用 `llama-cli -st`，让 chat 模板生效。这个一模一样的误报曾经引出
+过一次"模型坏了"的弯路。
 
-## Scripting
+## 脚本
 
-### `Missing ')' in function call` / mojibake when running a `.ps1`
+### 运行 `.ps1` 时出现 `Missing ')' in function call` 或乱码
 
-Windows PowerShell parses `.ps1` files as ANSI, so non-ASCII literals (Chinese text, `…`) corrupt the
-parser. Keep scripts ASCII-only and pass non-ASCII prompts through a UTF-8 file with `-f`.
+Windows PowerShell 按 ANSI 解析 `.ps1` 文件，所以非 ASCII 字面量（中文文本、`…`）会把解析器搞坏。脚本请
+保持纯 ASCII，非 ASCII 的 prompt 通过 UTF-8 文件用 `-f` 传进去。
 
 ### `Cannot overwrite variable IsWindows because it is read-only or constant`
 
-PowerShell 7 defines `$IsWindows`, `$IsLinux`, `$IsMacOS`, `$PSScriptRoot`, … as **read-only automatic
-variables**, and PowerShell is case-insensitive, so a perfectly ordinary
+PowerShell 7 把 `$IsWindows`、`$IsLinux`、`$IsMacOS`、`$PSScriptRoot` 等定义为**只读自动变量**，而
+PowerShell 是大小写不敏感的，于是一个再普通不过的
 
 ```powershell
-$isWindows = ($env:OS -eq 'Windows_NT')     # works on 5.1, throws on 7
+$isWindows = ($env:OS -eq 'Windows_NT')     # 在 5.1 上能用，在 7 上抛异常
 ```
 
-parses cleanly, runs fine on Windows PowerShell 5.1, and dies the moment it executes under `pwsh` 7.
-Invoked as `pwsh -File tools/configure.ps1`, that surfaced as a failed CI step whose only visible message
-was "Process completed with exit code 1" — the real line was swallowed by the child process.
+能干净解析、在 Windows PowerShell 5.1 上跑得好好的，然后在 `pwsh` 7 下执行的那一瞬间死掉。以
+`pwsh -File tools/configure.ps1` 调用时，它表现为一个失败的 CI 步骤，而唯一可见的信息只有
+"Process completed with exit code 1"——真正那行被子进程吞掉了。
 
-Two rules, both enforced by the `scripts` CI job:
+两条规矩，都由 `scripts` 这个 CI job 强制：
 
-1. Do not name a variable after a read-only automatic variable. `$onWindows`, not `$isWindows`.
-2. Any script CI runs must be smoke-tested under **both** hosts — 5.1 accepts things 7 rejects and vice
-   versa. Failing steps tee their child's output and re-raise it as a `::error::` annotation, which is
-   what made this one findable at all.
+1. 不要用只读自动变量的名字命名变量。用 `$onWindows`，不要 `$isWindows`。
+2. CI 要跑的每个脚本都必须在**两个宿主**下都做过冒烟测试——5.1 接受的东西 7 可能拒绝，反之亦然。失败步骤
+   会把子进程输出 tee 出来并重新以 `::error::` annotation 抛出，正是这件事让上面这个错误变得可查。
+
+### `Cannot convert value "--parallel" to type "System.Int32"`
+
+同一类坑，但更阴险：**局部变量与参数同名**（大小写不敏感）。
+
+```powershell
+param([int]$Parallel)
+$parallel = if ($Parallel -gt 0) { "--parallel $Parallel" } else { '--parallel' }   # 给 [int] 参数赋字符串
+```
+
+它在解析期就报 MetadataError，一行代码都还没执行。`tools/build.ps1` 曾同时中两次（`$parallel` 与 `$clean`，
+对应 `[int]$Parallel` 与 `[switch]$Clean`），于是 CI 在任何一次编译发生之前就死了。规矩同上：局部变量改名
+（`$parallelArg`），并且 `scripts` job 会 grep 这类冲突。
