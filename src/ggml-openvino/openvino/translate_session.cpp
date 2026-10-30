@@ -408,7 +408,17 @@ std::shared_ptr<Model> TranslateSession::translate_graph(const frontend::InputMo
     // name is matched either exactly, or as the "name" part before "#" of a
     // suffixed key (first match wins; ambiguous requests should include the
     // full "name#hash" form seen in a previous run's log/dump).
-    if (const char * debug_nodes = ggml_openvino_getenv_str("GGML_OPENVINO_DEBUG_NODE")) {
+    // The extra Result nodes work on the CPU plugin but kill the NPU one: the NPUW pipeline
+    // aborts the process at compile time when the model carries a Result it did not plan for
+    // (observed as a hard abort, not a catchable exception -- status.md defect 4). Refuse the
+    // request explicitly instead, and point at the hook that reads the graph's own outputs.
+    const bool npu_debug_node_refused = ggml_openvino_is_npu() && ggml_openvino_getenv_str("GGML_OPENVINO_DEBUG_NODE");
+    if (npu_debug_node_refused) {
+        GGML_LOG_WARN("GGML_OPENVINO_DEBUG_NODE: extra Result nodes crash the NPU plugin at compile time, "
+                      "refusing the request. Use GGML_OPENVINO_DUMP_BIN on an output the graph already "
+                      "produces instead.\n");
+    }
+    if (const char * debug_nodes = npu_debug_node_refused ? nullptr : ggml_openvino_getenv_str("GGML_OPENVINO_DEBUG_NODE")) {
         std::stringstream ss(debug_nodes);
         std::string name;
         while (std::getline(ss, name, ',')) {

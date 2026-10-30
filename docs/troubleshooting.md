@@ -85,15 +85,29 @@ mask 宽度与 K/V 不一致——例如 mask 是 `[1,1,256,1024]` 而 K/V 是 `
 
 ### `Check 'idxValue < static_cast<int64_t>(srcDimAxis) && ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`
 
-一个 KV 写入索引落到了缓存之外。在任意 OpenVINO 设备上跑 `llama-perplexity` 都能复现，1024 上下文下跑
-`llama-bench -p 1024 -n 32` 也能复现——同样的测试在 `-p 512` 下通过，这正是把嫌疑指向越界索引而非图形状的
-依据。**临时办法：** 让 `-c` ≥ prompt + 生成 token 数，留在缓存之内；这个问题修好之前 perplexity 不能用作
-指标，所以它请用原生 CPU（`-dev none`）跑，而 NPU 用文本 / 张量比对来评。
+一个 KV 写入索引落到了缓存之外。**已于 2026-10-31 修复**：interleaved-SWA 模型的两个同名 KV 写索引输入
+（`attn_inp_k_idxs`）在解码器里被按名字合并成一个参数，窗口层于是拿到全量缓存的 cell id（线性长到
+`-c`），散射进只有 `n_swa` 大小的环；一旦序列总长超过环长（LFM3 上是 3×256=768）就越界。原生后端没事是
+因为它按张量指针而非名字绑定。若看到同样报错而引擎不含本修复，机制与证据见
+[status.md 缺陷 3](status.md#3-超出-kv-缓存的序列会把-openvino-后端拖垮--根因已找到并修复2026-10-31)。
 
 ### `ZE_RESULT_ERROR_DEVICE_LOST`（`zeCommandQueueExecuteCommandLists`，code `0x70000001`）
 
-同一次越界 KV 写入在 NPU 侧的签名：CPU 插件会失败一条边界检查，而 NPU 插件直接把设备干掉。先检查 `-c`
-与 prompt + 生成长度的关系。一个坏索引不返回错误而是把设备挂住，是值得上游上报的插件健壮性 bug。
+同一次越界 KV 写入在 NPU 侧的签名：CPU 插件会失败一条边界检查，而 NPU 插件直接把设备干掉。修复后
+`-p 1024 -n 32` 已三设备通过。若仍遇到，先检查 `-c` 与 prompt + 生成长度的关系。
+
+### `ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY` 之后，NPU 转储全 NaN（但文本正常）—— **驱动状态污染**
+
+一次执行期的 `OUT_OF_HOST_MEMORY`（本机：Qwen3-4B 的 prefill 图在 `-c 1024` 下放不下）会把 NPU 驱动
+带进一种跨进程存活的状态：之后**所有进程**里，`get_output_tensor()` 式的原始输出回读一律返回 NaN，而
+绑定输出缓冲的正常路径（llama.cpp 采样器实际使用的）完全正确。外在表现：生成文本连贯、benchmark 正常，
+但 `GGML_OPENVINO_DUMP_BIN` 的 `result_output` 转储全是 NaN，逐设备张量比对全部失真。换引擎 DLL 版本
+（旧/新）无效；清 `%LOCALAPPDATA%\Intel\NPU` blob 缓存无效；`pnputil /restart-device`（管理员）能恢复
+计算路径，本机上回读路径直到记录时仍未复原，**待重启验证**。处理原则：
+
+1. 怀疑转储时，先看生成文本是否正常——文本正常 + 转储 NaN = 这个状态，转储不可信；
+2. `pnputil /restart-device "PCI\VEN_8086&DEV_AD1D*"`（管理员 PowerShell）；
+3. 还不行就重启机器。避免在同一驱动状态下跑会触发 OOM 的大模型大上下文组合。
 
 ### `-fa 0` 会在同一条 scatter 路径上崩溃
 

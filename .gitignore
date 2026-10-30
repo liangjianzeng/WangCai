@@ -1,5 +1,7 @@
 # Build outputs
-src/llama/          # vendored upstream clone, recreated by tools/bootstrap.ps1
+# src/llama/ is the vendored upstream clone, recreated by tools/bootstrap.ps1.
+# (gitignore patterns cannot carry inline # comments - keeping it on its own line.)
+src/llama/
 build/
 build-*/
 out/

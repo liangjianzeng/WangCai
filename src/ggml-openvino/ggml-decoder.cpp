@@ -214,6 +214,32 @@ static std::string get_tensor_graph_input_ov_name(const GgmlOvDecoder * decoder,
     if (GgmlOvDecoder::is_inp_emb(tensor, op)) {
         return "embd";
     }
+    if (GgmlOvDecoder::is_kv_idx(tensor, op)) {
+        // Give the KV write-index inputs of the two interleaved-SWA caches distinct OV parameter
+        // names. llama.cpp builds one index input per KV cache instance and names them all
+        // "attn_inp_k_idxs" / "attn_inp_v_idxs" (build_input_k_idxs hardcodes it), so an
+        // interleaved-SWA model has two tensors per name: the full-attention cache's (cell ids
+        // spanning the whole context) and the sliding-window ring's (ids inside its n_swa-sized
+        // span). compute_model_inputs() keeps the first registration and drops the second, so the
+        // windowed layers scatter through the full cache's indices -- which run past the ring as
+        // soon as the sequence exceeds n_swa -- and the write goes out of bounds: the CPU plugin
+        // dies on the scatter_update.cpp:915 check, the NPU plugin drops the device with
+        // ZE_RESULT_ERROR_DEVICE_LOST. (-p 1024 on an LFM3 hybrid hits this on the second
+        // 512-token ubatch; -p 512 never crosses the ring and stays clean.) This is the same
+        // name-collision failure mode as the attention masks below; disambiguate by the cache
+        // the SET_ROWS writes into, walking its leaf to the layer number the decoder already
+        // classified.
+        auto * dst = op->src[2];
+        while (dst != nullptr && dst->op == GGML_OP_VIEW) {
+            dst = dst->src[0];
+        }
+        if (dst != nullptr) {
+            const auto layer = extract_layer_from_name(std::string(dst->name));
+            if (layer.has_value() && decoder->is_swa_layer(layer.value())) {
+                return get_tensor_ov_name(cgraph, tensor) + "_swa";
+            }
+        }
+    }
     if (GgmlOvDecoder::is_inp_mask(tensor, op)) {
         // Give the two attention masks distinct OV parameter names. build_attn_inp_kq_mask()
         // names the full-attention mask and the sliding-window mask identically, so keying a

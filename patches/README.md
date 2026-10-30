@@ -9,6 +9,18 @@ WangCai 对上游代码的全部改动都集中在这里，以一组针对固定
 | `0001-ggml-openvino-npu-adaptation.patch` | llama.cpp `abb76ab380c7f3f731e365a859fb4cc64e939bb8` | 7 个文件，+213 / −8 |
 | `ov_opencl_shim.hpp` | 新文件 → `ggml/src/ggml-openvino/ov_opencl_shim.hpp` | 约 150 行 |
 
+> **状态（2026-10-31）：补丁文件落后于 [`src/ggml-openvino/`](../src/ggml-openvino/) 两个修复**——
+> KV 写索引的 SWA 同名冲突修复（`ggml-decoder.cpp`）与 `GGML_OPENVINO_DEBUG_NODE` 的 NPU 显式拒绝
+> （`openvino/translate_session.cpp`），见 [CHANGELOG](../CHANGELOG.md)。本机直连 github.com 与
+> gitee 镜像均超时，无法拉取 pristine `abb76ab` 来重新生成 diff。重新生成的命令：
+>
+> ```powershell
+> git clone https://github.com/ggml-org/llama.cpp src\llama-pristine
+> cd src\llama-pristine ; git checkout abb76ab380c7f3f731e365a859fb4cc64e939bb8 ; cd ..\..
+> git diff --no-index --src-prefix=a/ --dst-prefix=b/ src\llama-pristine\ggml\src\ggml-openvino src\ggml-openvino
+> # （diff 输出需按 patches/0001 现有格式整理路径前缀后整体替换）
+> ```
+
 所有 hunk 都位于 `ggml/src/ggml-openvino/` 之内。llama.cpp 核心、采样器（sampler）与
 ggml-CPU 的文件一概未动。
 

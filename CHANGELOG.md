@@ -10,12 +10,34 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 ### 修复 —— 引擎
 
-- NPU 的重量化覆盖此前 gate 在 `!is_opt("native")` 上，把 **所有** `GGML_OPENVINO_REQUANT_KQUANT` 取值都
-  吞掉了：默认、`q4_sym128_all`、`q4_asym64_all` 三者统统返回 `Q4_0_128`。于是三种"本该不同"的 NPU 配置
-  产出了逐字节相同的张量转储，那个打算把"重量化策略"与"NPU 算术"分开的实验，其实是把同一件事测了三遍。
-  现在 gate 在 `!rq`：不显式选择时保持上游强制的分组 4 bit（原生 Q4_K 在 NPU 上编译不过——
-  `vpux-compiler: Channels count of input tensor shape and filter shape must be the same: 0 != 64`），
-  任何显式选择都会走到正常分支，从而让 CPU / NPU 的同条件对比成为可能。
+- **越界 KV 写入（status.md 缺陷 3）根因找到并修复（2026-10-31 验证）。** llama.cpp 的 interleaved-SWA
+  缓存为全量缓存与 SWA 子缓存各建一个 KV 写索引输入，且 `build_input_k_idxs()` 把两者命名为同一个
+  `attn_inp_k_idxs`；解码器按名字注册参数（先到先得），SWA 的索引张量被全量缓存的同名张量覆盖。窗口层
+  于是拿着全量缓存的 cell id（线性长到 `-c`）散射进只有 `n_swa` 大小的环——序列总长一越过 768（LFM3 的
+  3×256），CPU 插件死于 `scatter_update.cpp:915` 断言，NPU 插件直接 `ZE_RESULT_ERROR_DEVICE_LOST`；
+  `llama-perplexity` 也因此一直无法用作精度指标。这与注意力 mask 的同名冲突是同一类失败（mask 那次已按
+  张量身份区分），这次在 `get_tensor_graph_input_ov_name()` 里按 SET_ROWS 目的缓存所在层补上 `_swa`
+  后缀。原生 ggml 后端按张量指针绑定，所以从未受影响——这也是它此前未被怀疑的原因。修复后
+  `-p 1024 -n 32 -fa 1` 三条路径全通：原生 605 / OV-CPU 626 / NPU 385 t/s（pp1024）。
+  证据：`GGML_OPENVINO_DEBUG_INPUT` 抓到第二 ubatch 的绑定值为 512..1023、cgraph 里 SWA 缓存仅 768 行。
+- **`GGML_OPENVINO_DEBUG_NODE` 在 NPU 上改为显式拒绝（status.md 缺陷 4，2026-10-31 验证）。** 附加
+  `Result` 节点此前会让 NPUW 在编译期死掉；现于 `translate_session.cpp` 直接拒绝并提示改用
+  `GGML_OPENVINO_DUMP_BIN`。附带的新测量：在 OpenVINO 2026.4.1 上硬中止不再复现，但带附加 Result 编译
+  出的 NPU 图 logits 全 NaN——拒绝同时挡住了一种静默劣化。
+
+### 对照 —— 缺陷 5（异架构模型）
+
+- 补上了缺失的对照模型（2026-10-31）：Qwen3-4B / 1.7B（纯 transformer）。NPU 的数值缺陷在 Qwen3 上同样
+  出现（4B 在 `-c 1024` 还会执行期 `OUT_OF_HOST_MEMORY`），所以缺陷跟着"静态 NPU 路径"走，**不是 LFM3
+  特有**；4B 放不下这一点也为 Phase 3 的"1–3 B 甜点区"猜想提供了第一个数据点。
+
+### 新发现 —— 驱动状态污染
+
+- 一次执行期的 `ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY` 会把 NPU 驱动带进跨进程存活的坏状态：之后所有进程
+  的原始输出回读（`get_output_tensor`）返回 NaN，而绑定缓冲的正常输出路径完全正确——**文本连贯、
+  benchmark 正常、`GGML_OPENVINO_DUMP_BIN` 转储全 NaN**。换 DLL 版本、清 blob 缓存均无效；
+  `pnputil /restart-device` 可恢复计算路径。见 [troubleshooting.md](docs/troubleshooting.md) 与
+  [status.md 缺陷 6](docs/status.md)。
 
 ### 修复 —— 工具链
 

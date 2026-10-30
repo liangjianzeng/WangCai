@@ -20,8 +20,8 @@
 | **1.1** | **NPU 输出与 CPU 参照数值对齐** | 🟡 **未通过** | 与参照余弦：prefill `0.969`，decode `0.73–0.87` |
 | 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | 🟡 | 2–3 个 token 后发散 |
 | 1.3 | CI 里有验收测试 | ⬜ | 依赖 1.1 |
-| 2.1 | NPU 解码快过 OpenVINO-CPU | ⬜ | 解码 8.3–8.7 t/s，对比 21.7–29.2（CPU）/ 54.1（原生） |
-| 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；约用了 13 TOPS 中的 1.4 |
+| 2.1 | NPU 解码快过 OpenVINO-CPU | ⬜ | `llama-cli` 解码 8.3–8.7 t/s，对比 21.7–29.2（CPU）/ 54.1（原生）。修复缺陷 3 后新测量：`llama-bench tg32 @ -p 1024` 下 NPU 15.3 t/s 对 OV-CPU 30.5——口径不同，需用同一 harness 重测 |
+| 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；约用了 13 TOPS 中的 1.4。修复缺陷 3 后 `pp1024`：NPU 385 t/s 对 OV-CPU 626 / 原生 605 |
 | 2.2 | 热启动 < 5 s | ⬜ | 缓存目录有效，冷启动 36 s |
 | 3.x | 模型线宽度（0.3 B–8 B、长上下文） | ⬜ | |
 | 4.x | LFM3 全模态（音频输入、视觉输入） | ⬜ | |
@@ -87,27 +87,64 @@ TOPS 的 0.03**。用 NPU 的全部理由就是每瓦性能；绝对吞吐输給
 错了。嫌疑按序：每步重绑无状态缓存、激活量化的开销、解码形状图的编译提示、以及按运行期索引的
 conv 状态 `Gather`。
 
-### 3. 超出 KV 缓存的序列会把 OpenVINO 后端拖垮
+### 3. 超出 KV 缓存的序列会把 OpenVINO 后端拖垮 —— **根因已找到并修复（2026-10-31）**
 
-只要 KV 写入索引落到缓存之外就报
-`Check 'idxValue < static_cast<int64_t>(srcDimAxis) ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`。
-在 `llama-perplexity`（任意设备）以及 1024 上下文下的 `llama-bench -p 1024 -n 32` 上都观察到；同样的
-测试在 `-p 512` 下干净通过，这正说明问题指向越界索引而不是图形状。在 **NPU 上同样的条件会把设备拖崩**，
-报的是 `ZE_RESULT_ERROR_DEVICE_LOST` 而不是一条检查失败。
+只要序列长度越过 SWA 环（`-p 1024 -n 32 -c 1024`），KV 写入索引就落到缓存之外：CPU 插件报
+`Check 'idxValue < static_cast<int64_t>(srcDimAxis) ...' failed at intel_cpu\src\nodes\scatter_update.cpp:915`，
+NPU 插件则报 `ZE_RESULT_ERROR_DEVICE_LOST`。在 `llama-perplexity`（任意设备）与 `llama-bench -p 1024` 上
+复现；`-p 512` 干净通过。
 
-后果：perplexity 目前无法用作精度指标（恰好就是缺陷 1 想要的那个指标）；而在 NPU 上，一个越界索引是
-设备级失效，本身就值得单独上游上报。根因尚未确立——本文档早期"多输出图破坏了 `SET_ROWS` 降级"的说法，
-**没有**得到 `-p 512` / `-p 1024` 差分实验的支持，已撤回。
+**机制**（`GGML_OPENVINO_DEBUG_INPUT` + `GGML_OPENVINO_DUMP_CGRAPH` 钉死）：llama.cpp 的
+interleaved-SWA 缓存为**全量缓存**与 **SWA 子缓存**各建一个写索引输入张量，而 `build_input_k_idxs()`
+把两者都命名为 `attn_inp_k_idxs` / `attn_inp_v_idxs`。解码器的参数表按名字注册（先到先得），SWA 的
+索引张量被全量缓存的同名张量**覆盖**——窗口层于是拿着全量缓存的 cell id（线性增长到 ctx）散射进
+只有 `n_swa` 大小的环。原生 ggml 后端各自绑定各自的张量指针，所以 `-dev none` 一直没事。这与
+注意力 mask 的同名冲突是同一类失败——mask 那次已经在
+`get_tensor_graph_input_ov_name()` 里按张量身份区分过，索引张量当时被漏掉了。
 
-### 4. `GGML_OPENVINO_DEBUG_NODE` 在 NPU 上会让进程中止
+**修复**：同一个函数里，按 `SET_ROWS` 目的缓存所在层的 SWA 归属给索引参数追加 `_swa` 后缀
+（`ggml-decoder.cpp`）。修复后 `-p 1024 -n 32 -fa 1` 三条路径全部通过：
 
-往图里追加 `Result` 节点会让插件在编译期死掉。已用 `GGML_OPENVINO_DUMP_BIN` 绕过；上游的修法要么在插件
-侧，要么就是明确拒绝该请求并报错。
+| 执行路径 | pp1024 | tg32 |
+|---|---:|---:|
+| 原生 ggml CPU（参照） | 605 t/s | 56.7 t/s |
+| OpenVINO · CPU 动态 | 626 t/s | 30.5 t/s |
+| OpenVINO · NPU 静态 | 385 t/s | 15.3 t/s |
 
-### 5. 缺少对照模型
+`llama-perplexity` 因此解锁，可以重新用作精度指标。附带说明：在环长以内（如 670 token 的 p220），
+两套索引张量的数值相同，修复不改变任何数值——修复前后的 NPU prefill 转储逐字节一致。另一条边界要
+诚实记下：越环之后 llama.cpp 的 SWA 环靠**回绕**维持，而静态图只能表达对 768 行的连续读——所以修复
+带来的是"索引在界内、设备不崩、≤768 精确"，超过 768 的 SWA 位置的环映射在静态图里仍是近似的，这要
+等"静态图表达滑动环"的设计工作（Phase 2 的状态流量削减与之同源）。
 
-到目前为止所有结论都来自同一个架构。一个上游已在 NPU 上验证过的小模型，能把"NPU 插件的行为"与
-"LFM3 的行为"分开；本地那个候选后来发现是个下载不完整的文件。
+### 4. `GGML_OPENVINO_DEBUG_NODE` 在 NPU 上让进程中止 —— 已改为显式拒绝（2026-10-31）
+
+往图里追加 `Result` 节点会让 NPUW 在编译期死掉。现在 `translate_session.cpp` 在 NPU 上直接拒绝该
+请求并给出指向 `GGML_OPENVINO_DUMP_BIN` 的提示（拒绝警告走 `GGML_LOG_WARN`，在早期日志汇上不一定
+可见；判据是带 `GGML_OPENVINO_DEBUG_NODE` 的运行不再产生 `__debug_*` 输出）。附带的新测量：在
+OpenVINO 2026.4.1 上，硬中止不再复现，但**带附加 Result 编译出的 NPU 图 logits 全 NaN**——拒绝它
+同时防止了一种静默劣化。
+
+### 5. 缺少对照模型 —— 已补上（2026-10-31）
+
+Qwen3（纯 transformer，与 LFM3 的混合结构完全不同）作为对照：
+
+| 模型 | 原生 / OV-CPU | NPU |
+|---|---|---|
+| `Qwen3-4B-Q4_K_M`，`-c 1024` | 两者输出一致且连贯 | **`ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY`**（`pfnAppendGraphExecute`，编译能过、执行放不下） |
+| `Qwen3-4B-Q4_K_M`，`-c 512` | 连贯 | 跑通但**从第一步就是单 token 塌缩**（`GGGG…`） |
+| `Qwen3-1.7B-Q4_K_M`，`-c 1024` | 连贯（16.3 t/s） | 跑通但输出退化（0.9 t/s，响应为空） |
+
+结论：数值缺陷**不是 LFM3 特有的**——它跟着"NPU 静态路径"走，而不是跟着混合架构走。同时 4B 在
+`-c 1024` 下连图都放不下，给 Phase 3 的"实用上限在 1–3 B"猜想提供了第一个数据点。
+
+### 6. 一次 OOM 会把 NPU 驱动的输出回读楔住（新发现，2026-10-31）
+
+上面 Qwen3-4B 的 `OUT_OF_HOST_MEMORY` 发生在执行期（`pfnAppendGraphExecute`）。此后**跨进程、跨
+后端 DLL 版本**，NPU 上 `get_output_tensor()` 的原始回读一律返回 NaN，而绑定输出缓冲的正常路径
+（llama.cpp 采样器实际走的）计算完全正确——表现为"文本连贯但 `GGML_OPENVINO_DUMP_BIN` 转储全
+NaN"。清除 `%LOCALAPPDATA%\Intel\NPU` blob 缓存无效；`pnputil /restart-device` 恢复了计算，但直到
+本次记录为止回读路径仍未复原（待重启验证）。在重启之前，**所有 NPU 转储比对不可信**。
 
 ## 约束与不可妥协项
 
@@ -117,6 +154,7 @@ conv 状态 `Gather`。
 | 只能用 `-np 1` | 静态路径是单序列的；`-np 2` 会撞上 `state is only supported with stateless` |
 | 不支持 bf16 | 在 NPU 的调度阶段就被拒绝 |
 | 每种配置用全新的 `GGML_OPENVINO_CACHE_DIR` | 否则一张过期的编译图会无声胜出 |
+| 一次执行期 OOM 之后不要信 NPU 转储 | 驱动回读路径被楔住，文本正常但转储全 NaN；见缺陷 6 与 [troubleshooting](troubleshooting.md) |
 | 必须用 chat 模板 | instruct 模型被裸续写驱动，在任何后端（含原生 CPU）都会退化成重复胡话 |
 | 每张图冷编译约 36 s | 使用持久缓存目录；见路线图 2.2 |
 
