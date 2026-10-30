@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/wangchai.png" width="180" alt="WangChai: a Chinese rural dog beside the Intel AI Boost">
+</p>
+
 # WangCai 汪柴
 
 > **Pure-NPU on-device inference engine for Intel® Core™ Ultra.**

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/wangchai.png" width="180" alt="汪柴：一只坐在 Intel AI Boost 旁边的中华田园犬">
+</p>
+
 # WangCai 汪柴
 
 > **面向 Intel® Core™ Ultra 的纯 NPU 端侧推理引擎。**
