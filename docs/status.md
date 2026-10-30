@@ -17,14 +17,14 @@
 | 0.4 | 混合 KV 环寻址正确 | ✅ | `ov-mask:` 显示 `is_swa=1 -> mask_kv=768`、`is_swa=0 -> mask_kv=1024` |
 | 0.5 | 短卷积状态能跨解码步接续 | ✅ | 单 token prompt 在 NPU 上连续 40 个解码步仍连贯 |
 | 0.6 | 静态路径在设备外被证明数值可信 | ✅ | `-Backend static`（CPU）输出连贯，早期 pass 与动态图逐位一致 |
-| **1.1** | **NPU 输出与 CPU 参照数值对齐** | 🟡 **未通过** | 与参照余弦：prefill `0.969`，decode `0.73–0.87` |
+| **1.1** | **NPU 输出与 CPU 参照数值对齐** | 🟡 **未通过** | 缺陷已定位到 **K 路径**（k_norm/RoPE 的 NPU 降级）：重量化对齐对上 V 逐元素噪声级一致、K 整行发散（见 [npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap)） |
 | 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | 🟡 | 2–3 个 token 后发散 |
 | 1.3 | CI 里有验收测试 | ⬜ | 依赖 1.1 |
-| 2.1 | NPU 解码快过 OpenVINO-CPU | ⬜ | `llama-cli` 解码 8.3–8.7 t/s，对比 21.7–29.2（CPU）/ 54.1（原生）。修复缺陷 3 后新测量：`llama-bench tg32 @ -p 1024` 下 NPU 15.3 t/s 对 OV-CPU 30.5——口径不同，需用同一 harness 重测 |
-| 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；约用了 13 TOPS 中的 1.4。修复缺陷 3 后 `pp1024`：NPU 385 t/s 对 OV-CPU 626 / 原生 605 |
-| 2.2 | 热启动 < 5 s | ⬜ | 缓存目录有效，冷启动 36 s |
-| 3.x | 模型线宽度（0.3 B–8 B、长上下文） | ⬜ | |
-| 4.x | LFM3 全模态（音频输入、视觉输入） | ⬜ | |
+| 2.1 | NPU 解码快过 OpenVINO-CPU | ⬜ | `llama-cli` 解码 8.3–8.7 t/s，对比 21.7–29.2（CPU）/ 54.1（原生）。`llama-bench tg32 @ -p 1024`：NPU 15.3 对 OV-CPU 30.5。**ctx 线性代价实测：-c 8192 下 decode 0.9 t/s**（KV 状态进出随 ctx 线性放大，正是缺陷 2 的状态流量项） |
+| 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；`pp1024`：NPU 368 对 OV-CPU 626 / 原生 605；**8K prompt 实测 prefill 122.6 t/s** |
+| 2.2 | 热启动 < 5 s | ⬜ | 缓存目录有效，冷启动 36 s（-c 16384 为 61 s） |
+| 3.x | 模型线宽度（0.3 B–8 B、长上下文） | 🟡 | **长上下文打通：-c 8192（7K prompt 端到端）与 -c 16384（图级）在 NPU 通过**。Q8_0 被驱动主机内存预算阻塞（见缺陷 7） |
+| 4.x | LFM3 全模态（音频输入、视觉输入） | 🟡 | **LFM3-Omni-2B-Q4_0 文本链路在 NPU 端到端跑通**（8.3 t/s，含编译 48 s）；音频输入待 mtmd 接入 NPU |
 
 ## 今天能用的部分
 
@@ -145,13 +145,26 @@ Qwen3（纯 transformer，与 LFM3 的混合结构完全不同）作为对照：
 结论：数值缺陷**不是 LFM3 特有的**——它跟着"NPU 静态路径"走，而不是跟着混合架构走。同时 4B 在
 `-c 1024` 下连图都放不下，给 Phase 3 的"实用上限在 1–3 B"猜想提供了第一个数据点。
 
-### 6. 一次 OOM 会把 NPU 驱动的输出回读楔住（新发现，2026-10-31）
+### 6. 一次 OOM 会把 NPU 驱动带进坏状态（2026-10-31，**叙述已修正**）
 
-上面 Qwen3-4B 的 `OUT_OF_HOST_MEMORY` 发生在执行期（`pfnAppendGraphExecute`）。此后**跨进程、跨
-后端 DLL 版本**，NPU 上 `get_output_tensor()` 的原始回读一律返回 NaN，而绑定输出缓冲的正常路径
-（llama.cpp 采样器实际走的）计算完全正确——表现为"文本连贯但 `GGML_OPENVINO_DUMP_BIN` 转储全
-NaN"。清除 `%LOCALAPPDATA%\Intel\NPU` blob 缓存无效；`pnputil /restart-device` 恢复了计算，但直到
-本次记录为止回读路径仍未复原（待重启验证）。在重启之前，**所有 NPU 转储比对不可信**。
+Qwen3-4B 的执行期 `OUT_OF_HOST_MEMORY`（`pfnAppendGraphExecute`）之后，当晚所有 NPU 转储都是 NaN。
+当时判定为"驱动回读被楔住、跨进程跨 DLL 存活"。**这个叙述与后续证据冲突**：重启后用 `7b796fc`
+构建重测，全部转储恢复正常——而重启前的 NaN 与该构建给 decode 图引入的多余参数（缺陷 3 的第一轮
+修复，已被 `7b796fc` 改正）在时间线上重合。因此"OOM 楔住回读"与"NPUW 对参数表敏感导致 NaN"两个
+因素当时被混在一起，无法事后分离。保留的教训：**(a)** 执行期 OOM 之后不要在同一驱动状态下做精度
+测量（`pnputil /restart-device` 或重启）；**(b)** "文本正常 + 转储 NaN"首先应当怀疑当次的图变更，
+而不是驱动状态——本仓库同时改动两者的概率不低。
+
+### 7. Q8_0 模型被 NPU 驱动的主机内存预算阻塞（新发现，2026-10-31）
+
+LFM3-1.7B 与 Omni-2B 的 Q8_0 checkpoint（源文件均 1.85 GB）在 NPU 上编译成功但在首次执行时死于
+`L0 pfnAppendGraphExecute: ZE_RESULT_ERROR_UNINITIALIZED`（DQ 关闭时为显式
+`OUT_OF_HOST_MEMORY`）。已排除：NaN scale（打包权重有校验，零命中）、驱动楔住（之后 Q4_K_M 立即
+正常）、IR 结构差异（两模型直方图一致）、重量化配置（强制 Q4_0_128 与 `q4_sym128_all` 同样失败）、
+内存开关（`REDUCE_COMPILE_MEM`/`RELEASE_WEIGHTS` 无效——后者被 `is_gpu()` 门住，且 NPU 零拷贝读
+重打包权重，源缓冲无法像 GPU 那样丢弃）。**尺寸边界已钉准：源 ≤ 1.26 GB（Q4_K_M/QAD-Q4_0/Q5_K_M/
+Omni-Q4_0）全部通过，1.85 GB 必失败。** 修复方向：NPU 路径在重量化完成后释放 ggml 源权重缓冲
+（Windows 上需 VirtualFree(MEM_DECOMMIT) 等价物 + 失败快速路径），需要谨慎处理张量生命周期。
 
 ## 约束与不可妥协项
 
