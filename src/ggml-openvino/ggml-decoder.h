@@ -417,6 +417,14 @@ public:
         return tensor->op == GGML_OP_GET_ROWS && op->op == GGML_OP_RMS_NORM;
     }
 
+    // Raw-embedding leaf (mtmd audio/image batches): an input-flagged F32 leaf consumed directly
+    // by the first RMS norm. Distinct from is_inp_emb's GET_ROWS form on the token path -- the
+    // mtmd batch carries embeddings, not token ids, so no get_rows sits in front of the norm.
+    static bool is_raw_embd(const ggml_tensor * tensor, const ggml_tensor * op) {
+        return (tensor->flags & GGML_TENSOR_FLAG_INPUT) && tensor->op == GGML_OP_NONE &&
+               tensor->type == GGML_TYPE_F32 && op != nullptr && op->op == GGML_OP_RMS_NORM;
+    }
+
     static bool is_inp_mask(const ggml_tensor * tensor, const ggml_tensor * op) {
         return op->op == GGML_OP_CPY || (op->op == GGML_OP_FLASH_ATTN_EXT && tensor == op->src[3]) ||
                (op->op == GGML_OP_SOFT_MAX && tensor == op->src[1]);

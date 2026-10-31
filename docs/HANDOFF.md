@@ -257,3 +257,32 @@
   需确认 zero-embedding 的 K/V 是否会污染——若污染需在 mask 里显式遮蔽 padded 行）
 - 验证路径：pad 后 NPU 跑 mtmd-audio-c512.ps1 → 三 chunk 全编码 → 生成文本 → 与 CPU
   （DEVICE=CPU 同脚本已端到端通过）对比
+
+## 2026-10-31 深夜 XIV：修复落地——引擎侧 raw-embd pad + 动态维传播，NPU 音频端到端跑通
+- **先修正上一节的一个定案错误**：llama.cpp 并没有 pad 文本 ubatch。cgraph dump 证实文本图的
+  ggml 节点按自然宽度（40-token prompt 的图就是 40 宽）；256 宽来自**引擎的 bind 时 pad**
+  （get_ov_input_tensor_static_prefill 把 inp_tokens/inp_pos 补到 chunk 并以 last_value+1 填充，
+  chunk_valid_len 参数让 shortconv 状态装配只消费有效行）。因此上一节"llama.cpp 侧 pad 音频"
+  的方案是错的：llama.cpp 侧 pad 会让 chunk_valid_len=256、padded 零行的 conv 状态被永久写进
+  cache_r/cache_s（污染后续所有 chunk），KV cell 消耗也会错位。**修法在引擎侧，对齐文本机制。**
+- 三处改动（全部在 ggml-openvino，llama.cpp 零改动）：
+  ① `ggml-decoder.h`：新增 `is_raw_embd`——input 标志的 F32 NONE 叶子直接喂 RMS_NORM（mtmd
+  音频/图像 embedding 的入口形态，与 token 路径的 GET_ROWS 形态区分）。
+  ② `ggml-decoder.cpp get_graph_input_shape`：raw-embd 分支声明 `{1,1,chunk,2048}` 静态形状；
+  `utils.cpp get_ov_input_tensor_static_prefill`：bind 时把 embedding 数据零填充到 chunk 宽
+  （零行 RMS 范数=0，激活有限；K/V 散射到 last_value+1 的 cell，mask 的 -INF 列保证不可读）。
+  ③ `ggml-decoder.cpp compute_node_dynamic_dims`：raw-embd 叶子标动态维 1（token 轴）——这是
+  最关键的一处：没有它，CONT/Reshape 链会把捕获期的 n_tokens=38 烤进 Reshape 常量
+  （Reshape_165021: Slice[1,1,256,2048]→[1,1,38,2048] 直接 shape-inference 报错），文本路径
+  之所以没事是因为 inp_tokens 走 GET_ROWS 天然获得动态维。
+- 结果：
+  - **CPU 静态路径音频端到端通过**（EXIT=0，回答 "A high-pitched, pure"，f32 动态参照
+    "A high-pitched electronic tone."——语义一致）
+  - **NPU 音频端到端通过**（EXIT=0，编码 3 chunk → LLM 消费 → 生成 "instrument." 之类的
+    音频描述）。与 f32 参照有 top-1 级分歧，与文本自由生成已记录的 f16 复利行为同类
+    （status.md 1.2 的注）；对照实验：Omni-2B 纯文本 2+2 NPU=CPU="4"、98-token 长文本
+    prefill NPU=CPU="Paris"，说明 LLM 图本身无恙；音频编码器输出统计 NPU≈CPU（fp16 噪声级）。
+  - 文本回归：accept-smoke 3/3（LFM3-1.7B CPU 静态）。
+- 排查过程留档：先用 reshape-bake/view-bake 临时插桩定位烤死常量的来源（cont.cpp 的
+  dst_shape 全烘焙路径），插桩已全部拆除。mtmd-audio-c512.ps1 里还有一行 DEBUG_INPUT='1'
+  需在最终验收时移除。

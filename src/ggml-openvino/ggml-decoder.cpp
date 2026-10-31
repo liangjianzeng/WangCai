@@ -1164,6 +1164,21 @@ ov::PartialShape GgmlOvDecoder::get_graph_input_shape(const ggml_tensor * op,
     } else if (is_inp_scale_rows(input, op)) {
         input_shape = ov::PartialShape{1, 1, m_is_static ? (m_is_prefill ? m_prefill_chunk_size : 1) : -1, 1};
 
+    } else if (is_raw_embd(input, op)) {
+        // Audio/image embeddings enter as a raw [n_embd, n_tokens] input (no token lookup). On
+        // the static path every other sequence-length input is padded to the prefill chunk
+        // (positions get last_value+1, tokens get padded indices, masks get -INF rows/columns)
+        // -- this one used to fall through to its natural shape, so an audio ubatch of 38
+        // tokens produced a 38-wide hidden state while the rope position table was built
+        // chunk-wide (256), and the rope multiply failed shape inference. Pad the token axis to
+        // the chunk like everything else; the bind pads the data with zero rows (see
+        // get_ov_input_tensor_static_prefill), llama.cpp discards the padded query rows, and
+        // their keys land in cache rows past the valid ones where every mask's padded key
+        // columns keep them unread.
+        input_shape = m_is_static ? ov::PartialShape{1, 1, m_is_prefill ? m_prefill_chunk_size : 1,
+                                                    static_cast<int64_t>(input->ne[0])} :
+                                    ov::PartialShape{get_shape(input)};
+
     } else if (is_inp_mask(input, op)) {
         // mask
         // Clip graphs (mmproj) name their masks "attn_mask[_N]": a plain 2-D [n_kv, n_q]
@@ -2208,6 +2223,15 @@ void GgmlOvDecoder::compute_node_dynamic_dims() {
             } else {
                 if (is_inp_tok(src, node) || is_inp_pos(src, node) || is_output_idx(src, node)) {
                     m_node_dynamic_dims[src] = 0;
+                    continue;
+                }
+                if (is_raw_embd(src, node)) {
+                    // mtmd audio/image raw-embedding leaf [n_embd, n_tokens]: mark the token
+                    // axis dynamic exactly like the token-path inputs above, so the downstream
+                    // chain (norm/conv/CONT) stays shape-dynamic instead of baking the captured
+                    // n_tokens into Reshape targets -- which then contradict the padded
+                    // prefill-chunk parameter shapes (audio ubatch of 38 in a 256-wide graph).
+                    m_node_dynamic_dims[src] = 1;
                     continue;
                 }
                 if (is_inp_scale_rows(src, node)) {

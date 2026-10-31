@@ -775,6 +775,26 @@ ov::Tensor get_ov_input_tensor_static_prefill(const std::shared_ptr<GgmlOvDecode
         return input_tensor;
     }
 
+    if (GgmlOvDecoder::is_raw_embd(ggml_tensor, op)) {
+        // Audio/image embeddings enter as a raw [n_embd, n_tokens] leaf (no token lookup), so
+        // the chunk loop has no inp_tokens to pad on its behalf: bind the token axis padded to
+        // the chunk with zero rows, mirroring how inp_tokens/inp_pos are padded above. Zero
+        // rows keep every activation finite (an RMS norm of a zero vector is zero), their K/V
+        // is scattered past the valid rows exactly like the padded positions' (last_value+1),
+        // and every mask's padded key columns (-INF) keep those rows unread -- the same hygiene
+        // the text path gets for its padded tail.
+        const size_t n_embd = ggml_tensor->ne[0];
+        ov::Tensor input_tensor(ov::element::f32, ov::Shape{1, 1, chunk_size, n_embd});
+        auto * dst = input_tensor.data<float>();
+        std::fill(dst, dst + chunk_size * n_embd, 0.0f);
+        const size_t copy_len =
+            std::min<size_t>(chunk_valid_size, ggml_tensor->ne[1] - chunk_index * chunk_size);
+        const auto * src =
+            static_cast<const float *>(ggml_tensor->data) + (size_t) chunk_index * chunk_size * n_embd;
+        std::memcpy(dst, src, copy_len * n_embd * sizeof(float));
+        return input_tensor;
+    }
+
     if (GgmlOvDecoder::is_inp_mask(ggml_tensor, op)) {
         // Clip graphs (mmproj) name their masks "attn_mask[_N]": a plain 2-D [n_kv, n_q]
         // streaming-window mask (the lfm3a audio encoder attends over [cached window |
