@@ -1248,8 +1248,14 @@ ov::PartialShape GgmlOvDecoder::get_graph_input_shape(const ggml_tensor * op,
     }
     if (op->op == GGML_OP_SOFT_MAX && op->src[1] != nullptr && op->src[1]->op == GGML_OP_NONE &&
         op->src[1]->flags & GGML_TENSOR_FLAG_INPUT && op->src[1] == input) {
-        // for softmax input mask, the shape is [1, 1, seq_active, seq_active], where seq_active is determined by the input active sequence length instead of the kv cache sequence length
-        if (m_is_static) {
+        // for softmax input mask, the shape is [1, 1, seq_active, seq_active], where seq_active is determined by the input active sequence length instead of the kv cache sequence length.
+        // EXCEPT for clip graphs: the lfm3a audio encoder's softmax mask is the streaming
+        // window [n_q, window-1 + n_q] -- NOT square -- and this squaring re-sized its
+        // {1,1,38,69} parameter to {1,1,38,38}, breaking the score Add on every layer.
+        const std::string sm_mask_name = (input->name) ? input->name : "";
+        if (sm_mask_name.rfind("attn_mask", 0) == 0) {
+            // keep the {1, 1, n_q, n_kv} shape set by the attn_mask branch above
+        } else if (m_is_static) {
             const int64_t seq_active = m_is_prefill ? m_prefill_chunk_size : 1;
             input_shape[2] = seq_active;
             input_shape[3] = seq_active;

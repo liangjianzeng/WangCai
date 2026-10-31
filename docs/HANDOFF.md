@@ -209,3 +209,16 @@
 - 注意：Add_47152 编号族与 audio IR（65xxx）不同——先确认失败图就是 audio 编码器
   （state_in_k_* 打印紧邻失败点，倾向是），但 mmproj 里 vision 塔同源设计，勿排除
 - CPU 路径已全通：mtmd-audio-c512.ps1 里 DEVICE 临时改 CPU 即可复现成功
+
+## 2026-10-31 深夜 XI：NPU 音频编码器跑通；推进到 LLM×音频 token 层
+- 第四条绑定路径谜底揭晓（最终插桩）：get_graph_input_shape 的 mask 分支返回 {1,1,38,69} 正确，
+  但函数末尾有个 LLM 专用特例——**SOFTMAX 的 mask 输入被强制方阵化 [1,1,seq_active,seq_active]**，
+  lfm3a 音频注意力恰走 SOFTMAX → {1,1,38,69} 被盖成 {1,1,38,38}。修复 = attn_mask* 名字跳过方阵化
+- 连锁修复 2：CACHE_MODE——clip 图因不支持的算子从 NPUW 回退到非 NPUW 路径，该路径拒绝
+  为 NPUW 缓存加的 CACHE_MODE 选项；without_npuw() 现在连 CACHE_MODE 一起剥
+- **结果：NPU 上音频编码器编码成功（chunk 1/3 done）**，推进到 LLM 图消费音频 token：
+  新错误 = q_layernorm/rope 形状不一致（Q [1,38,16,128] vs rope cos Concat [1,256,1,128]，
+  256 = LLM prefill chunk 的位置表 vs 38 个音频 token 的 ubatch）——LLM rope 的 sin/cos
+  表长度与音频 ubatch 的 token 数不匹配，rope.cpp 的 sin_cos 共享缓存 key（op_params）
+  可能不含位置数，或 prefill 静态 256 图被 audio ubatch 复用。这是下一轮第一战场
+- 本轮提交：softmax 方阵化门 + CACHE_MODE 剥离 + 插桩清理

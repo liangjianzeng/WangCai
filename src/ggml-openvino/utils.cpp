@@ -1527,7 +1527,10 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, const std::share
 ov::AnyMap without_npuw(const ov::AnyMap & config) {
     ov::AnyMap out;
     for (const auto & kv : config) {
-        if (kv.first.rfind("NPUW", 0) == 0 || kv.first == "NPU_USE_NPUW") {
+        // CACHE_MODE was added alongside NPUW_CACHE_DIR for the NPUW route; the plugin's
+        // non-NPUW fallback route rejects it outright ("Option 'CACHE_MODE' is not
+        // supported", which is how every clip-graph compile on the NPU died).
+        if (kv.first.rfind("NPUW", 0) == 0 || kv.first == "NPU_USE_NPUW" || kv.first == "CACHE_MODE") {
             continue;
         }
         out.insert(kv);
