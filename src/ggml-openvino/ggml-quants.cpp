@@ -1113,8 +1113,9 @@ std::shared_ptr<ov::Node> extract_quantized_weights(const ggml_tensor * tensor,
             }
             return bad;
         };
-        const size_t bad_scales = count_bad_f16(scales);
-        const size_t bad_zp = zp.get_size() ? count_bad_f16(zp) : 0;
+        // operator bool, not get_size(): see the same comment in requantize_to_buffers.
+        const size_t bad_scales = scales ? count_bad_f16(scales) : 0;
+        const size_t bad_zp = zp ? count_bad_f16(zp) : 0;
         if (bad_scales || bad_zp) {
             GGML_LOG_ERROR("%s: tensor '%s' (%s): %zu bad scales, %zu bad zero points -- the "
                            "driver will likely reject this graph at execute time\n",
@@ -1236,8 +1237,11 @@ std::shared_ptr<ov::Node> requantize_to_buffers(const ggml_tensor * tensor,
             }
             return bad;
         };
-        const size_t bad_scales = count_bad_f16(scales);
-        const size_t bad_zp = zp.get_size() ? count_bad_f16(zp) : 0;
+        // operator bool, not get_size(): for symmetric requant targets (Q4_0_128 etc.) zp is
+        // intentionally default-constructed, and get_size() on it throws "Tensor was not
+        // initialized" -- which made every weight fail to process on the NPU path.
+        const size_t bad_scales = scales ? count_bad_f16(scales) : 0;
+        const size_t bad_zp = zp ? count_bad_f16(zp) : 0;
         if (bad_scales || bad_zp) {
             GGML_LOG_ERROR("%s: tensor '%s' (%s): %zu bad scales, %zu bad zero points -- the "
                            "driver will likely reject this graph at execute time\n",
