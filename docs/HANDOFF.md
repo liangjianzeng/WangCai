@@ -222,3 +222,21 @@
   表长度与音频 ubatch 的 token 数不匹配，rope.cpp 的 sin_cos 共享缓存 key（op_params）
   可能不含位置数，或 prefill 静态 256 图被 audio ubatch 复用。这是下一轮第一战场
 - 本轮提交：softmax 方阵化门 + CACHE_MODE 剥离 + 插桩清理
+
+## 2026-10-31 深夜 XII：LLM×音频 rope 形状——缩到 decoder 相位判定
+- 完整输入清单已拿到（DEBUG_INPUT 插桩，mtmd-audio15/19）：
+  音频 embedding 图的全部输入 = model.embed_tokens [2048,38]（音频 embedding，cb 命名，
+  非 inp_embd！）、inp_pos [38]、mask [256,38]、KV idx [38] —— 图内部在 38 处自洽
+  （embed_tokens [2048,38] → norm → rope 应得 cos [38]）
+- 但 rope cos 实为 [1,256,1,128]：**该图的 gis 打印 prefill=0** —— 38 token 的批次被
+  decoder 判成 decode 相位！于是 is_inp_pos 静态分支走 len=1/m_prefill_chunk_size 的
+  decode 逻辑，rope/位置/mask 的形状假设全部错位。候选根因：
+  ① get_is_prefill(cgraph, inp_pos) 对 embd 批次的判定（mtmd 音频 batch 是否设置
+     inp_pos 使 ne[0]>1 可靠？）② HANDOFF 已警告的 ptr/ptr_prefill decoder 别名
+     （首 pass 相位污染后续图）③ llama.cpp 对 embd batch 的 inp_pos 构建
+- 曾试并回退的修法（勿重试）：inp_embd/model.embed_tokens pad 到 256（reshape 常量
+  [38] 烤死，不匹配）；positions 自然长度（文本 shortconv reshape [256] 烤死，回归）
+- 正确方向推测：修 ②（decoder 相位别名）或 ①——音频批次必须被判成 prefill 且
+  inp_pos 的参数形状跟随真实 38（对齐 mask [256,38] 的 38 行）
+- 下一步第一动作：在 get_is_prefill / decoder 构造处打印音频图的 is_prefill 判定依据
+  （inp_pos->ne[0]、调用来源），确认 ①/② 哪个成立
