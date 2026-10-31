@@ -62,8 +62,30 @@ tools\build.ps1
 |---|---:|---|
 | `LFM3-1.7B-Q4_K_M.gguf` | 1049 MB | 24 层 = 13 个门控短卷积 + 5 个滑动窗口注意力（SWA）@256 + 6 个全局注意力，hidden 2048，16 Q 头 / 4 KV 头，head_dim 128，词表 128000 |
 
-把它放到 `models/` 下。**下载完成后核对文件大小。** 被静默截断的 GGUF 要到加载时才失败，而且报错很容易
-被误判成后端缺陷：
+模型权重**不随本仓库分发**（GGUF 普遍 1–2 GB，超出 git 与 LFS 的合理边界），直接下载官方 GGUF 即用
+——WangCai 走 llama.cpp 的加载路径，消费 GGUF，**不需要任何转换**。官方仓库：Hugging Face
+[`LiquidAI/LFM3-1.7B-GGUF`](https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF)，ModelScope 同名镜像；
+多模态备料是 `LiquidAI/LFM3-Omni-2B-GGUF`（权重 + `mmproj` 投影器）。
+
+```powershell
+# 能直连 HF：
+hf download LiquidAI/LFM3-1.7B-GGUF --local-dir models      # pip install "huggingface_hub[cli]"
+# 国内网络更快：
+modelscope download --model LiquidAI/LFM3-1.7B-GGUF --local_dir models   # pip install modelscope
+```
+
+只需挑一个量化文件，不必整仓拉回。**NPU 上的量化选择有实测约束**（详见
+[status.md 缺陷 7](status.md)）：`Q4_K_M`（1049 MB，本项目基准）与 `QAD-Q4_0`（ModelScope）已验证
+通过；**实用边界约 1.26 GB 源文件**——`Q8_0`（1.85 GB）会被 NPU 驱动的主机内存预算挡住
+（`UNINITIALIZED` / `OUT_OF_HOST_MEMORY`）。1–3 B 的 Q4/Q5 是当前甜点区。
+
+只有在需要官方没发布的量化档位时才自己生成：`tools/bootstrap.ps1` 克隆的钉住版本 llama.cpp 已支持
+LFM3 架构——`python src\llama\convert_hf_to_gguf.py <HF目录> --outfile models\LFM3-1.7B-F16.gguf`
+出母版，再 `llama-quantize` 量化即可。换量化即换实验：用全新的 `GGML_OPENVINO_CACHE_DIR`，并把
+量化文件名与字节数记进实验记录。
+
+把它放到 `models/` 下（已在 `.gitignore` 里）。**下载完成后核对文件大小。** 被静默截断的 GGUF 要到
+加载时才失败，而且报错很容易被误判成后端缺陷：
 
 ```
 E llama_model_load: error loading model: tensor 'blk.32.ffn_down.weight' data is not within the

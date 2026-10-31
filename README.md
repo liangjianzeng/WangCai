@@ -6,6 +6,9 @@
 
 > **面向 Intel® Core™ Ultra 的纯 NPU 端侧推理引擎。**
 > 让被业界晾了多年的 *Intel® AI Boost* 重新产生价值。
+>
+> **v0.0.1 · 2026-10-31 · 汪柴首个版本** —— NPU 端到端跑通 LFM3，精度主缺陷已定案修复
+> （三问验收 3/3）。变更全文见 [CHANGELOG.md](CHANGELOG.md)。
 
 **简体中文** · [English](README_en.md)
 
@@ -58,18 +61,18 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | LFM3-1.7B 在 **NPU 上端到端跑通** | ✅ 完成 |
 | 混合结构（短卷积 + SWA + 全局注意力）在静态图下正确寻址 KV 环 | ✅ 完成 |
 | 长文续写：NPU 与 CPU 参照**逐字一致** | ✅ 完成（Q4_0 权重） |
-| 指令跟随任务的数值一致性 | 🟡 进行中 — 当前唯一未通过项 |
+| 指令跟随任务的数值一致性 | ✅ **完成（v0.0.1 收官修复）** — 根因定案：decode 图 RoPE cos/sin 头轴广播；三问验收 3/3 |
 | Prefill 追平 CPU | 🟡 已达参照的 73%，仍在找余量 |
-| Decode 追平 CPU | 🟡 落后 6 倍，当前主攻方向 |
+| Decode 追平 CPU | 🟡 落后 6 倍，**当前主攻方向** |
 | LFM3 全模态（音频 / 视觉输入） | ⬜ 规划中（官方 GGUF 与 `mmproj` 已在 ModelScope） |
 | **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
 
-"进行中"的具体含义：NPU 上的贪心解码在最初几个 token 与 CPU 参照一致，随后漂移。与参照 logits 的
-余弦相似度为 `0.969`（prefill 结束）与 `0.73–0.87`（decode），且 logit 分布被明显"压平"。真实 chunk
-上的逐层比对显示**发散从第一个 chunk 就存在**（conv 状态余弦 `l0 0.9956 → l9 0.873 → l17 0.163`），
-因此嫌疑集中在单次前向的数值执行，而不是跨步的状态记账；注意力侧几乎无害——V 缓存 200 行全部精确到
-`2.7e-6`，K 缓存除**第 0 行**（余弦 `0.288`、最大绝对差 `1.06e10`）外都在 `0.90–0.9998`。那个孤立异常行
-是眼下最锋利的线索。
+精度主缺陷的完整攻坚记录是这个仓库最有价值的资产之一：从"logits 被压平、K 缓存第 0 行错八个
+数量级"出发，历经 scatter / conv 算子 / DQ / RMS 池化 / 广播 tile 一连串被证伪的假设，最终钉死在
+**静态 decode 图 RoPE 的 cos/sin 头轴隐式广播在 NPUW 1-token 形状降级下错误 tile**，修复是
+`rope.cpp` 里一处显式 Concat tile。证据链、被排除项与方法论教训见
+[docs/defect1-rootcause.md](docs/defect1-rootcause.md)。当前仅存的精度未决项：≥64 token 的逐
+token 严格判据待复测（48 token 三问验收已全对）。
 
 两条用血换来的测量纪律，写在 [docs/npu-internals.md](docs/npu-internals.md) 里，读转储之前先看：
 `prefill_0/1`、`decode_2` 是 llama.cpp 的 **warmup 假批次**（换 prompt 后字节不变），拿它们算余弦等于
@@ -114,13 +117,19 @@ tools\bootstrap.ps1
 tools\configure.ps1 -OpenVinoDir ..\ov\openvino\cmake
 tools\build.ps1
 
-# 4. 在 NPU 上跑
+# 4. 取模型权重（不随 git 分发，直接用官方 GGUF，详见 docs/models.md）
+hf download LiquidAI/LFM3-1.7B-GGUF --local-dir models   # 或 modelscope download
+
+# 5. 在 NPU 上跑
 $env:GGML_OPENVINO_DEVICE = 'NPU'
 $env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'
 src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 -dev OPENVINO3 -st -p '用一句话介绍长城。'
 ```
 
-细节见 [docs/getting-started.md](docs/getting-started.md) 与 [docs/build.md](docs/build.md)。
+模型**不随本仓库分发**（GGUF 普遍 1–2 GB，远超 git 与 LFS 的合理边界）：直接下载官方 GGUF
+（Hugging Face / ModelScope `LiquidAI/LFM3-1.7B-GGUF`）即可，无需转换；自生成 GGUF 仅在需要非官方
+量化时才值得做。下载方式、量化选择（Q8_0 当前会被 NPU 主机内存预算挡住）与核对方法见
+[docs/getting-started.md](docs/getting-started.md)；构建细节见 [docs/build.md](docs/build.md)。
 
 ## 路线图：端侧多模态助手「汪柴」
 
@@ -158,7 +167,7 @@ TongYiLite 现在是 **Flutter（不是 Kotlin）应用**：Dart 约 54k 行，K
 
 NPU 是访存瓶颈型负载里的优等生：**功耗极低、把 CPU 核心完整留给系统**。在 WangCai 里，NPU 端到端跑
 LFM3 时 prefill 已达 **415 t/s**（CPU 参照的 73%），CPU 全程空闲。代价是：decode 还在 **8.3–8.7 t/s**，
-精度也未达标（[docs/status.md](docs/status.md)）——这两条正是下一步要攻的。
+连同 prefill 的余量一起，是下一步要攻的目标（精度已在 v0.0.1 修复，[docs/status.md](docs/status.md)）。
 
 > 诚实声明：**本机目前没有 NPU 计数器、没有电池、电源方案是"高性能"**，所以"每瓦性能"还没测出来。
 > 路线图里写的是可复现的替代证据（CPU 占用、温度、降频事件），精确瓦特需要外部功率计或电池模式补测。

@@ -97,7 +97,12 @@ Slice，是为了让输出形状保持静态）；decode 则用位于 `rs_src_be
 <a id="4-the-accuracy-gap"></a>
 <a id="the-accuracy-gap"></a>
 
-**状态：未解决。** NPU 端到端跑完了模型；数值偏差的方式既稳定又尚未被解释。
+**状态：已解决（2026-10-31，v0.0.1 收官）。** 根因 = **静态 decode 图 RoPE 的 cos/sin 头轴隐式广播**
+（`[1,1,1,128]` → `[1,1,4,128]`）在 NPUW 的 1-token（GEMV）形状降级下错误 tile，K 缓存每行只剩偶数
+128 块正确；prefill 同构广播在 `[1,256,4,128]` 上正确，故 prefill 无恙。修复 = `rope.cpp` 显式
+Concat tile；三问验收 3/3。完整证据链、被证伪假设清单与教训见
+[defect1-rootcause.md 终章](defect1-rootcause.md)。本节其余内容保留为排查过程的历史记录——包括
+"K 缓存第 0 行范数爆炸"等当时最锋利、但最终被推翻或被更精确解释收编的线索。
 
 ### 它是怎样被定位的
 
@@ -256,6 +261,12 @@ V 精确意味着"反量化 → 归一化 → 投影"这条链大体是对的，
 ### 接下来往哪儿走
 
 <a id="where-to-take-it-next"></a>
+
+> **（2026-10-31 收尾注：缺陷 1 已按下面的路径走完并修复，本清单归档。）** 最终不是"第 0 行没被写"
+> 也不是 RMS 分母错轴，而是 **decode 图 RoPE cos/sin 头轴广播的 NPUW 降级错误**——条目 0 观察到的
+> "16 元素段周期 / 奇数头 {1,3} 损坏"正是 cos/sin 广播 tile 坏掉的直接投影；"conv 状态写回垃圾"
+> 是量化未对齐 + pass 错位比较叠加出的假象。定案与修复见
+> [defect1-rootcause.md](defect1-rootcause.md)。
 
 0. **缺陷签名已锐化到"K 缓存第 0 行、范数爆炸"（2026-10-31 下午，健康栈重测）。** 在干净的对齐
    基准上（LFM3-1.7B-QAD-Q4_0、`-c 512`、44-token Great-Wall prompt、两侧 `REQUANT_KQUANT=native`

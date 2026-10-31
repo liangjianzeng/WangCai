@@ -17,8 +17,8 @@
 | 0.4 | 混合 KV 环寻址正确 | ✅ | `ov-mask:` 显示 `is_swa=1 -> mask_kv=768`、`is_swa=0 -> mask_kv=1024` |
 | 0.5 | 短卷积状态能跨解码步接续 | ✅ | 单 token prompt 在 NPU 上连续 40 个解码步仍连贯 |
 | 0.6 | 静态路径在设备外被证明数值可信 | ✅ | `-Backend static`（CPU）输出连贯，早期 pass 与动态图逐位一致 |
-| **1.1** | **NPU 输出与 CPU 参照数值对齐** | 🟡 **未通过** | 缺陷已定位到 **K 路径**（k_norm/RoPE 的 NPU 降级）：重量化对齐对上 V 逐元素噪声级一致、K 整行发散（见 [npu-internals.md § 4](npu-internals.md#4-the-accuracy-gap)） |
-| 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | 🟡 | 2–3 个 token 后发散 |
+| **1.1** | **NPU 输出与 CPU 参照数值对齐** | ✅（2026-10-31） | 根因定案并修复：静态 decode 图 RoPE 的 cos/sin 头轴隐式广播在 NPUW 降级下错误 tile（[defect1-rootcause.md](defect1-rootcause.md) 终章）。修复后缓存 row0 四头 cos 0.997+、范数逐位一致 |
+| 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | 🟡 | 三问验收（48 token 贪心解码）**首次全对 3/3**（Q2 "Beijing"、Q3 "Paris"、Q1 推理正确）；≥64 token 的逐 token 严格判据待复测 |
 | 1.3 | CI 里有验收测试 | ⬜ | 依赖 1.1 |
 | 2.1 | NPU 解码快过 OpenVINO-CPU | ⬜ | `llama-cli` 解码 8.3–8.7 t/s，对比 21.7–29.2（CPU）/ 54.1（原生）。`llama-bench tg32 @ -p 1024`：NPU 15.3 对 OV-CPU 30.5。**ctx 线性代价实测：-c 8192 下 decode 0.9 t/s**（KV 状态进出随 ctx 线性放大，正是缺陷 2 的状态流量项） |
 | 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；`pp1024`：NPU 368 对 OV-CPU 626 / 原生 605；**8K prompt 实测 prefill 122.6 t/s** |
@@ -39,7 +39,15 @@
 
 ## 未解决的缺陷
 
-### 1. NPU 的 logits 被压平（阻塞性）
+### 1. NPU 的 logits 被压平 —— **已修复（2026-10-31 根因定案 + 验收）**
+
+> **结论（commit `63179ef`）：** 缺陷是**静态 decode 图 RoPE 的 cos/sin 头轴隐式广播**——
+> `[1,1,1,128]` 广播到 `[1,1,4,128]` 在 NPUW 的 1-token（GEMV）形状降级下错误 tile，K 缓存
+> 每行只剩偶数 128 块正确；prefill 同构广播在 `[1,1,256,4,128]` 上正确，故 prefill 无恙。
+> 修复 = `rope.cpp` 显式 Concat tile + `translate_session.cpp` 注册门扩到 NPU；三问验收
+> **3/3 首次全对**。完整证据链、被证伪的假设清单与当日方法论教训见
+> [defect1-rootcause.md 终章](defect1-rootcause.md#2026-10-31-定案根因--静态-decode-图-rope-的-cossin-头轴广播在-npuw-降级下坏掉已修复并验收)。
+> 下文保留为历史记录。
 
 NPU 上的贪心解码与 CPU 参照一致 2–3 个 token，随后开始胡言乱语。
 

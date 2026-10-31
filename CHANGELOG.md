@@ -6,9 +6,28 @@ WangCai 所有值得记录的改动都在这里。格式遵循
 
 Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不是写文档的日期。
 
-## [Unreleased] — 基线 `abb76ab`（llama.cpp）、OpenVINO 2026.4.1
+## [Unreleased]
+
+## [0.0.1] — 2026-10-31 · 汪柴首个版本
+
+基线 `abb76ab`（llama.cpp）、OpenVINO 2026.4.1。
+
+### 修复 —— 引擎（精度主缺陷，0.0.1 的收官修复）
+
+- **NPU decode 答案质量的根因找到并修复（三问验收 3/3 首次全对）。** 铁证链：decode 图 K 分支
+  pre-norm/post-norm 在 NPU 上完全正确（cos 0.997+）→ 缺陷只剩 RoPE；缓存 K 行只有偶数 128 块
+  正确（h0/h2 逐位精确、h1/h3 摧毁，256 元素周期）；**位置 0 上 post-rope vs pre-rope 数学恒等，
+  NPU 却算出 h1/h3 cos 0.38/0.49** → 静态 decode 图 RoPE 的 cos/sin `[1,1,1,128]` 沿头轴广播到
+  `[1,1,4,128]`，在 NPUW 的 1-token（GEMV）形状降级下错误 tile；prefill 同构广播在
+  `[1,1,256,4,128]` 上正确，故 prefill 无恙。修复：`rope.cpp` 把 cos/sin 沿头轴显式 Concat tile
+  绕开隐式广播；`translate_session.cpp` 把 `AlignEltwiseOperandRanks` 的注册门从 `is_gpu()` 扩到
+  gpu/npu/`FORCE_STATIC`——此前 NPU 上所有"tile 无效"实验都是被这扇门挡住的死代码（教训：改
+  pass 注册门前，先拿 IR hash 确认 pass 真的在跑）。完整证据链与被证伪假设清单见
+  [defect1-rootcause.md](docs/defect1-rootcause.md)。
 
 ### 修复 —— 引擎
+
+- **越界 KV 写入（status.md 缺陷 3）根因找到并修复（2026-10-31 验证）。** llama.cpp 的 interleaved-SWA
 
 - **越界 KV 写入（status.md 缺陷 3）根因找到并修复（2026-10-31 验证）。** llama.cpp 的 interleaved-SWA
   缓存为全量缓存与 SWA 子缓存各建一个 KV 写索引输入，且 `build_input_k_idxs()` 把两者命名为同一个

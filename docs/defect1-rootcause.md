@@ -107,3 +107,48 @@ scatter 理论被四个实验推翻：裸 ScatterUpdate（python，索引 0）�
 - 下一步：转储 decode 图 IR（GGML_OPENVINO_DUMP_IR），对照 prefill 图的 K 分支
   k_norm/RoPE 视图节点；嫌疑集中在 1-token 形状下 k_norm 的 [4,128] reshape 视图
   与 RoPE 的 cos/sin 常量索引。
+
+## 2026-10-31 定案：根因 = 静态 decode 图 RoPE 的 cos/sin 头轴广播在 NPUW 降级下坏掉（已修复并验收）
+
+（commit `63179ef`；本节时间按硬件验证日回填。上文"2026-11-01"字样的条目实际同属本工作日的深夜段。）
+
+### 决定性证据链（graph-output 调试构建，`ggml_dup` + `ggml_build_forward_expand` 制造图输出）
+
+1. decode_1 的 K **pre-norm / post-norm 在 NPU 上完全正确**（cos 0.997+，范数逐位一致）
+   → MatMul(W_k)、k_norm 全链无辜；缺陷只可能在 post-norm 之后的 **RoPE**；
+2. 缓存 K row 0 只有**偶数 128 块正确，奇数块是跨构建逐位相同的确定性垃圾**——与上文
+   "h0/h2 逐位精确、h1/h3 摧毁、256 元素周期"同一签名；
+3. NPU post-rope vs pre-rope（**位置 0，数学上恒等**）：h0/h2 cos = 1.0，h1/h3 cos 0.38/0.49
+   → 缺陷 = 静态 decode 图 rope 的 cos/sin `[1,1,1,128]` **沿头轴广播到 [1,1,4,128]** 的隐式
+   broadcast，在 NPUW 的 1-token（GEMV）形状降级下错误 tile。prefill 图同构广播在
+   [1,256,4,128] 上正确，故 prefill 无恙。
+
+### 修复
+
+- **`rope.cpp`**：静态 decode 图把 cos_full/sin_full 沿头轴**显式 Concat tile** 到 `[1,1,4,X]`，
+  绕开隐式广播。位置 0 恢复恒等；缓存 row0 四头 cos 0.997+、范数逐位一致。
+- **`translate_session.cpp`**：`AlignEltwiseOperandRanks` 的注册门从 `is_gpu()` 扩到
+  gpu/npu/`FORCE_STATIC`——此前所有"tile 无效"实验都是被这扇门挡住的**死代码**（教训 a，见下）。
+- **`align_eltwise_ranks.cpp`**（同秩 tile 扩展，norm 门 + 跳过 Constant；已验证对结果中性，
+  保留是因为它在 decode 图上把 343 处隐式广播材料化，属防御纵深而非本缺陷的必需修复）。
+
+### 验收
+
+三问验收（`accept.ps1`，贪心解码 48 token）**首次全对：3/3**——Q2 明确答 "Beijing"、Q3 明确答
+"Paris"、Q1 推理正确。缺陷 1（status.md）就此关闭；milestone 1.1 / 1.2 转 ✅。
+
+### 弯路清单（已被实验证伪的假设，勿重测）
+
+scatter 三种实现（ScatterUpdate/ScatterND/pad+shift+slice）、NPUW FOLD/FUNCALL/DQ（`NPUW_DQ=NO`
+逐位不变）、广播 tile 的旧版 AlignEltwiseOperandRanks（只处理秩不同广播，从未覆盖同秩与 Constant）、
+conv 算子（python 对拍 0.003 噪声级）、权重量化、hidden 链（V 完美佐证）、RMS 512 池化
+（IR 复核：ReduceMean 是 [1,1,4,128]→[1,1,4,1] 每头 128 分组，图翻译本身正确）、驱动状态/内存预算。
+
+### 当日方法论教训
+
+a. **先确认 pass 真的在跑，再解释它的"无效"。** AlignEltwiseOperandRanks 曾被 `is_gpu()` 门住，
+   NPU 上全部"tile 无效"实验都是死代码——一次无效实验浪费了多轮重建。改 IR 后 IR hash 必变，拿它当
+   生效判据。
+b. **"解码行全坏 / h0h2 精确"等旧结论是 pass 错位比较的产物。** 转储比对前先按字节对齐 pass。
+c. `ggml_set_output` 不足以制造图输出（遍历不可达）；要 `ggml_dup` + `ggml_build_forward_expand`。
+d. LFM3-1.7B 走 `lfm3.cpp` 不是 `lfm2.cpp`——打补丁前先确认模型到 builder 的映射。

@@ -6,6 +6,9 @@
 
 > **Pure-NPU on-device inference engine for Intel® Core™ Ultra.**
 > Giving *Intel® AI Boost* — the accelerator the industry forgot — a second life.
+>
+> **v0.0.1 · 2026-10-31 · first release** — LFM3 end-to-end on the NPU; the main accuracy defect
+> root-caused and fixed (3-question acceptance 3/3). Full history in [CHANGELOG.md](CHANGELOG.md).
 
 [简体中文](README.md) · **English**
 
@@ -64,20 +67,20 @@ Honest, measured, tracked in [docs/status.md](docs/status.md).
 | LFM3-1.7B compiles and runs **end-to-end on the NPU** | ✅ done |
 | Hybrid (short-conv + SWA + full) attention addressing its KV rings correctly | ✅ done |
 | Continuation task byte-identical to the CPU reference | ✅ done (Q4_0 weights) |
-| Numerical parity on an **instruction-following** task | 🟡 in progress — the one open item |
+| Numerical parity on an **instruction-following** task | ✅ **done (v0.0.1 closing fix)** — root cause: decode-graph RoPE cos/sin head-axis broadcast; 3-question acceptance 3/3 |
 | Prefill competitive with CPU | 🟡 73% of the reference; headroom still unexplained |
-| Decode competitive with CPU | 🟡 6× behind; the current performance target |
+| Decode competitive with CPU | 🟡 6× behind; **the current performance target** |
 | LFM3 omni modalities (audio in / vision in) | ⬜ planned (official GGUF + `mmproj` on ModelScope) |
 | **On-device multimodal assistant "WangCai"** | 🟡 planned — this engine inside TongYiLite (Flutter, Android→Windows) |
 
-What "in progress" means concretely: greedy generation on the NPU tracks the CPU reference for the
-first few tokens and then wanders. Cosine similarity against reference logits is `0.969` at the end of
-prefill and `0.73–0.87` during decode, with the logit distribution measurably flattened. On **real**
-prefill chunks the divergence is present from the first one and grows with depth (conv state: `0.9956`
-at layer 0 → `0.873` at layer 9 → `0.163` at layer 17), which points at per-op arithmetic compounding
-through the residual stream rather than at state bookkeeping. The attention side is nearly innocent: V is
-written exactly (max abs `2.7e-6` over all 200 rows) and K holds at `0.90–0.9998` **except row 0**, which
-misses by eight orders of magnitude (`cosine 0.288`, max abs `1.06e10`) — the sharpest lead available.
+The hunt for the main accuracy defect is one of the most valuable assets in this repo: starting from
+"flattened logits, K-cache row 0 off by eight orders of magnitude", through a chain of disproven
+hypotheses (scatter, conv op, DQ, RMS pooling, broadcast tiling), it landed on the **implicit
+head-axis broadcast of RoPE cos/sin in the static decode graph being mis-tiled by NPUW's 1-token
+lowering** — fixed by one explicit Concat tile in `rope.cpp`. Evidence chain, exclusions and the
+methodology lessons: [docs/defect1-rootcause.md](docs/defect1-rootcause.md). The only remaining
+accuracy item: the strict ≥64-token per-token criterion awaits a re-run (the 48-token 3-question
+acceptance already passes 3/3).
 
 Two measurement rules earned the hard way, both in
 [docs/npu-internals.md](docs/npu-internals.md): `prefill_0/1` and `decode_2` are llama.cpp **warmup**
@@ -123,8 +126,8 @@ loading, per-token callbacks, MTP speculative decoding and mtmd vision encoding.
 
 Decode is memory-bound, and that is where the NPU is strong: **very low power, CPU cores left free for
 the rest of the system**. NPU prefill on LFM3 reaches **415 t/s** (73% of the CPU reference) with the CPU
-idle. The price: decode is still **8.3–8.7 t/s** and accuracy is not there yet
-([docs/status.md](docs/status.md)) — both are the next targets.
+idle. The price: decode is still **8.3–8.7 t/s** — that, plus prefill headroom, is the next target
+(accuracy was fixed in v0.0.1; [docs/status.md](docs/status.md)).
 
 > Stated honestly: **this machine exposes no NPU counters, has no battery, and is on the "high
 > performance" power plan**, so there is no performance-per-watt number yet. What the roadmap commits to is
@@ -186,13 +189,21 @@ tools\bootstrap.ps1
 tools\configure.ps1 -OpenVinoDir ..\ov\openvino\cmake
 tools\build.ps1
 
-# 4. run on the NPU
+# 4. get model weights (not shipped with git — use the official GGUF, see docs/models.md)
+hf download LiquidAI/LFM3-1.7B-GGUF --local-dir models   # or modelscope download
+
+# 5. run on the NPU
 $env:GGML_OPENVINO_DEVICE = 'NPU'
 $env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'
 src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 -dev OPENVINO3 -st -p 'Introduce the Great Wall in one sentence.'
 ```
 
-Details in [docs/getting-started.md](docs/getting-started.md) and [docs/build.md](docs/build.md).
+Models are **not distributed with this repository** (GGUF files run 1–2 GB, far beyond what git or LFS
+should carry): just download the official GGUF (Hugging Face / ModelScope
+`LiquidAI/LFM3-1.7B-GGUF`) — no conversion needed. Generating GGUF yourself is only worth it for a
+quant the official release does not ship. Download commands, quant selection (Q8_0 is currently
+blocked by the NPU host-memory budget) and verification: [docs/getting-started.md](docs/getting-started.md);
+build details in [docs/build.md](docs/build.md).
 
 ## Repository layout
 
