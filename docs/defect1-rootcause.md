@@ -37,3 +37,27 @@
 - "单分量反号向量/k_norm 分母错轴"→ 实为另一个 token 的 K 残留；
 - "预热转储污染"的旧叙事（npu-internals §4）**一直都是对的**——本日下午的
   "重测推翻"本身才是错的：当时没有做逐 pass 写入差分。
+
+## 2026-11-01 修正：根因不是 scatter 丢写入，而是**全零卷积状态下的 NPU 计算**
+
+scatter 理论被四个实验推翻：裸 ScatterUpdate（python，索引 0）正常；精确复刻 SET_ROWS
+形状/轴的 ScatterUpdate 正常；pad+shift+slice 和 ScatterND 两种替换写入路径结果
+完全相同（row0 不变）——写入算子无关。
+
+真正的机制（DEBUG_INPUT 索引转储 + 逐 pass 差分定案）：
+
+1. `llama_context::sched_reserve` 的初始化 decode 预热（`--no-warmup` 关不掉）用
+   **BOS（= prompt 的 position 0）**写 cell 0；之后 prefill 的索引从 1 开始
+   （`DEBUG_INPUT` 实证：chunk-1 = [1..39]，两台设备一致）——这是正常的 llama.cpp
+   cell 记账，BOS 的 K 从此只来自这一次预热。
+2. 预热 pass 是**唯一以全零卷积状态运行**的 pass。CPU 上它算出正确的 K(BOS)
+   （范数 30.29，生成连贯佐证）；NPU 上同一个输入算出 65.49 的错误 K
+   （cos 仅 0.29）。**NPU 的短卷积/状态路径在全零初始状态下计算错误。**
+3. 真实第一个 chunk 同样读全零状态 → conv 输出错 → 写回的状态错 → 级联
+   ——这正是本文档早前记录的"conv 状态写回垃圾"现场的统一解释。
+
+### 下一步
+- 最小复现：SSM_CONV（GroupConvolution）零状态 vs CPU，逐算子定案（TBO
+  `-o SSM_CONV` 或 python GroupConvolution 直接对拍）；
+- 修复方向：conv 状态零初始化的 NPU 语义（memset/fill 顺序、状态切片视图），
+  或 conv 算子的零状态特例。
