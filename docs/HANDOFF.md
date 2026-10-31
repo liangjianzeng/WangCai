@@ -176,3 +176,22 @@
      已确认可用），对照 mtmd audio 分块逻辑（n_chunks=1/3、31 帧差值来源）
 - 设备健康协议有效：DEVICE_LOST 后 WangCaiNpuReset 复位 + 探针（probe 缓存被清理后
   会冷编译，150s 超时会误报 SLOW——给 probe 换个常驻缓存目录或加大超时）
+
+## 2026-10-31 深夜 IX：Omni 音频又进一步（CPU 全通，NPU 差一层）
+- 本轮修复（全部已提交或待提交）：
+  ① IM2COL 动态维断言 → 卷积公式（ccdf715）
+  ② utils.cpp：clip 图 mask（名字 attn_mask*，2-D [n_kv,n_q]）在 static_decode 与 dynamic
+     两条绑定路径都改为**原样直绑** {1,1,n_q,n_kv}——此前被 LLM chunk 布局重成形
+  ③ ggml-decoder.cpp get_graph_input_shape：attn_mask* 名字的 2-D mask 参数形状同样直绑，
+     绕开 get_mask_ctx_size() 的 KV 环宽度
+- 结果：**CPU 设备下 Omni 音频端到端跑通**（audio 编码 + 生成，EXITCODE=0，无异常）
+- NPU 设备下仍失败，同一 Add：scores [1,8,38,69] vs mask 参数 [1,1,38,38]。
+  已证伪：不是 get_graph_input_shape（插桩显示它收到 [69,38] 且我的分支会返回 {1,1,38,69}）；
+  不是 trim_mask_to_kv（38<=69 直接原样返回）；不是陈旧 blob（NPUW_CACHE_DIR 每次都清）
+- 关键疑点：报错的 friendly_name 是 **Add_47152**，而 audio 图 IR 里的 Add 是 65xxx 编号族
+  ——失败的可能不是同一张图！mmproj 里还有 vision 塔（dots3note-v，流式窗口设计同源，
+  K 同样带 31 帧上下文）。下一步：① 打印 NPU 下实际编译的 clip 子图清单与各自
+  参数形状（GGML_OPENVINO_DUMP_CGRAPH 或 NPUW 的形状日志）；② 确认 vision 图是否
+  也用 attn_mask 命名 + 是否被 [38,38] 的某处覆盖；③ 或在 set_input 前打印
+  bound tensor 的 shape 定位是编译期形状还是绑定形状不一致
+- 顺便：mtmd-audio-c512.ps1 里 DEVICE 一度被改成 NPU，调试 CPU 路径时注意

@@ -1151,7 +1151,16 @@ ov::PartialShape GgmlOvDecoder::get_graph_input_shape(const ggml_tensor * op,
 
     } else if (is_inp_mask(input, op)) {
         // mask
-        if (m_is_static) {
+        // Clip graphs (mmproj) name their masks "attn_mask[_N]": a plain 2-D [n_kv, n_q]
+        // streaming-window mask whose width has to reach the graph untouched. The LLM chunk
+        // layouts below ({1,1,chunk,mask_kv}, widths from get_mask_ctx_size()) re-sized the
+        // lfm3a audio encoder's [69,38] mask to {1,1,38,38} and broke the score Add -- its
+        // keys span [cached window | this chunk] = window-1 + n_q, not a KV ring.
+        const std::string mask_name = (input && input->name) ? input->name : "";
+        if (mask_name.rfind("attn_mask", 0) == 0 && input->ne[2] == 1 && input->ne[3] == 1) {
+            input_shape = ov::PartialShape{1, 1, static_cast<int64_t>(input->ne[1]),
+                                           static_cast<int64_t>(input->ne[0])};
+        } else if (m_is_static) {
             // The parameter shape has to describe the bytes llama.cpp actually hands us, and for
             // hybrid sliding-window models that is *not* the layer's KV length: llama.cpp pads
             // every attention mask to the largest KV buffer in the model (one mask tensor is

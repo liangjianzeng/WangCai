@@ -609,6 +609,28 @@ ov::Tensor get_ov_input_tensor_static_decode(const std::shared_ptr<GgmlOvDecoder
     }
 
     if (GgmlOvDecoder::is_inp_mask(ggml_tensor, op)) {
+        // Clip graphs (mmproj) name their masks "attn_mask[_N]": a plain 2-D [n_kv, n_q]
+        // streaming-window mask (the lfm3a audio encoder attends over [cached window |
+        // this chunk], n_kv = window-1 + n_q). Bind it as-is -- {1, 1, 1, n_kv} per query
+        // row is the LLM decode layout, meaningless here; the get_mask_ctx_size() width
+        // re-sizing broke the score Add in the audio encoder.
+        const std::string mask_name = ggml_tensor->name ? ggml_tensor->name : "";
+        if (mask_name.rfind("attn_mask", 0) == 0 && ggml_tensor->ne[2] == 1 && ggml_tensor->ne[3] == 1) {
+            ov::Tensor input_tensor(GgmlOvDecoder::get_ov_type(ggml_tensor),
+                                    ov::Shape{1, 1, static_cast<size_t>(ggml_tensor->ne[1]),
+                                              static_cast<size_t>(ggml_tensor->ne[0])});
+            if (ggml_tensor->type == GGML_TYPE_F16 &&
+                GgmlOvDecoder::get_ov_type(ggml_tensor) == ov::element::f32) {
+                const auto * src = static_cast<const ggml_fp16_t *>(ggml_tensor->data);
+                auto * dst = input_tensor.data<float>();
+                for (size_t i = 0; i < input_tensor.get_size(); ++i) {
+                    dst[i] = GGML_FP16_TO_FP32(src[i]);
+                }
+            } else {
+                std::memcpy(input_tensor.data(), ggml_tensor->data, ggml_nbytes(ggml_tensor));
+            }
+            return input_tensor;
+        }
         // Windowed layers read a shorter KV ring than the context, so the padded mask has to be
         // that wide -- and it must match the parameter shape from get_graph_input_shape().
         size_t context_size = ggml_decoder->get_mask_ctx_size(ggml_tensor);
@@ -754,6 +776,29 @@ ov::Tensor get_ov_input_tensor_static_prefill(const std::shared_ptr<GgmlOvDecode
     }
 
     if (GgmlOvDecoder::is_inp_mask(ggml_tensor, op)) {
+        // Clip graphs (mmproj) name their masks "attn_mask[_N]": a plain 2-D [n_kv, n_q]
+        // streaming-window mask (the lfm3a audio encoder attends over [cached window |
+        // this chunk], n_kv = window-1 + n_q). Bind it as-is -- {1, 1, n_q, n_kv} --
+        // because the LLM chunk layout below ({1,1,chunk_size,context_size} with widths
+        // from get_mask_ctx_size()) re-sized the 69-wide mask to 38x38 and broke the
+        // score Add in the audio encoder.
+        const std::string mask_name = ggml_tensor->name ? ggml_tensor->name : "";
+        if (mask_name.rfind("attn_mask", 0) == 0 && ggml_tensor->ne[2] == 1 && ggml_tensor->ne[3] == 1) {
+            ov::Tensor input_tensor(GgmlOvDecoder::get_ov_type(ggml_tensor),
+                                    ov::Shape{1, 1, static_cast<size_t>(ggml_tensor->ne[1]),
+                                              static_cast<size_t>(ggml_tensor->ne[0])});
+            if (ggml_tensor->type == GGML_TYPE_F16 &&
+                GgmlOvDecoder::get_ov_type(ggml_tensor) == ov::element::f32) {
+                const auto * src = static_cast<const ggml_fp16_t *>(ggml_tensor->data);
+                auto * dst = input_tensor.data<float>();
+                for (size_t i = 0; i < input_tensor.get_size(); ++i) {
+                    dst[i] = GGML_FP16_TO_FP32(src[i]);
+                }
+            } else {
+                std::memcpy(input_tensor.data(), ggml_tensor->data, ggml_nbytes(ggml_tensor));
+            }
+            return input_tensor;
+        }
         size_t cols = ggml_tensor->ne[0];
         size_t rows = ggml_tensor->ne[1];
         size_t chunk_valid_rows = std::min(chunk_size, rows - chunk_index * chunk_size);
