@@ -18,7 +18,7 @@
 | 0.5 | 短卷积状态能跨解码步接续 | ✅ | 单 token prompt 在 NPU 上连续 40 个解码步仍连贯 |
 | 0.6 | 静态路径在设备外被证明数值可信 | ✅ | `-Backend static`（CPU）输出连贯，早期 pass 与动态图逐位一致 |
 | **1.1** | **NPU 输出与 CPU 参照数值对齐** | ✅（2026-10-31） | 根因定案并修复：静态 decode 图 RoPE 的 cos/sin 头轴隐式广播在 NPUW 降级下错误 tile（[defect1-rootcause.md](defect1-rootcause.md) 终章）。修复后缓存 row0 四头 cos 0.997+、范数逐位一致 |
-| 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | 🟡 | 三问验收（48 token 贪心解码）**首次全对 3/3**（Q2 "Beijing"、Q3 "Paris"、Q1 推理正确）；≥64 token 的逐 token 严格判据待复测 |
+| 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | ✅（2026-10-31） | 修复后复测：p220 续写 CPU-static 与 NPU **64 token 逐字节一致**（修复前同等判据即通过、修复中断、现已恢复）；三问验收 3/3；zh 指令生成的 NPU 文本 72 token 连贯无坍塌。注意：自由生成的 top-1 与 f32 参照在第 5 步起分歧（f16 噪声复利，cos 维持 0.5–0.9，无修复前的 0.25 平台期）——判据按"逐 token 一致"以续写路径为准 |
 | 1.3 | CI 里有验收测试 | ⬜ | 依赖 1.1 |
 | 2.1 | NPU 解码快过 OpenVINO-CPU | ⬜ | `llama-cli` 解码 8.3–8.7 t/s，对比 21.7–29.2（CPU）/ 54.1（原生）。`llama-bench tg32 @ -p 1024`：NPU 15.3 对 OV-CPU 30.5。**ctx 线性代价实测：-c 8192 下 decode 0.9 t/s**（KV 状态进出随 ctx 线性放大，正是缺陷 2 的状态流量项） |
 | 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；`pp1024`：NPU 368 对 OV-CPU 626 / 原生 605；**8K prompt 实测 prefill 122.6 t/s** |

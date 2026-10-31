@@ -2447,9 +2447,30 @@ void GgmlOvDecoder::compute_node_dynamic_dims() {
                     }
                 }
                 if (m_node_dynamic_dims[node] != -1) {
-                    OPENVINO_ASSERT(node->src[1]->ne[src_dyn] == node->ne[m_node_dynamic_dims[node]],
+                    // The input's spatial dim maps to the output's through the conv formula,
+                    // NOT through equality: stride-2 downsampling convs (the Whisper-style
+                    // audio encoders) halve it, and an OW==IW assert fires on every chunk.
+                    // Assert against the formula's expected size instead; kernel/pad/stride
+                    // come from the op params and the filter (src[0]). The batch dim maps
+                    // identically and keeps the plain equality.
+                    const bool batch_dim = is_2D ? src_dyn == 3 : src_dyn == 2;
+                    int64_t expected = node->src[1]->ne[src_dyn];
+                    if (!batch_dim) {
+                        const int64_t s = is_2D ? (src_dyn == 1 ? node->op_params[1] : node->op_params[0])
+                                                : node->op_params[0];
+                        const int64_t p = is_2D ? (src_dyn == 1 ? node->op_params[3] : node->op_params[2])
+                                                : node->op_params[2];
+                        const int64_t dd = is_2D ? (src_dyn == 1 ? node->op_params[5] : node->op_params[4])
+                                                 : node->op_params[4];
+                        const int64_t k = is_2D ? (src_dyn == 1 ? node->src[0]->ne[1] : node->src[0]->ne[0])
+                                                : node->src[0]->ne[0];
+                        expected = (node->src[1]->ne[src_dyn] + 2 * p - dd * (k - 1) - 1) / s + 1;
+                    }
+                    OPENVINO_ASSERT(node->ne[m_node_dynamic_dims[node]] == expected,
                                     "Dynamic dim value mismatch for IM2COL node: " + std::string(node->name) +
-                                        " and its src[1]: " + std::string(node->src[1]->name));
+                                        " and its src[1]: " + std::string(node->src[1]->name) +
+                                        " (expected " + std::to_string(expected) + ", got " +
+                                        std::to_string(node->ne[m_node_dynamic_dims[node]]) + ")");
                 }
             }
             break;

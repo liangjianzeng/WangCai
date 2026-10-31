@@ -158,3 +158,21 @@
   d. LFM3-1.7B 走 lfm3.cpp 不是 lfm2.cpp（打补丁前先确认模型到 builder 的映射）
 - 修复 commit：translate_session.cpp（注册门 gpu→gpu/npu/FORCE_STATIC）+ rope.cpp（tile）
   + align_eltwise_ranks.cpp（同秩 tile 扩展，norm 门 + 跳过常量；已验证中性）
+
+## 2026-10-31 深夜 VIII：剩余目标推进（1.2 ✅ / 4.x 新阻塞点）
+- 里程碑 1.2 复测通过并入库 status.md：p220 续写 64 token CPU-static vs NPU **逐字节一致**
+  （修复前同判据通过、修复中断、现已恢复）；zh 指令生成 72 token 连贯无坍塌；
+  自由生成 top-1 与 f32 参照第 5 步起分歧 = f16 噪声复利（cos 0.5–0.9，无平台期）
+- Omni 音频（milestone 4.x）重测推进两步：
+  ① 417 个 "failed to process weight tensor" 归零（7c1d32f 回归修复确认生效）
+  ② -c 512 下不再 DEVICE_LOST（默认 ctx 会撞内存预算；本次元凶 vmmemWSL 20GB）
+  ③ 修了一个真 bug：ggml-decoder.cpp 的 IM2COL 动态维断言假设 OW==IW，对 stride-2
+     下采样卷积（Whisper 式音频编码器）必误报——改为按卷积公式 (I+2p-d(k-1)-1)/s+1
+     断言，批量维保持恒等（提交待做）
+  ④ 当前阻塞点（下一个战场）：音频编码器注意力 Add(scores [1,8,38,69], mask [1,1,38,38])
+     宽度不匹配——mask 是方的（38 帧查询）但 K 侧 69 列。两个假设：clip.cpp 的
+     mel pad/分块策略给了 69 的 K 序列而 mask 仍按帧数建方阵；或 engine 的 clip mask
+     构建假设方阵。下一步：dump clip 图的 K/V 与 mask 的 ggml 形状（GGML_OPENVINO_DUMP_IR
+     已确认可用），对照 mtmd audio 分块逻辑（n_chunks=1/3、31 帧差值来源）
+- 设备健康协议有效：DEVICE_LOST 后 WangCaiNpuReset 复位 + 探针（probe 缓存被清理后
+  会冷编译，150s 超时会误报 SLOW——给 probe 换个常驻缓存目录或加大超时）
