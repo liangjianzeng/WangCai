@@ -62,3 +62,15 @@
   VariadicSplit 常量
 - 修复验证判据：nowarmf 式转储 row0 与 row43 的 cos(npu,cpu)≈0.99 → accept.ps1
   三问验收 → 全对 push 全部本地 commit（当前 13 个）
+
+## 2026-11-01 深夜：IR 形状对比（最锐利线索）
+- decode Kcur 链：MatMul(W_k) → Unsqueeze → Divide(RMS, MatMul+Squeeze 降级, 每头
+  128 元素分组) → Reshape [1,1,4,128] → Multiply(×k_norm weight) → RoPE(VariadicSplit)
+  ——prefill 同构，形状 [1,256,4,128]
+- 损坏模式：同 pass 内 V 完美、K 的 h0/h2 逐位精确、h1/h3 摧毁（256 元素周期）
+  → 嫌疑 = NPUW 对 1-token 形状 [1,1,4,128] 的 4 头广播（k_norm weight 与 RoPE
+  cos/sin 的 broadcast tile）降级错误；prefill 的 [1,256,4,128] tile 正确
+- 修复候选：把 decode 图的 k_norm/RoPE 形状改成与 prefill 同构（[1,1,4,128] →
+  [1,4,128]→unsqueeze 回来），或绕过广播（k_norm weight 用 Concat 复制 4 份、
+  cos/sin 同理）——在 translate 端做，避开 NPUW 的 broadcast tile bug
+- 验证：ndtest 式转储 row0/row43 cos≈0.99 → accept.ps1 三问 → push
