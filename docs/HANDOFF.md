@@ -50,3 +50,15 @@
   NPU 的同一 pass 算出 65.49 错误值——与 conv 状态首 pass 发散同源
 - 下一步：python 复刻 SSM_CONV 的状态视图装配（state 缓冲视图偏移 + 输入 concat
   的 NPUW 降级行为），或直接读 build_lfm_shortconv 的 view/concat 结构
+
+## 2026-11-01 晚：decode 图 K 分支算子级定位 + IR 对比工具
+- decode_5 同 pass：V row43 完美（0.9998 四头全对），K row43 h0/h2 逐位精确、
+  h1/h3 摧毁（范数 17→33 / 13.8→34），周期 256 元素 → k_norm/RoPE 链的视图错误
+  （V 证明 hidden/W_v/scatter 全对；prefill 同 token K 正确排除权重/量化）
+- IR 已转储：E:\DTXY\WangCai\model_{decode,prefill}_3726599.xml
+  对比脚本：D:\llm\npu\ctrl\trace_ir.py / trace_back.py（ElementTree，<layer>/<edge>）
+- k_norm 结构两图一致（RMS 经 MatMul+Squeeze 降级）；差异待查 <port> 形状属性
+  （decode 的 [4,128] reshape 视图 vs prefill 的 [n_seq,4,128]）与 RoPE 的
+  VariadicSplit 常量
+- 修复验证判据：nowarmf 式转储 row0 与 row43 的 cos(npu,cpu)≈0.99 → accept.ps1
+  三问验收 → 全对 push 全部本地 commit（当前 13 个）
