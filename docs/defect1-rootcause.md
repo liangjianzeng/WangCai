@@ -69,3 +69,29 @@ scatter 理论被四个实验推翻：裸 ScatterUpdate（python，索引 0）�
   下一步：用真实形状（state [d_conv-1,C] 前缀 + 输入拼接的 view、写回末
   d_conv-1 列的 SET_ROWS/COPY）做 python/引擎级对拍，重点看 view 偏移在
   NPUW 降级下的行为。
+
+## 2026-11-01 最终定位：静态 decode 图的 K 分支写入垃圾值（量化对齐后铁证）
+
+量化对齐对（Q4_K_M + 两侧 q4_sym128_all）逐 pass 时间线：
+
+| pass | l02 row0 | l02 row43 |
+|---|---|---|
+| prefill_0（ctx 预热） | **1.0000 ✓** | — |
+| decode_2（首次 decode） | **0.2868 ✗ (67.63)** | — |
+| prefill_3/4（真实 prompt） | 0.2868（残留） | **0.9999 ✓** |
+| decode_5（首次真实 decode） | 0.2868（残留） | **0.1619 ✗ (51.48)** |
+
+- **prefill 的每一次 K 写入都逐位正确**（含 row0！之前的"row0 从不被写"是
+  llama.cpp 正常 cell 记账：ctx 预热 decode 消耗 cell 0 后 prompt 从 cell 1 开始）；
+- **每一个 decode pass 写入的 K 值都是垃圾**（首次 decode 把 cell 0 从正确值改写成
+  67.63 范数的错误向量；之后每个生成 token 的 K/V 全部写坏 → 后续注意力全吃垃圾
+  → 答非所问）；
+- conv 状态在量化对齐后完全正常（0.9998-1.0000）——早前"conv 状态写回垃圾"是
+  native-Q4_0 对 Q4_0_128 的量化差异假象；
+- 同权重同算子，prefill 图对、decode 图错 → 缺陷在 **decode 图 K 分支的
+  计算/视图切片**（W_k 之后、SET_ROWS 之前的某环节；注意 decode 图独有的
+  Mod(idx, rows) 包装与 1-token 形状下的 k_norm/RoPE 视图）。
+
+### 修复入口
+对拍 decode 图与 prefill 图对同一 token 的 K（例如 2-token prompt：第二个 token
+分别走 decode 与 2-token prefill），把差异压到 Mod/k_norm/RoPE/MUL_MAT 视图之一。
