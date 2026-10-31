@@ -95,3 +95,15 @@ scatter 理论被四个实验推翻：裸 ScatterUpdate（python，索引 0）�
 ### 修复入口
 对拍 decode 图与 prefill 图对同一 token 的 K（例如 2-token prompt：第二个 token
 分别走 decode 与 2-token prefill），把差异压到 Mod/k_norm/RoPE/MUL_MAT 视图之一。
+
+## 2026-11-01 算子级定位（decode_5 同 pass 内对照）
+- V row43：0.9998，四头全部精确 → hidden、W_v、scatter、状态全链路正确；
+- K row43：h0 cos+1.000（13.03 vs 13.03）、h2 +1.000（14.90=14.90）逐位精确，
+  h1 -0.600（范数 17→33）、h3 +0.410（13.8→34.1）摧毁；
+- 同一 token 同一 pass：prefill 的 K（N=4 matmul）逐位正确，decode 的 K（N=1）错
+  → 排除权重打包/量化/hidden/scatter；破坏在 decode 图 K 独有的 k_norm+RoPE 链；
+- 损坏周期 = 256 元素（每 512 元素行内 [0-127]✓ [128-255]✗ [256-383]✓ [384-511]✗）
+  → 视图/偏移类错误，非数值精度；
+- 下一步：转储 decode 图 IR（GGML_OPENVINO_DUMP_IR），对照 prefill 图的 K 分支
+  k_norm/RoPE 视图节点；嫌疑集中在 1-token 形状下 k_norm 的 [4,128] reshape 视图
+  与 RoPE 的 cos/sin 常量索引。
