@@ -109,6 +109,21 @@ mask 宽度与 K/V 不一致——例如 mask 是 `[1,1,256,1024]` 而 K/V 是 `
 2. `pnputil /restart-device "PCI\VEN_8086&DEV_AD1D*"`（管理员 PowerShell）；
 3. 还不行就重启机器。避免在同一驱动状态下跑会触发 OOM 的大模型大上下文组合。
 
+### 编译/执行一夜之间慢了几十倍、随机 `L0 UNINITIALIZED`——**先查主机内存被谁吃了（2026-10-31 教训）**
+
+症状：同一个模型同一个 ctx，昨晚编译 20–40 s、解码 14 t/s；今天编译 30+ 分钟、解码 4 s/token，偶发
+`L0 pfnAppendGraphExecute: ZE_RESULT_ERROR_UNINITIALIZED`。排查时的弯路值得记录：设备禁用/启用（D3→D0）、
+`pnputil /remove-device` + 重扫描、内核驱动服务重启——**全部无效**；微型 NPU 图（单个 matmul）编译
+0.2 s、单次 infer 1 ms，完全健康；原生 CPU 路径 55 t/s，机器不缺算力。真凶：**另一个进程（本机是
+iGPU 上的 llama-server，常驻 ~23 GB）把主机内存吃掉，NPU 驱动的主机内存预算随之收缩**——大 ctx 的
+编译工作区与 KV 状态落在预算线之下，进入病态慢路径或直接失败。判别方法：把 `-c` 调小（512），
+一切恢复正常速度 = 预算问题，不是驱动坏。**不要急着重启机器**，先看 `Get-Process` 的内存大户。
+
+本机的复位工具（免管理员、免重启）：计划任务 `WangCaiNpuReset`（一次性授权创建）+ `D:\llm\npu\npu-reset.bat`
+（设备禁用/启用，**只报告不杀进程**）+ `D:\llm\npu\ctrl\npu-probe.ps1`（60 s 探针：缓存图出 1 token，
+`WEDGED/SLOW` 即异常）。NPU 侧实验前先跑探针；进程崩溃后先复位再继续，不要在坏状态下做精度测量。
+
+
 ### `-fa 0` 会在同一条 scatter 路径上崩溃
 
 这是 llama.cpp 那边的有意行为：关掉 flash attention 后它把 V 摊成每行一个元素，因为写回只需要一列。不要
