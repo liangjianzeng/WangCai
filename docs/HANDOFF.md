@@ -106,3 +106,50 @@
   每 head RMS K 参照）来回答"CPU-static 的 k_norm 是否真的 512 池化"
 - 已排除清单（勿重测）：scatter 三种实现、NPUW FOLD/FUNCALL/DQ、广播 tile、
   conv 算子、权重量化、hidden（V 证明）、驱动/内存预算
+
+## 2026-11-01 深夜 V：512 池化假说在 IR 层面死亡；同秩广播是唯一未排除项
+- IR 复核（model_decode_3726599.xml）：k_norm 的 ReduceMean_73975 是 [1,1,4,128]→[1,1,4,1]，
+  **每头 128 分组，图翻译本身正确**——"RMS 512 池化"假说不用再做 native 参照验证，省一轮
+- 但发现此前"广播 tile 无效"结论的漏洞：AlignEltwiseOperandRanks 旧版只处理**秩不同**的广播，
+  K 链上三个**同秩**广播从未被覆盖：
+  ① RMS scale [1,1,4,128]×[1,1,4,1]（Multiply_73981）② RoPE cos/sin [1,1,4,64]×[1,1,1,64]
+  ③ rotate-half [1,1,4,128]×[1,1,1,128]（Multiply_73993）
+  且 k_norm weight 是 Constant，旧版顶部 guard 直接 return false——commit e904f84 声称覆盖
+  weight 是不准确的，实际从未 tile 过 Constant 操作数
+- 修复（align_eltwise_ranks.cpp 重写）：decode 形状门（out 秩≥2、head 轴=4、head 前全是 1）内，
+  每个操作数 unsqueeze 到输出秩 + 显式 tile 全部 size-1 轴；Constant 直接材料化成全形
+  Constant（f32、≤64k 元素），其余 Concat 倍增。prefill [1,256,...] 与动态图不进门
+- 构建绿。验证：cache_tile（NPU）/ cache_tilecpu（CPU-static），compare-k-heads.ps1
+  row0/row43 每头 cos≈0.99 判据
+
+## 2026-11-01 深夜 VI：tile 真正进图后的新状态
+- 修复注册门（translate_session.cpp：is_gpu() → gpu/npu/FORCE_STATIC）后 pass 首次真正生效：
+  新 decode IR（model_decode_36452578.xml）k_norm weight 已材料化 [1,1,4,128]、
+  Multiply 两操作数同形——343 个 Concat（旧 90）
+- 中途修了一个倍增 bug：eps Add 上 Concat 倍增 1→2→8（应为 4）导致 shape inference 崩；
+  改为成倍 + Slice 补尾
+- 常量 tile 版（bld_tile5）：NPU decode 全 NaN（K/V/logits），文本退化为 ">>"
+- 非常量 tile 版（bld_tile6，Constant 操作数跳过）：NPU decode 仍全 NaN（K l10/l12 NaN，
+  文本退化）→ NaN 不是常量材料化引起，而是激活侧 Concat tile（RMS scale ×128 /
+  cos/sin ×4 / softmax max / mask ×4 之一或组合）
+- 并行验证中：① python 最小复现（隐式广播 vs Concat tile，[1,1,4,128] 各模式，NPU vs CPU）
+  ② 转储取证（gwcpu vs tile-cpu CPU 中立性；nowarmf 基线 h0/h2/h1/h3 签名复核；tile-npu NaN 范围）
+- 注意：analyze-tensors.ps1 原有 PS7 语法已修复（line 18 return if）
+
+## 2026-11-01 深夜 VII：根因修复 —— decode 图 RoPE 的 cos/sin 头轴广播（已验证）
+- 决定性证据链（graph-output 调试构建，ggml_dup+build_forward_expand 制造图输出）：
+  ① decode_1 的 K pre-norm/post-norm 在 NPU 上完全正确（cos 0.997+，范数逐位一致）
+  ② 缓存 K 行 0 只有偶数 128 块正确，奇数块是跨构建逐位相同的确定性垃圾
+  ③ NPU post-rope vs pre-rope（位置 0，数学上恒等）：h0/h2 cos=1.0、h1/h3 cos 0.38/0.49
+  → 缺陷 = 静态 decode 图 rope 的 cos/sin [1,1,1,128] 头轴广播在 NPUW 降级下坏掉
+- 修复（rope.cpp）：静态 decode 图把 cos_full/sin_full 沿头轴显式 Concat tile 到
+  [1,1,4,X]，绕开隐式广播。位置 0 恢复恒等；缓存 row0 四头 cos 0.997+ 范数逐位一致
+- 验收：三问 48 token 全对（Q2 明确 "Beijing"、Q3 明确 "Paris"、Q1 推理正确）——首次通过
+- 今日教训（务必记住）：
+  a. AlignEltwiseOperandRanks 曾被 is_gpu() 门住——NPU 上所有"tile 无效"实验都是死代码，
+     一次无效实验浪费了多轮重建。改 pass 注册门前先确认它真的在跑（改 IR 后 hash 会变）
+  b. "解码行全坏/h0h2 精确" 等旧结论是 pass 错位比较的产物——转储比对前先按字节对齐 pass
+  c. ggml_set_output 不足以制造图输出（遍历不可达），要 ggml_dup + ggml_build_forward_expand(gf,)
+  d. LFM3-1.7B 走 lfm3.cpp 不是 lfm2.cpp（打补丁前先确认模型到 builder 的映射）
+- 修复 commit：translate_session.cpp（注册门 gpu→gpu/npu/FORCE_STATIC）+ rope.cpp（tile）
+  + align_eltwise_ranks.cpp（同秩 tile 扩展，norm 门 + 跳过常量；已验证中性）

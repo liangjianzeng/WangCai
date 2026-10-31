@@ -204,8 +204,41 @@ OutputVector translate_rope(const NodeContext & context) {
         auto x2_neg = std::make_shared<ov::op::v1::Multiply>(x2, neg_one_f);
         auto x_rotate_half = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{x2_neg, x1}, -1);
 
-        auto cos_full = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{cos_theta_node, cos_theta_node}, -1);
-        auto sin_full = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{sin_theta_node, sin_theta_node}, -1);
+        ov::Output<ov::Node> cos_full =
+                std::make_shared<ov::op::v0::Concat>(ov::OutputVector{cos_theta_node, cos_theta_node}, -1);
+        ov::Output<ov::Node> sin_full =
+                std::make_shared<ov::op::v0::Concat>(ov::OutputVector{sin_theta_node, sin_theta_node}, -1);
+
+        // NPU device defect (static decode graphs): the numpy head-axis broadcast of the
+        // [1,1,1,head/2*2] cos/sin tables onto the [1,1,n_head_kv,head] GEMV output comes back
+        // with the odd KV heads garbled -- graph-output dumps show the rope input correct
+        // (post-norm K cos 0.997+ vs CPU) while the rope output has h0/h2 identical and h1/h3
+        // destroyed with inflated norms, at position 0 where rope must be the identity. The
+        // same lowering is correct for the [1,256,4,128] prefill shape and in isolation
+        // (minrepro), so tile the tables explicitly along the head axis: replication is
+        // exactly what the numpy broadcast does, so this is bit-neutral wherever the device
+        // is not defective.
+        if (context.is_static() && !context.is_prefill() && !context.is_stateful()) {
+            const auto data_ps = data_node->get_output_partial_shape(0);
+            if (data_ps.rank().is_static() && data_ps.rank().get_length() == 4 &&
+                data_ps[2].is_static() && data_ps[2].get_length() > 1) {
+                const int64_t n_heads = data_ps[2].get_length();
+                auto tile_heads = [&](ov::Output<ov::Node> & t) {
+                    auto ps = t.get_partial_shape();
+                    if (!ps.rank().is_static() || ps.rank().get_length() != 4 || !ps[2].is_static() ||
+                        ps[2].get_length() != 1) {
+                        return;
+                    }
+                    ov::OutputVector parts;
+                    for (int64_t h = 0; h < n_heads; ++h) {
+                        parts.push_back(t);
+                    }
+                    t = std::make_shared<ov::op::v0::Concat>(std::move(parts), 2);
+                };
+                tile_heads(cos_full);
+                tile_heads(sin_full);
+            }
+        }
 
         auto y1 = std::make_shared<ov::op::v1::Multiply>(rot_data, cos_full);
         auto y2 = std::make_shared<ov::op::v1::Multiply>(x_rotate_half, sin_full);

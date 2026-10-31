@@ -514,9 +514,15 @@ std::shared_ptr<Model> TranslateSession::apply_transformations(std::shared_ptr<M
         // dense under stateful execution adds a rank-3 residual to the rank-4 norm output and
         // decodes garbage on GPU while CPU is correct. Equalising the ranks is a no-op for
         // NUMPY broadcasting and makes the fused path correct.
-        // Remove once the plugin guards that fusion. Opt out with
-        // GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN=1.
-        if (ggml_openvino_is_gpu() && !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN")) {
+        // The same pass also carries the NPU decode-graph broadcast-tile workaround (the
+        // [1,1,4,X] odd-heads-garbled defect) -- and it MUST be registered on NPU too: it was
+        // previously gated on is_gpu() only, which silently turned every "tile fix" validation
+        // run on NPU into a no-op (the 2026-11-01 bcast/bcast2 experiments measured nothing).
+        // CPU-static (GGML_OPENVINO_FORCE_STATIC=1) gets it as well so dumps mirror the NPU path.
+        // Opt out with GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN=1.
+        if (!ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN") &&
+            (ggml_openvino_is_gpu() || ggml_openvino_is_npu() ||
+             ggml_openvino_getenv_int("GGML_OPENVINO_FORCE_STATIC"))) {
             manager.register_pass<pass::AlignEltwiseOperandRanks>();
         }
 
