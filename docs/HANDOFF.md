@@ -195,3 +195,17 @@
   也用 attn_mask 命名 + 是否被 [38,38] 的某处覆盖；③ 或在 set_input 前打印
   bound tensor 的 shape 定位是编译期形状还是绑定形状不一致
 - 顺便：mtmd-audio-c512.ps1 里 DEVICE 一度被改成 NPU，调试 CPU 路径时注意
+
+## 2026-10-31 深夜 X：NPU clip-mask 的最后谜团（插桩数据齐全，待下一轮）
+- 插桩结论（NPU 运行、DEBUG_INPUT=1）：
+  ① get_graph_input_shape 收到 attn_mask ne=[69,38,1,1] is_inp_mask=1 —— 我的分支应返回 {1,1,38,69}
+  ② 但编译期报错仍是 Parameter attn_mask f32[1,1,38,38] —— 形状被第四处来源覆盖
+  ③ **三个直绑分支（static_decode/prefill/dynamic）的日志一次都没打印** —— 运行期 mask 绑定
+     根本不经过这三个函数！剩下唯一候选：convert_ggml_input_to_ov 的 ggml_tensor->extra
+     快路径（buffer 分配时挂的预建 ov::Tensor）——extra 的 shape 来自 tensor->ne 反转，
+     理论上应是 [1,1,38,69]……除非挂 extra 时的 ne 是 [38,38]（挂的时机早于 mask 构建？）
+- 下一轮第一动作：在 convert_ggml_input_to_ov 的 extra 快路径命中时打印 shape+name（NPU 跑一次）；
+  若命中，追查该 extra 是谁在何时以什么 ne 创建的（buffer set_tensor / alloc 顺序）
+- 注意：Add_47152 编号族与 audio IR（65xxx）不同——先确认失败图就是 audio 编码器
+  （state_in_k_* 打印紧邻失败点，倾向是），但 mmproj 里 vision 塔同源设计，勿排除
+- CPU 路径已全通：mtmd-audio-c512.ps1 里 DEVICE 临时改 CPU 即可复现成功
