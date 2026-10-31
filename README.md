@@ -117,7 +117,7 @@ tools\bootstrap.ps1
 tools\configure.ps1 -OpenVinoDir ..\ov\openvino\cmake
 tools\build.ps1
 
-# 4. 取模型权重（不随 git 分发，直接用官方 GGUF，详见 docs/models.md）
+# 4. 取模型权重（不随 git 分发，直接用官方 GGUF，详见 docs/getting-started.md）
 hf download LiquidAI/LFM3-1.7B-GGUF --local-dir models   # 或 modelscope download
 
 # 5. 在 NPU 上跑
@@ -125,6 +125,25 @@ $env:GGML_OPENVINO_DEVICE = 'NPU'
 $env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'
 src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 -dev OPENVINO3 -st -p '用一句话介绍长城。'
 ```
+
+动手前先确认 NPU 在位：`Get-PnpDevice -Class ComputeAccelerator` 应列出
+`Intel(R) AI Boost ... PCI\VEN_8086&DEV_AD1D`（硬件/驱动要求见下方[硬件要求](#硬件要求)）。
+
+### 运行参数里哪些是硬约束
+
+| 参数 / 环境变量 | 为什么必须 |
+|---|---|
+| `-dev OPENVINO3` | OpenVINO 后端在 llama.cpp 里的设备编号（`--list-devices` 可确认） |
+| `-fa 1` | `-fa 0` 的 V 写回形状会被 OpenVINO 的 scatter 降级拒绝 |
+| `-np 1` | 静态路径是单序列的，`-np 2` 直接报错 |
+| `-st`（对话模板） | instruct 模型走裸续写会退化成重复胡话，任何后端都一样 |
+| `GGML_OPENVINO_DEVICE=NPU` | 选 NPU 而不是 OpenVINO-CPU |
+| `GGML_OPENVINO_CACHE_DIR` | 持久化 36 s 的图编译缓存；**每种配置用独立目录**，否则过期编译图会无声胜出 |
+| `-c` ≤ 数千 | KV 状态流量随上下文线性放大，`-c 8192` 实测 decode 掉到 0.9 t/s（[docs/status.md](docs/status.md) 里程碑 2.1） |
+
+`llama-server.exe` 也一并构建，可用同样的环境变量提供 OpenAI 兼容 HTTP 服务；`-c`/-fa/-np 约束相同。
+完整参数说明、首次运行的预期日志与三个最容易踩的坑见
+[docs/getting-started.md](docs/getting-started.md)，全部环境变量见 [docs/env-vars.md](docs/env-vars.md)。
 
 模型**不随本仓库分发**（GGUF 普遍 1–2 GB，远超 git 与 LFS 的合理边界）：直接下载官方 GGUF
 （Hugging Face / ModelScope `LiquidAI/LFM3-1.7B-GGUF`）即可，无需转换；自生成 GGUF 仅在需要非官方

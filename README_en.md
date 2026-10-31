@@ -189,7 +189,7 @@ tools\bootstrap.ps1
 tools\configure.ps1 -OpenVinoDir ..\ov\openvino\cmake
 tools\build.ps1
 
-# 4. get model weights (not shipped with git — use the official GGUF, see docs/models.md)
+# 4. get model weights (not shipped with git — use the official GGUF, see docs/getting-started.md)
 hf download LiquidAI/LFM3-1.7B-GGUF --local-dir models   # or modelscope download
 
 # 5. run on the NPU
@@ -197,6 +197,20 @@ $env:GGML_OPENVINO_DEVICE = 'NPU'
 $env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'
 src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 -dev OPENVINO3 -st -p 'Introduce the Great Wall in one sentence.'
 ```
+
+Before starting, confirm the NPU is present: `Get-PnpDevice -Class ComputeAccelerator` should list
+`Intel(R) AI Boost ... PCI\VEN_8086&DEV_AD1D` (hardware/driver requirements below).
+
+Hard constraints in the run line: `-dev OPENVINO3` selects the backend device (`--list-devices` to
+confirm); `-fa 1` is mandatory (`-fa 0` produces a V write-back shape the OpenVINO scatter lowering
+rejects); `-np 1` is mandatory (the static path is single-sequence); `-st` routes the prompt through
+the chat template (raw continuation degrades any backend, including the CPU reference);
+`GGML_OPENVINO_CACHE_DIR` must be persistent (it caches the ~36 s graph compile) and **separate per
+configuration** — a stale compiled graph silently wins otherwise; keep `-c` modest (KV state traffic
+scales linearly with context — `-c 8192` measured 0.9 t/s decode, [docs/status.md](docs/status.md)).
+`llama-server.exe` builds too and serves an OpenAI-compatible HTTP API with the same env vars and the
+same constraints. Full details, expected first-run logs and the three classic pitfalls:
+[docs/getting-started.md](docs/getting-started.md); every env var: [docs/env-vars.md](docs/env-vars.md).
 
 Models are **not distributed with this repository** (GGUF files run 1–2 GB, far beyond what git or LFS
 should carry): just download the official GGUF (Hugging Face / ModelScope
