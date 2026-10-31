@@ -87,3 +87,15 @@
   ② 或试 NPUW_DQ_FULL=NO / 其他 DQ 子开关针对 GQ2i；
   ③ 或把 decode 图 K 分支的 elementwise 全部换成 Concat/Copy 显式实现
 - 判据不变：row0/row43 cos≈0.99 → accept.ps1 三问 → push（本地 14 commit）
+
+## 2026-11-01 深夜 III：DQ 也排除 + RMS 分组成为头号嫌疑
+- NPUW_DQ=NO：row0/row43 逐位不变 → DQ/GQ2i 排除；且错误值对图结构
+  （ScatterUpdate/ScatterND/pad/broadcast-tile/DQ）全部不变、对输入 prompt 有响应
+  （nowarm2 换 prompt 后 row0 变化 cos 0.15）→ 是"计算错误"不是"残留"
+- NPU 与 CPU 唯一未排除的差异：K 独有的 RMS 链。rms_norm.cpp 的 ReduceMean 走 -1 轴
+  （512 全池化），而 ggml 参考是每头 128 分组——需确认 llama.cpp lfm2.cpp 在
+  build_norm 前是否 reshape（若 reshape 存在于 ggml 图而 OV 端丢失/错位，
+  且 CPU-static 与 NPU 同错则 CPU 参照本身也偏离 native——需与 native CPU 对比 row0）
+- 下一轮第一动作：① 读 lfm2.cpp k_norm 前的 reshape；② native CPU（-dev none）
+  转储 row0/K(BOS) 与 CPU-static 对比 → 若 CPU-static 本身就错，缺陷在图翻译的
+  RMS 分组，修复点 = rms_norm.cpp 的轴处理
