@@ -1,5 +1,5 @@
 <#
-  make-logo.ps1 — renders the WangChai mascot to PNG with GDI+ (no external tooling).
+  make-logo.ps1 — renders the WangCai mascot to PNG with GDI+ (no external tooling).
 
   assets/wangchai.svg is the vector source of truth; this script renders the same artwork to
   assets/wangchai.png (1024) and assets/wangchai-avatar.png (256). It exists because neither
