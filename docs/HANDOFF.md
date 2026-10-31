@@ -20,3 +20,33 @@
 3. 生效判据：nowarmf 复测 row0 cos(npu,cpu) ≈ 0.99 且 row43 恢复 0.99
 4. 然后：三问验收（accept.ps1）→ 全对 → push 全部本地 commit
 5. 别忘了 user 的 GPU server 占 20GB 的事：大 ctx 实验前先问
+
+## 更新（pad/slice 修复尝试后的关键新事实）
+1. is_static/is_prefill 探针证明 flag 正确：prefill 图 static=1 prefill=1，decode 图 prefill=0。
+2. pad+shift+slice 修复**确实进入了执行图并生效**——但结果错误：row0 仍是 65.49 常量，
+   且 row43 从正确(0.9947)变为错误(0.0169/49.66)。即 scatter+pad 路径本身能写，
+   但与状态回写/refill 机制的交互有问题（疑似 Slice 输出作为 set_output_tensor/状态更新的
+   形状或别名问题）。已回退到原始 scatter，构建绿色。
+3. row0 的 65.49 值与 prompt 无关 + 上下文初始化 decode 预热（decode_1，--no-warmup 关不掉，
+   在 llama_context::sched_reserve 里）用哑 token（可能是零/未初始化 embedding）写 row 0。
+   真实 prefill 的 row-0 写入从未覆盖它。
+4. 下一步候选（按序）：
+   a. 给 ScatterUpdate 换 v12 ScatterND 或检查 indices 的 dtype/形状（Squeeze 后 [N] i64）
+      ——先做一个 TBO 式最小 SET_ROWS 复现：TBO `-o SET_ROWS -p '.*ne=\[512.*'` 之类，
+      用 0 索引复现"跳 0"，拿到 Intel 插件级证据；
+   b. 若确认插件 bug：引擎侧修法改为"静态 prefill 的写用 Copy/Concat 重构"而不是 scatter
+      （写范围连续且编译期已知 chunk 起点=indices[0]，可用 indices[0] 作 Gather 推导偏移）；
+   c. 或在 llama.cpp 侧给 KV cache 的 cell id 加 1 偏移（rows 1-based），代价是全链路检查。
+5. 当前 DLL = 原始 scatter（回归到本会话开始前的行为），构建绿色。
+
+## 2026-11-01 续：缺陷收窄到 SSM_CONV 状态路径（scatter/conv 算子均排除）
+- 裸 ScatterUpdate（含索引 0、含 SET_ROWS 精确形状/轴）：NPU 正常 → 插件不跳 0
+- ScatterND 替换 prefill 写入：row0 依旧 → 与写入算子无关
+- 裸 GroupConvolution python 对拍：max diff 0.003（f16 噪声级）→ conv 算子干净
+- **引擎转储 cache_r 逐 pass 对比：第一个 pass（零状态）cos 就只有 0.4546，
+  NPU 侧 nz 少 66（整段写零）** → 缺陷在 SSM_CONV 的状态视图/切片装配
+- 同时确认：cell 0 由 ctx 初始化 decode 预热（BOS）独占写入是正常 llama.cpp 行为
+  （两设备索引一致 [1..39]，prefill 不写 cell 0），CPU 的 cell-0 值是对的、
+  NPU 的同一 pass 算出 65.49 错误值——与 conv 状态首 pass 发散同源
+- 下一步：python 复刻 SSM_CONV 的状态视图装配（state 缓冲视图偏移 + 输入 concat
+  的 NPUW 降级行为），或直接读 build_lfm_shortconv 的 view/concat 结构
