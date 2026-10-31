@@ -240,3 +240,20 @@
   inp_pos 的参数形状跟随真实 38（对齐 mask [256,38] 的 38 行）
 - 下一步第一动作：在 get_is_prefill / decoder 构造处打印音频图的 is_prefill 判定依据
   （inp_pos->ne[0]、调用来源），确认 ①/② 哪个成立
+
+## 2026-10-31 深夜 XIII：LLM×音频 rope 定案——shortconv 状态机按 chunk 固化，修法在 llama.cpp 侧
+- 完整证据链（gis 全量插桩）：
+  音频 embedding 图输入全部在 38 处自洽：model.embed_tokens [2048,38]（mtmd 音频 embedding 的
+  cb 命名，非 inp_embd）、inp_pos [38]、mask [256,38]、KV idx [38]
+  但 LLM shortconv 的状态装配（cache_r [12288]=6×2048 状态视图、Slice [1,1,2,2048]、
+  Reshape [1,1,256,2048]）**全部按 256 chunk 几何烘焙**——文本 ubatch 恰好被 llama.cpp
+  pad 到 256 所以自洽，音频 ubatch（38）天然不匹配
+- 已试并回退（勿重试）：① embd pad 到 256（llama.cpp 图内 reshape 常量 [38] 烤死不匹配）
+  ② positions 自然长度（shortconv 状态装配 [256] 烤死，文本回归 Reshape_1291 [1,1,2,2048]→[256]）
+- **结论：引擎侧无法单方面适配，音频 ubatch 必须 pad 到 chunk 宽——修法在 llama.cpp 侧**
+  （D: 树 mtmd.cpp / llama-batch）：音频 embedding 批次喂给 llama_decode 前 pad 到
+  llama_n_ubatch(ctx)=256：零 embedding + 位置顺延 + 只在真实 token 上置 output 标志 +
+  padded 行的 attention 由 causal mask 自然遮蔽（作为 key 会被后续 chunk 的滑窗读到，
+  需确认 zero-embedding 的 K/V 是否会污染——若污染需在 mask 里显式遮蔽 padded 行）
+- 验证路径：pad 后 NPU 跑 mtmd-audio-c512.ps1 → 三 chunk 全编码 → 生成文本 → 与 CPU
+  （DEVICE=CPU 同脚本已端到端通过）对比
