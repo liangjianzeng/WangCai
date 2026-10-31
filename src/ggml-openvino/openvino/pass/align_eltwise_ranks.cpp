@@ -2,6 +2,7 @@
 
 #include <numeric>
 #include <openvino/op/add.hpp>
+#include <openvino/op/concat.hpp>
 #include <openvino/op/constant.hpp>
 #include <openvino/op/divide.hpp>
 #include <openvino/op/multiply.hpp>
@@ -63,6 +64,46 @@ AlignEltwiseOperandRanks::AlignEltwiseOperandRanks() {
         if (lhs_rank.is_dynamic() || rhs_rank.is_dynamic() || lhs_rank == rhs_rank) {
             return false;
         }
+
+        // NPUW broadcast-tile defect: for the 1-token decode shape [..., 4, X], an operand
+        // implicitly broadcast along the 4-head axis comes back with the odd heads garbled
+        // (the k_norm weight multiply: heads 0/2 bit-exact, heads 1/3 destroyed -- the whole
+        // answer-quality defect). Tile the broadcast operand explicitly with Concat so no
+        // implicit head-axis broadcast reaches the device. Semantically neutral everywhere
+        // (the prefill's [1,256,4,128] gets the same treatment and its outputs are unchanged).
+        {
+            const auto out_pshape = node->get_output_partial_shape(0);
+            if (out_pshape.rank().is_static() && out_pshape.rank().get_length() >= 2) {
+                const size_t head_axis = out_pshape.rank().get_length() - 2;
+                const auto & head_dim = out_pshape[head_axis];
+                if (head_dim.is_static() && head_dim.get_length() == 4) {
+                    for (size_t i = 0; i < 2; ++i) {
+                        const auto in_shape0 = node->input_value(i).get_partial_shape();
+                        if (!(in_shape0.rank().is_static() && in_shape0.rank().get_length() <= out_pshape.rank().get_length())) {
+                            continue;
+                        }
+                        ov::Output<ov::Node> in = node->input_value(i);
+                        const int64_t rank_diff = static_cast<int64_t>(out_pshape.rank().get_length()) -
+                                                  static_cast<int64_t>(in_shape0.rank().get_length());
+                        if (rank_diff > 0) {
+                            std::vector<int64_t> axes(static_cast<size_t>(rank_diff));
+                            std::iota(axes.begin(), axes.end(), 0);
+                            in = std::make_shared<ov::op::v0::Unsqueeze>(
+                                in, ov::op::v0::Constant::create(ov::element::i64, ov::Shape{axes.size()}, axes));
+                        }
+                        const auto in_shape = in.get_partial_shape();
+                        if (in_shape.rank().is_static() && in_shape[head_axis].is_static() &&
+                            in_shape[head_axis].get_length() == 1) {
+                            auto tiled = std::make_shared<ov::op::v0::Concat>(
+                                ov::OutputVector{in, in, in, in}, static_cast<int64_t>(head_axis));
+                            node->input(i).replace_source_output(tiled->output(0));
+                            register_new_node(tiled);
+                        }
+                    }
+                }
+            }
+        }
+
 
         const size_t shorter_idx = lhs_rank.get_length() < rhs_rank.get_length() ? 0 : 1;
         const auto & shorter = shorter_idx == 0 ? lhs : rhs;

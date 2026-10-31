@@ -74,3 +74,16 @@
   [1,4,128]→unsqueeze 回来），或绕过广播（k_norm weight 用 Concat 复制 4 份、
   cos/sin 同理）——在 translate 端做，避开 NPUW 的 broadcast tile bug
 - 验证：ndtest 式转储 row0/row43 cos≈0.99 → accept.ps1 三问 → push
+
+## 2026-11-01 深夜 II：广播 tile 修复无效 → elementwise-on-GEMV 理论
+- AlignEltwiseOperandRanks 扩展（低秩 operand unsqueeze+4 头 tile，k_norm weight 与
+  RoPE cos/sin 都覆盖）：row0/row43 完全不变 → 隐式广播排除
+- 现有铁证组合：V 分支（matmul→直连 scatter，无 elementwise）完美；
+  K 分支（matmul→norm/RoPE elementwise→scatter）h0/h2 逐位对、h1/h3 坏
+  → **NPUW 的 DQ/GQ2i（N=1 GEMV）路径上 elementwise 算子的子块处理可疑**
+- 下一轮：① GGML_OPENVINO_DEBUG_INPUT 已不可用（值太多），改为把 decode 图的
+  K-cur（scatter 的 data operand）硬编码为额外图输出做一次 debug 构建
+  （CPU 端 DEBUG_NODE 可行，NPU 端须静态加输出而非 Result 追加）；
+  ② 或试 NPUW_DQ_FULL=NO / 其他 DQ 子开关针对 GQ2i；
+  ③ 或把 decode 图 K 分支的 elementwise 全部换成 Concat/Copy 显式实现
+- 判据不变：row0/row43 cos≈0.99 → accept.ps1 三问 → push（本地 14 commit）
