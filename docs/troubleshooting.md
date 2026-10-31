@@ -215,3 +215,14 @@ $parallel = if ($Parallel -gt 0) { "--parallel $Parallel" } else { '--parallel' 
 它在解析期就报 MetadataError，一行代码都还没执行。`tools/build.ps1` 曾同时中两次（`$parallel` 与 `$clean`，
 对应 `[int]$Parallel` 与 `[switch]$Clean`），于是 CI 在任何一次编译发生之前就死了。规矩同上：局部变量改名
 （`$parallelArg`），并且 `scripts` job 会 grep 这类冲突。
+
+## 后端算子级测试（test-backend-ops）在本机的已知结果（2026-10-31）
+
+`test-backend-ops.exe -b OPENVINO3`（NPU，naive/动态路径）：
+
+- f16 一元算子大面积错误：`STEP`/`ABS`/`SGN`/`NEG` ERR≈1–2（完全错误），`HARDSWISH`/`EXP` 微小超差
+  ——f16 输入的处理有真 bug，但 LLM 主图用 f32 激活，不在缺陷 1 的路径上；
+- `GET_ROWS` 报 not supported；**`MUL_MAT` 测试用例直接访问违例（0xC0000005，无输出即崩）**——
+  naive 路径的量化 matmul 从未可用，这也是为什么引擎的 NPU 主路径必须走 NPUW 静态图；
+- 结论：TBO 可用于 NPUW 之外的算子冒烟（f32 一元/规范类），但 K 链的核心算子
+  （量化 MUL_MAT）只能在静态图里验证——算子级二分要用小图 + 静态路径，或先修 naive 路径的崩溃。
