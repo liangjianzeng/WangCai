@@ -150,3 +150,42 @@ jobs:
           export PATH="$bin:$ovlibs:$PATH"
           export LD_LIBRARY_PATH="$ovlibs:${LD_LIBRARY_PATH:-}"
           "$bin/$exe" --list-devices
+
+      - name: Cache the acceptance model
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: models
+          key: accept-model-LFM3-1.7B-Q4_K_M
+
+      - name: Download the acceptance model
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # ~1 GB, cached across runs by the step above. Q4_K_M is the project baseline
+          # quantization (see docs/getting-started.md).
+          $dest = Join-Path (Get-Location) 'models'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $target = Join-Path $dest 'LFM3-1.7B-Q4_K_M.gguf'
+          if (Test-Path $target) { Write-Host 'model already cached'; exit 0 }
+          python -m pip install --quiet "huggingface_hub"
+          python -c "from huggingface_hub import hf_hub_download; p = hf_hub_download('LiquidAI/LFM3-1.7B-GGUF', 'LFM3-1.7B-Q4_K_M.gguf', local_dir=r'$dest'); print('downloaded', p)"
+          if (-not (Test-Path $target)) { throw 'model download failed' }
+
+      - name: Acceptance smoke (static path, CPU device)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # No NPU on GitHub runners: the smoke validates the device-independent half of the
+          # NPU path (the static graph translation -- rope tile, rank align, set_rows -- all
+          # of which run identically under GGML_OPENVINO_FORCE_STATIC=1 on the CPU plugin).
+          # The device-specific gate remains the local accept.ps1 on real hardware.
+          $log = Join-Path $env:RUNNER_TEMP 'accept-smoke.log'
+          & pwsh -NoProfile -ExecutionPolicy Bypass -File ./tools/accept-smoke.ps1 `
+              -Exe (Join-Path (Get-Location) 'src/llama/build/bin/llama-cli.exe') `
+              -Model (Join-Path (Get-Location) 'models/LFM3-1.7B-Q4_K_M.gguf') *>&1 |
+              Tee-Object -FilePath $log | Out-Host
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+              & ./tools/ci-fail.ps1 -Log $log -Exit $code -Label accept-smoke
+          }

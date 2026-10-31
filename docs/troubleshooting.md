@@ -226,3 +226,13 @@ $parallel = if ($Parallel -gt 0) { "--parallel $Parallel" } else { '--parallel' 
   naive 路径的量化 matmul 从未可用，这也是为什么引擎的 NPU 主路径必须走 NPUW 静态图；
 - 结论：TBO 可用于 NPUW 之外的算子冒烟（f32 一元/规范类），但 K 链的核心算子
   （量化 MUL_MAT）只能在静态图里验证——算子级二分要用小图 + 静态路径，或先修 naive 路径的崩溃。
+### Q4_K_M 在 CPU 静态路径上加载即报 `element type u4, is not representable as pointer to f16`
+
+`GGML_OPENVINO_DEVICE=CPU + GGML_OPENVINO_FORCE_STATIC=1`（CI、dump-pair 等场景）加载 K 量化模型时，
+每个 ffn gate/up 权重报 `ggml_backend_openvino_buffer_set_tensor: failed to process weight tensor`
+（`make_tensor.cpp:83`），共约 136 个——这些权重随后是垃圾，生成必然胡言。**NPU 上没有此症状**：
+NPUW 的权重管线对 u4 常量走自己的处理；裸 CPU 插件的缓冲拷贝则要求指针可表示。
+
+**解法：** 与 NPU 路径的默认重量化策略对齐——`GGML_OPENVINO_REQUANT_KQUANT=q4_sym128_all`。
+`tools/accept-smoke.ps1` 已内置；裸跑静态路径时自己带上。另外注意 PowerShell 的 `*>` 重定向会
+截断 OpenVINO 异常文本，抓完整报错用 `cmd /c "... > log 2>&1"`。
