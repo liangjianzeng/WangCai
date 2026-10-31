@@ -99,3 +99,10 @@
 - 下一轮第一动作：① 读 lfm2.cpp k_norm 前的 reshape；② native CPU（-dev none）
   转储 row0/K(BOS) 与 CPU-static 对比 → 若 CPU-static 本身就错，缺陷在图翻译的
   RMS 分组，修复点 = rms_norm.cpp 的轴处理
+
+## 2026-11-01 深夜 IV：待办第一项
+- RMS 池化验证未完成：native CPU（-dev none）不经 OV 后端、GGML_OPENVINO_DUMP_BIN
+  无效 → 需要 native 侧的 K 转储挂钩（或在 python 里用 GGUF 权重直接算 BOS 的
+  每 head RMS K 参照）来回答"CPU-static 的 k_norm 是否真的 512 池化"
+- 已排除清单（勿重测）：scatter 三种实现、NPUW FOLD/FUNCALL/DQ、广播 tile、
+  conv 算子、权重量化、hidden（V 证明）、驱动/内存预算
