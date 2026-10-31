@@ -61,3 +61,11 @@ scatter 理论被四个实验推翻：裸 ScatterUpdate（python，索引 0）�
   `-o SSM_CONV` 或 python GroupConvolution 直接对拍）；
 - 修复方向：conv 状态零初始化的 NPU 语义（memset/fill 顺序、状态切片视图），
   或 conv 算子的零状态特例。
+
+## 复现进展（同日续）
+- 裸 GroupConvolution（depthwise, 4D data + 5D kernel, python 对拍）：NPU vs CPU
+  max diff = 0.003（f16 噪声级）——**conv 算子本身干净**。
+- 缺陷收窄到 SSM_CONV 的**状态路径**：零状态的 state 缓冲视图/切片 + 写回。
+  下一步：用真实形状（state [d_conv-1,C] 前缀 + 输入拼接的 view、写回末
+  d_conv-1 列的 SET_ROWS/COPY）做 python/引擎级对拍，重点看 view 偏移在
+  NPUW 降级下的行为。
