@@ -1129,6 +1129,21 @@ ov::PartialShape GgmlOvDecoder::get_graph_input_shape(const ggml_tensor * op,
     }
     ov::PartialShape input_shape;
 
+    if (ggml_openvino_getenv_int("GGML_OPENVINO_DEBUG_INPUT")) {
+        GGML_LOG_WARN("gis: name='%s' op=%d ne=[%ld,%ld,%ld,%ld] static=%d prefill=%d",
+                      (input && input->name) ? input->name : "?", op ? (int) op->op : -1,
+                      input ? (long) input->ne[0] : -1, input ? (long) input->ne[1] : -1,
+                      input ? (long) input->ne[2] : -1, input ? (long) input->ne[3] : -1,
+                      (int) m_is_static, (int) m_is_prefill);
+    }
+
+    // Audio/image embeddings enter as a raw [n_embd, n_tokens] input (no token lookup). On
+    // the static path every other input is padded to the prefill chunk (positions get
+    // last_value+1, tokens get padded indices) -- but this one fell through to its natural
+    // shape, so an audio ubatch of 38 tokens produced a 38-wide hidden state while the rope
+    // position table was built chunk-wide (256), and the rope multiply failed shape
+    // inference. Pad the token axis to the chunk like everything else; padded query rows are
+    // discarded by llama.cpp and their keys are masked out of later attention.
     if (is_inp_tok(input, op) || is_inp_pos(input, op)) {
         // tokens or positions
         int len = m_is_static ? (m_is_prefill ? m_prefill_chunk_size : 1) : -1;
