@@ -595,3 +595,45 @@ LFM3 与 Spark 的 OV-CPU 静态三问无 env 全 3/3，`accept-smoke.ps1` 的 r
 （chunk128 + 禁 levels + c512）下输出连贯，三问验收 **3/3**（decode 2.3 t/s）。两个外部模型家族
 （Spark-X2.6-4B、Qwen3-4B）全部通过 NPU 精度验收。当时塌缩的根因未单独定案（其间落地了 KV 环
 修复、level 自动降级、u4/f16-zp 修复等多个改动），按复测证据翻案。
+
+## 2026-11-01：性能轮——4B NPU decode 2.4 → 4.9 t/s（level 预算三图问题）
+
+**用户核心目标调整：性能优先。** 副靶 4B 的 2.3–2.4 t/s 不可用，本轮全程定位。
+
+### 排查链（每步都有实测证据）
+1. `GGML_OPENVINO_PROFILING=1`：每步 436–480 ms **全部在 NPU 图执行内**（主机绑定 <10 ms）。
+2. ctx 对照：c256 = 164 ms/步、c512 = 436 ms——成本 ∝ 环/span 超线性。
+3. 算子级 profile（`PROFILING=2`）：KV ScatterNDUpdate 每实例 8 ms（写 4 KB 进 1 MB 环）、
+   rope 路径 Add 30 ms（16 KB f32）——小算子按 span 缩放的执行/调度开销；LFM3 同设置
+   全步 92 ms、Add 仅 3.8 ms（24 层 vs 36 层 + 全局注意力层数差异）。
+4. **levels 为何失效**：level-256 图编译成功后**首个 execute 即
+   ZE_RESULT_ERROR_UNINITIALIZED**（-lv 5 日志实锤），自动降级后稳态全程跑全 ctx 图。
+   根因：**设备预算 = prefill + 一张 decode 图（权重 bank 按 CompiledModel 计），而 prefill
+   在新 entry 上还会预编 legacy 全 ctx decode 图 → 三图常驻**。1.7B（3×1 GB 权重 bank）
+   装得下三图所以 LFM3 从未暴露；4B（3×2.3 GB）必爆。
+5. 编译开关矩阵（FUNCALL/DQ/FOLD overrides）全部无效（2.4→2.6/2.7，DQ=NO 编译失败）——
+   结构性问题，不是开关问题。
+
+### 修复（utils.cpp，三处）
+- `decode_levels_active` 常量：levels 激活时 prefill **不再预编 legacy 全 ctx decode 图**。
+- level 编译分支：连同 legacy decode 图一并驱逐（level==0 时的发布逻辑不变，fallback 重进时按需重编）。
+- level==0 的 cache_hit 按相位拆分（prefill 只看 prefill 半区；复用检查改绑实际使用的
+  decoder——原实现解引用 null `entry->ptr` 会段错误，已实测踩过并修复）。
+
+### 结果（275HX / NPU 3720，热缓存稳态）
+| 模型 | 修复前 | 修复后 | 验收 |
+|---|---|---|---|
+| Spark-X2.6-4B c512 | 2.4 t/s | **4.9 t/s**（raw infer 436→~150 ms） | 3/3 |
+| Qwen3-4B c512 | 2.3 t/s | **4.0 t/s** | 3/3 |
+| LFM3-1.7B c1024 | 14–15 t/s | 13.1 t/s（无回归） | 3/3 |
+
+level 基数 256 vs 128 实测持平（4.7 vs 4.5），保持 256（少一次 level 编译）。
+
+### 剩余差距与下一步（按杠杆排序）
+4B 理论下限 ≈ 2.3 GB 权重 ÷ 15.7 GB/s（LFM3 实测带宽）≈ 145 ms/步 ≈ 7 t/s；当前 4.9。
+1. **标准注意力的算子降级开销**：36 层 × span 的 scatter/rope 小算子群（LFM3 只有 11 层
+   注意力 + 短卷积）。方向：把 QK^T/softmax/PV 链折叠进 DPU 大子图（NPUW FOLD 对标准
+   GQA 的模式覆盖），或 llama.cpp 侧换 flash-attn 式 KV 写路径。
+2. host ~50 ms/步（150 参数逐个 set_input_tensor）——静态参数预绑定。
+3. 4B 权重字节：token_embd F16（~795 MB）+ output Q8_0_C（~400 MB）占一半；EMBD_Q4 在
+   1.7B 上证伪过，4B 上权重占比更大，值得复测。

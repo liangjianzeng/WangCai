@@ -207,6 +207,8 @@ static int decode_attention_level(int n_kv, int ctx) {
     if (n_kv <= 0) {
         return 0;
     }
+    // Base 256: measured parity with a 128 base on Spark-X2.6-4B (4.5 vs 4.7 t/s warm at
+    // c512) and a 128 base pays an extra level compile per generation, so 256 stays.
     int level = 256;
     while (level < n_kv && level < ctx) {
         level *= 2;
@@ -1705,8 +1707,15 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     // however few cells are filled). Prefill and the dynamic path keep the single prefill/decode
     // pair.
     int decode_level = 0;
-    if (is_static && !no_kv_cache && !is_prefill && c_params.attention_size_raw > 0 &&
-        !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_DECODE_LEVELS") && !g_decode_levels_disabled.load()) {
+    // Same expression as the gate below, evaluated once: when the multi-level decode system is
+    // active, the legacy context-baked decode graph must NOT be pre-compiled during prefill --
+    // the NPU device budget fits prefill plus ONE decode graph (weights banks are per
+    // CompiledModel), and a third resident graph made every 4B-model level graph die on its
+    // first execute with ZE_RESULT_ERROR_UNINITIALIZED (1.7B models fit three graphs, which is
+    // why this never showed on LFM3).
+    const bool decode_levels_active =
+            !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_DECODE_LEVELS") && !g_decode_levels_disabled.load();
+    if (is_static && !no_kv_cache && !is_prefill && c_params.attention_size_raw > 0 && decode_levels_active) {
         decode_level = decode_attention_level(c_params.attention_size_raw, m_params.ctx_per_seq);
         c_params.attention_size = decode_level;
     }
@@ -1723,10 +1732,19 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             cache_hit = reuse_ok;
         }
     } else {
-        cache_hit = cache_hit && entry->ptr && r_ctx->infer_request_cache.count(key) != 0 &&
-                    r_ctx->infer_request_cache_prefill.count(key) != 0;
+        // Phase-split cache check: with decode levels active the legacy decode graph may
+        // legitimately not exist (evicted to fit the budget, or never compiled -- see the
+        // decode_levels_active comment), so a prefill pass must hit on its own half alone.
+        const bool prefill_half_ok =
+                entry->ptr_prefill && r_ctx->infer_request_cache_prefill.count(key) != 0;
+        const bool decode_half_ok = entry->ptr && r_ctx->infer_request_cache.count(key) != 0;
+        cache_hit = cache_hit && (is_prefill ? (prefill_half_ok && (decode_half_ok || decode_levels_active))
+                                             : (prefill_half_ok && decode_half_ok));
         if (cache_hit) {
-            ggml_decoder = entry->ptr;
+            // The reuse check must run against the decoder this pass will actually bind: with
+            // decode levels active a prefill pass binds ptr_prefill while entry->ptr is null
+            // (the legacy decode graph was never compiled -- see decode_levels_active above).
+            ggml_decoder = (is_prefill && entry->ptr_prefill) ? entry->ptr_prefill : entry->ptr;
             old_m_params = ggml_decoder->get_model_params();
             reuse_ok = old_m_params.can_reuse_statically(m_params);
             cache_hit = reuse_ok;
@@ -1800,8 +1818,13 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         const bool prefill_request_ok = reuse_ok && r_ctx->infer_request_cache_prefill.count(key) != 0;
         const bool decode_pair_request_ok = reuse_ok && r_ctx->infer_request_cache.count(key) != 0;
         const bool compile_prefill = is_prefill && !prefill_request_ok;
+        // With decode levels active, skip the legacy context-baked decode graph entirely: the
+        // level graphs replace it, and prefill + legacy + level would over-commit the budget
+        // (see the decode_levels_active comment above). The fallback path (level graph hits the
+        // budget) recompiles it on demand -- the retry re-enters with decode_level == 0.
         const bool compile_decode =
-                is_prefill ? (!decode_pair_request_ok && entry->ptr_decode_levels.empty()) : true;
+                is_prefill ? (!decode_pair_request_ok && entry->ptr_decode_levels.empty() && !decode_levels_active)
+                           : true;
 
         // The prefill graph always bakes the whole context span; only the decode graphs take the
         // discrete level (c_params carries it on decode passes, see the hit-determination above).
@@ -2125,11 +2148,18 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             // level resident, its first execute dies with ZE_RESULT_ERROR_UNINITIALIZED (the
             // defect-7 signature -- weights banks are per CompiledModel, and prefill+decode of
             // one pair already take the budget). Evict the other levels; a later switch back
-            // reloads them from the disk blob cache.
+            // reloads them from the disk blob cache. Also evict the legacy context-baked decode
+            // graph: it may still be resident from before the levels-disabled kill-switch
+            // flipped (or from an older entry), and prefill + legacy + level is exactly the
+            // three-graph over-commit that kills 4B models.
             {
                 std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
                 r_ctx->infer_request_cache_decode_levels.erase(key);
                 entry->ptr_decode_levels.clear();
+                if (decode_level > 0) {
+                    r_ctx->infer_request_cache.erase(key);
+                    entry->ptr.reset();
+                }
             }
             std::shared_ptr<ov::Model> model_level;
             auto model_weights = GgmlOvDecoder::create_weight_nodes(cgraph);

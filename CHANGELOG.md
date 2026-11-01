@@ -298,3 +298,17 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   （`llama_kv_cache.cpp`），随后 scatter 写回就会拒绝该索引。
 
 [Unreleased]: https://github.com/liangjianzeng/WangCai
+
+### 修复 —— 4B NPU decode 性能（性能轮：2.4 → 4.9 t/s）
+
+- **根因（level 预算三图问题）**：NPU 设备预算 = prefill + 一张 decode 图（权重 bank 按
+  CompiledModel 计），而 prefill 在新 entry 上还会预编 legacy 全 ctx decode 图——三图常驻。
+  1.7B 模型三张权重 bank 装得下（LFM3 的 levels 一直正常），4B 必爆：level 图编译成功后首个
+  execute 即 `ZE_RESULT_ERROR_UNINITIALIZED`，自动降级后每步都跑全 ctx 图（436 ms/step）。
+- **修复**（utils.cpp）：levels 激活时 prefill 跳过 legacy decode 预编；level 编译时连同
+  legacy 图一并驱逐（fallback 重进按需重编）；level==0 的 cache_hit 按相位拆分（并修复
+  复用检查解引用 null decoder 的段错误）。
+- **实测**（热缓存稳态）：Spark-X2.6-4B 2.4 → **4.9 t/s**（raw infer 436→~150 ms）、
+  Qwen3-4B 2.3 → **4.0 t/s**、LFM3-1.7B 13–15 t/s 无回归；三模型 NPU 三问验收全 3/3。
+- **剩余**：~200 ms/步为 36 层标准注意力的算子降级开销 + 权重带宽下限（~7 t/s）；杠杆与
+  排查链（PROFILING 分解、算子级 CSV、ctx 对照）见 HANDOFF 2026-11-01 性能轮。
