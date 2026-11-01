@@ -524,3 +524,11 @@
   动态，先验证数值再谈性能）。
 - 快速验证建议：FORCE_STATIC=0 + 设备 CPU（动态路径）跑视觉——若通过则"豁免编码器图走动态"
   即为最小修复；NPU 上编码器图动态执行是否可行另测（编码器非 decode，设备预算压力小）。
+
+### 视觉探针补充：OpenVINO 动态路径 CPU 通过，NPU 仍卡 NPUW
+- CPU 动态路径（FORCE_STATIC=0，native 同款翻译）：**视觉端到端正确**（输出与 native 一致）——
+  4 段式 rope 在动态翻译里本就被正确处理，最小修复假设证实。
+- NPU（动态路径）在 NPUW 编译期撞同一 broadcast 断言——NPUW 有自己的 shape inference/降级管线，
+  对 4 段位置表同样不兼容。NPU 视觉的两条路线：①静态 rope lowering 支持 mrope 分段（与 CPU 静态
+  同修）；②NPUW 侧配置/变换规避（NPUW_DQ/FOLD 类开关逐个试）。均列下轮。
+- 里程碑 4.x 现状：音频 ✓（NPU/CPU），视觉 native ✓ / OV-CPU 动态 ✓ / 静态与 NPU 待修。
