@@ -497,3 +497,18 @@
   CPU accept-smoke 3/3。
 - NPU 音频已知可用配置简化为：`REQUANT_KQUANT=q4_sym128_all`（LLM 量化对齐参照；编码器已由
   "a."-豁免自动保护）。mtmd-audio-c512.ps1 已同步更新。
+
+## 2026-11-01：视觉输入首探——native 参照通过，静态翻译有一个明确的 rope 形状烘焙缺陷
+- native（-dev none，Q8_0）：**视觉端到端直接可用**——测试图（448² 深底红圆+绿条）输出
+  "A flag with a black upper field containing a large solid red circle ... green horizontal band"，
+  描述精确。mmproj 含视觉编码器（133 个 v. 张量）+ 音频（313 a.）+ 投影（12 mm.）。
+- OpenVINO 静态路径（CPU FORCE_STATIC）在 ViT 内失败：
+  `Multiply_153226: [1,784,16,64] × Concat [1,3136,1,64]` broadcast 失败。784=28²（448/16 patch conv
+  输出），3136=56²——rope/位置频率 Concat 按 56×56 烘焙而 conv 走 28×28，与音频 reshape-bake 同类
+  （cont.cpp dst_shape 全烘焙 / 静态形状捕获错位）。附带一串
+  "cannot determine dynamic dim for RESHAPE node 'conv_spatial-N'" 告警——视觉 patch 维未标动态。
+- 下一轮方案（按音频 XIV 的成熟打法）：①compute_node_dynamic_dims 给视觉 patch 轴标动态；
+  ②定位 3136 烘焙源（rope freqs 的静态捕获），对齐 conv 输出的 patch 数；③NPU 验证。
+- mtmd-cli"退出路径"项核销：修复后 NPU 音频输出与 native 参照含停止点逐字一致（EOS 是模型行为），
+  perf footer 本就是 mtmd-cli（experimental CLI）不打印的——非缺陷。
+- 测试资产：D:\llm\npu\test_image.png（合成图，红圆+绿条）；ctrl/vis_native.ps1、vis_ov.ps1。
