@@ -63,8 +63,8 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | 长文续写：NPU 与 CPU 参照**逐字一致** | ✅ 完成（Q4_0 权重） |
 | 指令跟随任务的数值一致性 | ✅ **完成（v0.0.1 收官修复）** — 根因定案：decode 图 RoPE cos/sin 头轴广播；三问验收 3/3 |
 | Prefill 追平 CPU | 🟡 已达参照的 73%，仍在找余量 |
-| Decode 追平 CPU | 🟡 落后 6 倍，**当前主攻方向** |
-| LFM3 全模态（音频 / 视觉输入） | ⬜ 规划中（官方 GGUF 与 `mmproj` 已在 ModelScope） |
+| Decode 追平 CPU | 🟡 **多跨度 decode 图组落地（2026-11-01）：14–15 t/s 且与 ctx 无关**（c=8192 从 0.9 t/s 提升 17×），距 OV-CPU 参照 21.7–29.2 还差 ~1.5–2×；下一杠杆 lm_head（11 ms/步），stateful 路线已探针证伪 |
+| LFM3 全模态（音频 / 视觉输入） | 🟡 **音频输入 NPU 端到端跑通（2026-11-01）**——raw-embd chunk-pad + 动态维传播；与 f32 参照有 top-1 分歧（f16 复利同类）；视觉输入待接入 |
 | **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
 
 精度主缺陷的完整攻坚记录是这个仓库最有价值的资产之一：从"logits 被压平、K 缓存第 0 行错八个
@@ -87,13 +87,14 @@ LFM3-1.7B `Q4_K_M`（1049 MB）· 24 层（13 门控短卷积 + 5 滑动窗口@2
 |---|---:|---:|---|
 | `ggml` 原生 CPU（`-dev none`） | 570 t/s | 54.1 t/s | 连贯性参照 |
 | OpenVINO · CPU 设备，动态图 | 610 t/s | 21.7–29.2 t/s | 输出连贯 |
-| **OpenVINO · NPU 设备，静态图** | **415 t/s** | **8.3–8.7 t/s** | 跑通；精度进行中 |
+| **OpenVINO · NPU 设备，静态图** | **415 t/s** | **14–15 t/s（与 ctx 无关）** | 多跨度 decode 图组（2026-11-01）；c=8192 从 0.9 t/s 提升 17× |
 | OpenVINO · NPU 首次图编译（冷启动） | — | — | 一次性约 36 s，之后命中缓存 |
 
 两点必须说清楚：
 
-- **NPU 的 prefill 不是问题**：pp512 达到原生参照的 73%。真正的短板是 **decode**，只用到可用 TOPS
-  的约 0.03。
+- **NPU 的 prefill 不是问题**：pp512 达到原生参照的 73%。decode 是短板也是主攻方向：多跨度
+  decode 图组落地后 14–15 t/s 且与上下文长度无关，距 OV-CPU 动态图还差 ~1.5–2×；剩余分量里
+  lm_head（11 ms/步）是下一个独立杠杆，KV 状态往返已被级别裁剪缩小、stateful 化被探针证伪。
 - **别拿短 prompt 的 t/s 说事**：静态 prefill 图恒为 256 列宽，4 个 token 也要付 256 列的代价，而
   llama.cpp 按"有效 token / 秒"上报，于是同一个 0.66 s 的 chunk 会被报成 ~6 t/s。要么测 `pp512`
   及以上，要么按 prompt 长度调 `GGML_OPENVINO_PREFILL_CHUNK_SIZE`。算术细节见
@@ -139,7 +140,7 @@ src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 
 | `-st`（对话模板） | instruct 模型走裸续写会退化成重复胡话，任何后端都一样 |
 | `GGML_OPENVINO_DEVICE=NPU` | 选 NPU 而不是 OpenVINO-CPU |
 | `GGML_OPENVINO_CACHE_DIR` | 持久化 36 s 的图编译缓存；**每种配置用独立目录**，否则过期编译图会无声胜出 |
-| `-c` ≤ 数千 | KV 状态流量随上下文线性放大，`-c 8192` 实测 decode 掉到 0.9 t/s（[docs/status.md](docs/status.md) 里程碑 2.1） |
+| `-c` ≤ 8192 实测通过 | 多跨度 decode 图组落地后 decode 速度与 ctx 无关（c=8192 实测 14.1 t/s）；更高 ctx 未验证 |
 
 `llama-server.exe` 也一并构建，可用同样的环境变量提供 OpenAI 兼容 HTTP 服务；`-c`/-fa/-np 约束相同。
 完整参数说明、首次运行的预期日志与三个最容易踩的坑见
@@ -185,8 +186,9 @@ TongYiLite 现在是 **Flutter（不是 Kotlin）应用**：Dart 约 54k 行，K
 ### 为什么是 NPU（低功耗驱动）
 
 NPU 是访存瓶颈型负载里的优等生：**功耗极低、把 CPU 核心完整留给系统**。在 WangCai 里，NPU 端到端跑
-LFM3 时 prefill 已达 **415 t/s**（CPU 参照的 73%），CPU 全程空闲。代价是：decode 还在 **8.3–8.7 t/s**，
-连同 prefill 的余量一起，是下一步要攻的目标（精度已在 v0.0.1 修复，[docs/status.md](docs/status.md)）。
+LFM3 时 prefill 已达 **415 t/s**（CPU 参照的 73%），CPU 全程空闲。decode 经多跨度 decode 图组已到
+**14–15 t/s 且与上下文长度无关**（2026-11-01），连同 prefill 的余量一起，是下一步要攻的目标
+（精度已在 v0.0.1 修复，[docs/status.md](docs/status.md)）。
 
 > 诚实声明：**本机目前没有 NPU 计数器、没有电池、电源方案是"高性能"**，所以"每瓦性能"还没测出来。
 > 路线图里写的是可复现的替代证据（CPU 占用、温度、降频事件），精确瓦特需要外部功率计或电池模式补测。

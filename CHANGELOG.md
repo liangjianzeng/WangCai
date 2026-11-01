@@ -8,6 +8,48 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 ## [Unreleased]
 
+2026-11-01 在硬件上验证的三批改动。
+
+### 新增 —— 引擎（decode 性能主攻）
+
+- **多跨度离散 decode 图组（缺陷 2 根因①的修复）：NPU decode 14–15 t/s 且与上下文长度无关。**
+  按 PAD(n_kv,256) 离散级别（256/512/…/ctx）每级一张全静态 decode 图，llama.cpp 每步按当前 n_kv
+  选级；KV cache 参数与绑定按级别裁视图，每步状态 I/O 与该级别成正比；编译新级别前驱逐旧级别
+  （NPU 设备预算 = prefill + 一张 decode 图，第二张常驻在首次 execute 即
+  ZE_RESULT_ERROR_UNINITIALIZED）；级别切换时把 KV 的 [fill,span) 段清零（跨级别正确性保障，
+  A/B logits 逐位一致）。实测：c=8192 从 0.9 → 14.1 t/s（**17×**）、c=2048 从 3.3 → 14.3（4.5×）；
+  600-token 任务跨 256/512/1024 三级切换全程无错；token 流不同 ctx 逐字节一致。逃生门
+  `GGML_OPENVINO_DISABLE_DECODE_LEVELS=1` 回退全 ctx 单图，`GGML_OPENVINO_NO_KV_ZEROIZE` 调试用。
+
+### 新增 —— 引擎（音频）
+
+- **NPU 音频输入端到端跑通。** raw-embd 块补齐（chunk-pad）与动态 token 维传播
+  （`compute_node_dynamic_dims` 对 raw-embd 叶子置 1）；此前 Reshape 把捕获的 [1,1,38,2048] 烤进图，
+  对补齐后的 [1,1,256,2048] 形状推理失败。NPU 回答连贯，与 f32 参照有 top-1 级分歧
+  （与文本自由生成已记录的 f16 复利行为同类）。
+
+### 新增 —— 测量基建
+
+- `GGML_OPENVINO_PROFILING=1`（每步 Graph inference / OV raw infer 分解）与 `=2`（静态路径逐节点
+  CSV；注意 CSV 写入进程 CWD、-n N 只覆盖前 N+1 个文件、逐节点总和可超 wall time——DPU/DMA 并行
+  记账）。缺陷 2 的三项根因（状态往返 ~32 ms/步@c512、全 ctx 跨度注意力超线性、lm_head 11 ms）
+  即由此定案。
+
+### 探针 —— stateful 路线证伪（tools/npu-probes/）
+
+- NPU（OpenVINO 2026.4.1）**支持 VariableState**：query_state 正常、状态跨 infer() 在设备侧累积
+  （初始值张量被忽略、按 0 初始化）。但每步成本 ≈5–6 ms/MB（0.18 GB/s）线性放大——8.4 MB KV 量级
+  state 43–45 ms/步，比参数绑定（全步骤 6.1 ms，≈1.4 GB/s）**慢 7 倍**：每次 infer() 都走慢速状态
+  检查点路径。**结论：设备驻留 KV 路线反模式，参数绑定 + 级别裁剪是当前最优架构**；defect-2 下一
+  独立杠杆为 lm_head（11 ms/步）。附带教训：平铺 [1,N] 大形状 elementwise 图会让 NPUW 编译爆炸。
+
+### 修复 —— 工具
+
+- **accept-smoke Q3 "flake" 定案为测试基建 bug**：判定 `-match '2'` 匹配整个日志，性能行
+  `[ Prompt: 23.7 t/s | Generation: 29.0 t/s ]` 的 t/s 数字随机含 '2' 造成假通过/假失败；且 n=48
+  对思维链模型太短（note-4 幻觉在动/静态路径逐字节一致，非引擎回归）。修复：只匹配答案区段
+  （回显 prompt 与性能行之间）+ 默认 n=96；修复后 3 轮 3/3 完全确定。
+
 ## [0.0.1] — 2026-10-31 · 汪柴首个版本
 
 基线 `abb76ab`（llama.cpp）、OpenVINO 2026.4.1。

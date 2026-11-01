@@ -69,8 +69,8 @@ Honest, measured, tracked in [docs/status.md](docs/status.md).
 | Continuation task byte-identical to the CPU reference | ✅ done (Q4_0 weights) |
 | Numerical parity on an **instruction-following** task | ✅ **done (v0.0.1 closing fix)** — root cause: decode-graph RoPE cos/sin head-axis broadcast; 3-question acceptance 3/3 |
 | Prefill competitive with CPU | 🟡 73% of the reference; headroom still unexplained |
-| Decode competitive with CPU | 🟡 6× behind; **the current performance target** |
-| LFM3 omni modalities (audio in / vision in) | ⬜ planned (official GGUF + `mmproj` on ModelScope) |
+| Decode competitive with CPU | 🟡 **multi-extent decode graphs landed (2026-11-01): 14–15 t/s, context-independent** (c=8192 up 17× from 0.9 t/s); ~1.5–2× behind the OV-CPU reference 21.7–29.2; next lever lm_head (11 ms/step); the stateful route was probed and refuted |
+| LFM3 omni modalities (audio in / vision in) | 🟡 **audio input runs end-to-end on the NPU (2026-11-01)** — raw-embd chunk-pad + dynamic-dim propagation; top-1 divergence vs the f32 reference (same class as f16 compounding); vision input pending |
 | **On-device multimodal assistant "WangCai"** | 🟡 planned — this engine inside TongYiLite (Flutter, Android→Windows) |
 
 The hunt for the main accuracy defect is one of the most valuable assets in this repo: starting from
@@ -126,8 +126,9 @@ loading, per-token callbacks, MTP speculative decoding and mtmd vision encoding.
 
 Decode is memory-bound, and that is where the NPU is strong: **very low power, CPU cores left free for
 the rest of the system**. NPU prefill on LFM3 reaches **415 t/s** (73% of the CPU reference) with the CPU
-idle. The price: decode is still **8.3–8.7 t/s** — that, plus prefill headroom, is the next target
-(accuracy was fixed in v0.0.1; [docs/status.md](docs/status.md)).
+idle. Decode is now **14–15 t/s, context-independent** (multi-extent decode graphs, 2026-11-01) —
+that, plus prefill headroom, is the next target (accuracy was fixed in v0.0.1;
+[docs/status.md](docs/status.md)).
 
 > Stated honestly: **this machine exposes no NPU counters, has no battery, and is on the "high
 > performance" power plan**, so there is no performance-per-watt number yet. What the roadmap commits to is
@@ -158,13 +159,16 @@ LFM3-1.7B `Q4_K_M` (1049 MB) · 24 layers (13 gated short-conv, 5 sliding-window
 |---|---:|---:|---|
 | `ggml` CPU reference (`-dev none`) | 570 t/s | 54.1 t/s | coherence reference |
 | OpenVINO · CPU device, dynamic graphs | 610 t/s | 21.7–29.2 t/s | coherent |
-| **OpenVINO · NPU device, static graphs** | **415 t/s** | **8.3–8.7 t/s** | runs; accuracy WIP |
+| **OpenVINO · NPU device, static graphs** | **415 t/s** | **14–15 t/s (context-independent)** | multi-extent decode graphs (2026-11-01); c=8192 up 17× from 0.9 t/s |
 | OpenVINO · NPU, first graph compile (cold) | — | — | ~36 s one-off, then cached |
 
 Two things worth stating plainly:
 
-- **Prefill on the NPU is not the problem** — 415 t/s is 73% of the CPU reference. Decode is, at
-  roughly 0.03 of the available TOPS.
+- **Prefill on the NPU is not the problem** — 415 t/s is 73% of the CPU reference. Decode is the
+  performance target: the multi-extent decode graphs brought it to 14–15 t/s, independent of context
+  length, ~1.5–2× behind the OV-CPU dynamic path. The next independent lever is lm_head (11 ms/step);
+  the KV state round trip has been shrunk by level trimming, and the stateful route was refuted by
+  probe (7× slower than parameter binding).
 - **Short-prompt prompt-throughput on the NPU is meaningless as reported.** The static prefill graph
   is always 256 columns wide, so 4 useful tokens pay for 256 while llama.cpp reports useful tokens per
   second: the same 0.66 s chunk reads as ~6 t/s. Measure `pp512` or larger, or tune
@@ -206,8 +210,8 @@ confirm); `-fa 1` is mandatory (`-fa 0` produces a V write-back shape the OpenVI
 rejects); `-np 1` is mandatory (the static path is single-sequence); `-st` routes the prompt through
 the chat template (raw continuation degrades any backend, including the CPU reference);
 `GGML_OPENVINO_CACHE_DIR` must be persistent (it caches the ~36 s graph compile) and **separate per
-configuration** — a stale compiled graph silently wins otherwise; keep `-c` modest (KV state traffic
-scales linearly with context — `-c 8192` measured 0.9 t/s decode, [docs/status.md](docs/status.md)).
+configuration** — a stale compiled graph silently wins otherwise; `-c` up to 8192 verified (decode
+speed is context-independent since the multi-extent decode graphs — 14.1 t/s at c=8192).
 `llama-server.exe` builds too and serves an OpenAI-compatible HTTP API with the same env vars and the
 same constraints. Full details, expected first-run logs and the three classic pitfalls:
 [docs/getting-started.md](docs/getting-started.md); every env var: [docs/env-vars.md](docs/env-vars.md).
