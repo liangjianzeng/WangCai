@@ -660,3 +660,10 @@ chunk 64/128/32 实测（Spark-4B c512，13 token prompt，冷启动含编译）
 15.5 t/s，端到端 51 / 58 / ~60 s。chunk64 短 prompt 最优；32 以下每 chunk 固定开销反噬。
 EMBD_Q4（权重侧唯一未试杠杆）经复查对 decode 无效——decode 只读 output.weight（Q8_0_C），
 token_embd 每步只读一行；且 lm_head u4 化在 1.7B 已证伪（同一下降路径），不复测。
+
+### 4B prefill 正确口径补测（pp512，回应"prefill 为啥差那么多"）
+llama-bench -p 512 -n 0：native 166.6 / OV-CPU 95.1 / **NPU(chunk128) 89.4 t/s** = native 的
+54%，与 OV-CPU 持平。此前 15-20 t/s 是 13 token 短 prompt + chunk64/128 的 pad 失真（13 token
+付 64-128 列）。与 1.7B 的 69% 相比的 15 个点差值 = 预算把 chunk 压到 128/64 的 pad 浪费 +
+每 chunk 固定开销；回到 chunk256 需要上游 NPUW bank 去重。测量纪律：短 prompt 看首 token
+延迟（秒），长 prompt 看 t/s。
