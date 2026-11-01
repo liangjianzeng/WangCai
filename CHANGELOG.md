@@ -50,6 +50,30 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   对思维链模型太短（note-4 幻觉在动/静态路径逐字节一致，非引擎回归）。修复：只匹配答案区段
   （回显 prompt 与性能行之间）+ 默认 n=96；修复后 3 轮 3/3 完全确定。
 
+### 修复 —— 引擎（音频回归 + 设备预算自愈）
+
+- **NPU 音频回归三层因果链闭合，输出与 native Q8_0 参照逐字一致。** ①NPU 默认把 Q4_0 重分组到
+  group-128 对称，对 mmproj conv 栈是纯损失（嵌入 cos 0.963、范数 +12%，答案在 <think> 后即 EOS）
+  ——`a.`-前缀编码器张量豁免走 native（0.9997），LLM 权重保持 128（native 化掉 40% 吞吐）；
+  ②CPU 静态与 NPU 的 LLM 量化需一致（`q4_sym128_all`），音频答案在边际敏感区被量化差翻转
+  （文本同幅度 KV 分歧 layer12=0.73 不受影响）；③Omni-2B decode level 图撞设备预算
+  （ZE_RESULT_ERROR_UNINITIALIZED，缺陷-7 族，非确定性）。
+- **level 图设备预算自动降级重试**：level 图 `infer()` 撞 UNINITIALIZED 时自动清空全部 level
+  缓存、置进程级开关并重试一次 full-ctx decode 图——Omni-2B NPU 音频零 env 跑通，1.7B 不触发。
+  实现坑：entry mutex 非递归（持锁重入 EDEADLK，改 unique_lock + unlock）；降级后的 ctx 图
+  必须发布进 ctx-pair 缓存，否则每 token 重编译。
+- **热启动 23 s → 8.9 s**：requant 全量物化路径行分块并行（发现 ov::parallel_for 在无
+  TBB/OpenMP 的构建里是串行回退，改用 std::thread 池；chunk 对齐偶数块保 u4 zp 字节对）；
+  make_dirs 盘符 bug（`_mkdir("D:")` EACCES 曾使 COMPILED_MODEL_CACHE_DIR 在 Windows 静默失效）；
+  多级图接入 COMPILED_MODEL_CACHE_DIR（NPU 上与共享权重 bank 冲突，保持 opt-in 关，探针定案）。
+
+### 新增 —— 引擎（视觉输入，探察）
+
+- mmproj 含视觉编码器（133 v. 张量）。**native 与 OV-CPU 动态路径视觉端到端正确**（测试图描述
+  与参照一致）；静态翻译与 NPU 卡在 4 段式视觉 rope 位置表（每 patch 4 行被当 4× token，
+  Multiply [1,784,16,64] × [1,3136,1,64] broadcast 失败）——静态 rope lowering 的 mrope 分段
+  支持列为下一工作项。
+
 ## [0.0.1] — 2026-10-31 · 汪柴首个版本
 
 基线 `abb76ab`（llama.cpp）、OpenVINO 2026.4.1。

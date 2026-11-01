@@ -69,8 +69,8 @@ Honest, measured, tracked in [docs/status.md](docs/status.md).
 | Continuation task byte-identical to the CPU reference | ✅ done (Q4_0 weights) |
 | Numerical parity on an **instruction-following** task | ✅ **done (v0.0.1 closing fix)** — root cause: decode-graph RoPE cos/sin head-axis broadcast; 3-question acceptance 3/3 |
 | Prefill competitive with CPU | 🟡 73% of the reference; headroom still unexplained |
-| Decode competitive with CPU | 🟡 **multi-extent decode graphs landed (2026-11-01): 14–15 t/s, context-independent** (c=8192 up 17× from 0.9 t/s); ~1.5–2× behind the OV-CPU reference 21.7–29.2; next lever lm_head (11 ms/step); the stateful route was probed and refuted |
-| LFM3 omni modalities (audio in / vision in) | 🟡 **audio input runs end-to-end on the NPU (2026-11-01)** — raw-embd chunk-pad + dynamic-dim propagation; top-1 divergence vs the f32 reference (same class as f16 compounding); vision input pending |
+| Decode competitive with CPU | 🟡 **multi-extent decode graphs landed (2026-11-01): 14–15 t/s, context-independent** (c=8192 up 17× from 0.9 t/s); ~1.5–2× behind the OV-CPU reference 21.7–29.2. Follow-up levers all probed and settled (stateful 7× slower, u4 lm_head 5× slower, compiled-model cache collides with the weights bank) — the decode push is closed |
+| LFM3 omni modalities (audio in / vision in) | 🟡 **audio on the NPU with a closed three-cause chain (2026-11-01)**: encoder requant accuracy fixed ("a."-exemption, embeddings cos 0.963 → 0.9997), output byte-identical to the native Q8_0 reference once quantization is aligned, and decode level graphs now auto-fall-back on device-budget failure (zero env); vision: native ✓ / OV-CPU dynamic ✓, the 4-section vision rope in the static translation and on NPU pending |
 | **On-device multimodal assistant "WangCai"** | 🟡 planned — this engine inside TongYiLite (Flutter, Android→Windows) |
 
 The hunt for the main accuracy defect is one of the most valuable assets in this repo: starting from
