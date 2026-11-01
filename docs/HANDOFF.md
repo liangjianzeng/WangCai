@@ -411,3 +411,16 @@
   ② 首次 prefill 推理 1.1 s（图首次下载到设备）。
 - 无回归：NPU 14.5 t/s + 三问 3/3；CPU accept-smoke 3/3。
 - 测量基建：GGML_WARM_TRACE=1 打开 repack/加载分段 trace（env 门控，标记 TEMP，2.2 收官时拆除）。
+
+### 2.2 后续探针：NPUW 无权重 blob 的 import 契约（tools 探针 probe_stateful/probe_mp*.py）
+- python（numpy 常量，OV 自持内存）编译导出的 blob **内嵌权重**（290 KB 小模型），import 无需任何
+  property；带 `WEIGHTS_PATH` 指向同内容 .bin 也 OK，`MODEL_PTR` 传裸地址报
+  "Incompatible model argument"（它要的是 ov::Model 实例，不是指针——名字有误导性）。
+- 引擎 C++ 导出的 blob **无权重**（26 MB/图）：权重常量直接包装 backend 权重缓冲（避免每图复制
+  1.3 GB），NPUW 识别为外部权重 → 导出 weightless blob，import 断言要求 WEIGHTS_PATH 或 MODEL_PTR。
+- `WEIGHTS_PATH`/`MODEL_PTR` 字符串确认存在于 openvino_intel_npu_plugin.dll；但 NPUW 期望的文件
+  布局/偏移基准无法从二进制推断（python 的成功案例不能外推——它的 blob 本就带权重）。
+- **结论**：<5 s 的最后 ~4 s（转换 2.3 + 编译 2.1）需要拿到对应 OpenVINO 提交的 NPUW 源码，确认
+  weightless blob 的权重重定位契约（或改用权重内嵌导出 + 每图 1.3 GB 暂存副本的方案）。已列入下一轮。
+- 其它备选（记录）：dual 分支的 decode@ctx 图改惰性可省启动 ~1.5 s，但把 1.5 s 卡顿挪到 256-token
+  跨级点，且后台预热会与 NPU 设备预算（缺陷-7）冲突，暂不动。
