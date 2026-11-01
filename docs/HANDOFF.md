@@ -484,3 +484,16 @@
   （消灭 Omni 上的 env 需求）；②mtmd-cli 无 perf footer 且尾部截断的退出路径（三方向都在，
   与本回归无关）；③"top-1 分歧定性"升级为"分岐幅度定性"——文本/音频同量级，答案余量决定
   是否可见，原"f16 复利"结论成立并已量化。
+
+## 2026-11-01：level 图设备预算自动降级重试落地（消灭 Omni 的 env 需求）
+- 机制：decode level 图 `infer()` 抛 ZE_RESULT_ERROR_UNINITIALIZED 时（defect-7 族：设备预算装不下
+  prefill + level 图），置进程级 `g_decode_levels_disabled` 开关、清空全部 level 缓存/decoder、解锁
+  entry mutex 后递归重入一次——重入时 decode_level=0，走 full-ctx decode 图（decode-only 分支编译
+  ctx 图并**发布到 ctx-pair 缓存**而非 level 缓存，否则每步重编译）。
+- 两个实现坑（已记）：①entry mutex 非递归——重入前必须 `lock.unlock()`（unique_lock），否则
+  "resource deadlock would occur"；②decode-only 分支的发布目标按 decode_level==0 分流。
+- 实测：Omni-2B NPU 音频**无 env、全新缓存**自动触发降级（level 256 撞预算 → 重试）并输出正确
+  完整描述（"A high-pitched, pure"）；1.7B 文本不触发（levels 保持，14.4-14.8 t/s @c2048/c8192），
+  CPU accept-smoke 3/3。
+- NPU 音频已知可用配置简化为：`REQUANT_KQUANT=q4_sym128_all`（LLM 量化对齐参照；编码器已由
+  "a."-豁免自动保护）。mtmd-audio-c512.ps1 已同步更新。

@@ -23,6 +23,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <atomic>
 #include <openvino/core/any.hpp>
 #include <openvino/core/graph_util.hpp>
 #include <openvino/core/shape.hpp>
@@ -42,6 +43,12 @@
 #include <vector>
 
 namespace {
+// Runtime kill-switch for the decode level graphs, flipped automatically the first time a
+// level graph dies with ZE_RESULT_ERROR_UNINITIALIZED (the device budget cannot hold the
+// model's prefill + a level decode graph -- defect-7 family on the 2B omni model). The step
+// is retried once on the full-ctx decode graph; same effect as
+// GGML_OPENVINO_DISABLE_DECODE_LEVELS=1, discovered without the env.
+static std::atomic<bool> g_decode_levels_disabled{false};
 // For a KV cache input, return an ov::Tensor sized to n_kv (== attention_size
 // for that layer) instead of the fully-allocated ctx_per_seq. Pre-conditions:
 //   * non-static (CPU/GPU) backend, single sequence, seq_active_start == 0
@@ -1691,7 +1698,7 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         cache_hit = false;
     }
 
-    std::lock_guard<std::mutex> lock(*(entry->mutex));
+    std::unique_lock<std::mutex> lock(*(entry->mutex));
 
     // Static decode runs against one graph per discrete attention level (NPU graphs cannot trim
     // their span at runtime, and baking the whole context makes every step attend the full span
@@ -1699,7 +1706,7 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     // pair.
     int decode_level = 0;
     if (is_static && !no_kv_cache && !is_prefill && c_params.attention_size_raw > 0 &&
-        !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_DECODE_LEVELS")) {
+        !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_DECODE_LEVELS") && !g_decode_levels_disabled.load()) {
         decode_level = decode_attention_level(c_params.attention_size_raw, m_params.ctx_per_seq);
         c_params.attention_size = decode_level;
     }
@@ -2154,12 +2161,25 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
 
             if (cache_enabled) {
                 std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
-                r_ctx->infer_request_cache_decode_levels[key][decode_level] = infer_request;
-                // All levels share one parameter list (constants differ only in value).
-                r_ctx->ov_input_names_cache[key] = ov_input_names_level_local;
-                r_ctx->ov_output_names_cache[key] = ov_output_names_level_local;
+                if (decode_level > 0) {
+                    r_ctx->infer_request_cache_decode_levels[key][decode_level] = infer_request;
+                    // All levels share one parameter list (constants differ only in value).
+                    r_ctx->ov_input_names_cache[key] = ov_input_names_level_local;
+                    r_ctx->ov_output_names_cache[key] = ov_output_names_level_local;
+                } else {
+                    // Levels were disabled at runtime (device-budget fallback): this graph is
+                    // the full-ctx decode -- publish it as the ctx-pair decode, or every step
+                    // would recompile.
+                    r_ctx->infer_request_cache[key] = infer_request;
+                    r_ctx->ov_input_names_cache[key] = ov_input_names_level_local;
+                    r_ctx->ov_output_names_cache[key] = ov_output_names_level_local;
+                }
             }
-            entry->ptr_decode_levels[decode_level] = decoder_level;
+            if (decode_level > 0) {
+                entry->ptr_decode_levels[decode_level] = decoder_level;
+            } else {
+                entry->ptr = decoder_level;
+            }
             GGML_LOG_INFO("ggml-openvino: compiled decode graph for attention level %d\n", decode_level);
         } else {
             // Prefill-only: decode levels already exist from a decode-first pass.
@@ -2275,7 +2295,30 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         }
 
         ov_raw_infer_start = ggml_time_us();
-        infer_request->infer();
+        try {
+            infer_request->infer();
+        } catch (const std::exception & e) {
+            // Device budget: a freshly compiled level graph cannot coexist with the prefill on
+            // the device (defect-7 family; nondeterministic with device fragmentation). Evict
+            // every level graph, flip the process-wide kill-switch and retry this step on the
+            // full-ctx decode graph. One-shot: the retry re-enters with decode_level == 0.
+            if (decode_level > 0 && strstr(e.what(), "UNINITIALIZED") != nullptr) {
+                GGML_LOG_WARN("ggml-openvino: decode level %d graph hit the device budget "
+                              "(ZE_RESULT_ERROR_UNINITIALIZED); disabling decode levels and retrying "
+                              "this step on the full-ctx decode graph\n", decode_level);
+                g_decode_levels_disabled.store(true);
+                {
+                    std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
+                    r_ctx->infer_request_cache_decode_levels.clear();
+                    if (entry != nullptr) {
+                        entry->ptr_decode_levels.clear();
+                    }
+                }
+                lock.unlock();
+                return ov_graph_compute_static(cgraph, r_ctx);
+            }
+            throw;
+        }
         infer_end_time = ggml_time_us();
         ov_raw_infer_total = infer_end_time - ov_raw_infer_start;
 
