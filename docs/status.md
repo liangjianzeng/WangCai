@@ -20,7 +20,7 @@
 | **1.1** | **NPU 输出与 CPU 参照数值对齐** | ✅（2026-10-31） | 根因定案并修复：静态 decode 图 RoPE 的 cos/sin 头轴隐式广播在 NPUW 降级下错误 tile（[defect1-rootcause.md](defect1-rootcause.md) 终章）。修复后缓存 row0 四头 cos 0.997+、范数逐位一致 |
 | 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | ✅（2026-10-31） | 修复后复测：p220 续写 CPU-static 与 NPU **64 token 逐字节一致**（修复前同等判据即通过、修复中断、现已恢复）；三问验收 3/3；zh 指令生成的 NPU 文本 72 token 连贯无坍塌。注意：自由生成的 top-1 与 f32 参照在第 5 步起分歧（f16 噪声复利，cos 维持 0.5–0.9，无修复前的 0.25 平台期）——判据按"逐 token 一致"以续写路径为准 |
 | 1.3 | CI 里有验收测试 | ✅（2026-10-31） | `tools/accept-smoke.ps1`：三问贪心验收跑在 CPU 静态路径（覆盖 rope tile/rank align/set_rows 等设备无关翻译，requant 对齐 NPU 默认）；CI build job（windows）下载 Q4_K_M 并执行，缓存 1 GB 模型。NPU 专属闸门仍是本地 accept.ps1 |
-| 2.1 | NPU 解码快过 OpenVINO-CPU | 🟡 | **多跨度 decode 图组落地（2026-11-01 第二轮）：decode 14-15 t/s 与 ctx 无关**——c=8192 从 0.9 → 14.1 t/s（17×），c=2048 从 3.3 → 14.3（4.5×）。对 OpenVINO-CPU 参照 21.7–29.2 仍差一截：残差是 KV 状态每步 host↔device 往返（无 remote tensor）与 lm_head 11 ms，第三轮（stateful 化）规划中。根因定案与测量见缺陷 2 节 |
+| 2.1 | NPU 解码快过 OpenVINO-CPU | 🟡 | **多跨度 decode 图组落地（2026-11-01 第二轮）：decode 14-15 t/s 与 ctx 无关**——c=8192 从 0.9 → 14.1 t/s（17×），c=2048 从 3.3 → 14.3（4.5×）。对 OpenVINO-CPU 参照 21.7–29.2 仍差一截。后续杠杆已逐一探察收官（2026-11-01）：stateful 化证伪（7× 慢）、lm_head u4 化证伪（5× 慢，F16 524 MB @38 GB/s 即带宽界快路径）——残差为状态 I/O 与 attention 算子路径，decode 攻坚收官。根因定案与测量见缺陷 2 节 |
 | 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；`pp1024`：NPU 368 对 OV-CPU 626 / 原生 605；**8K prompt 实测 prefill 122.6 t/s** |
 | 2.2 | 热启动 < 5 s | ⬜ | 缓存目录有效，冷启动 36 s（-c 16384 为 61 s） |
 | 3.x | 模型线宽度（0.3 B–8 B、长上下文） | 🟡 | **长上下文打通：-c 8192（7K prompt 端到端）与 -c 16384（图级）在 NPU 通过**。Q8_0 被驱动主机内存预算阻塞（见缺陷 7） |
@@ -99,7 +99,7 @@ tools\compare-tensors.ps1 -A tmp\dumps\cpu -B tmp\dumps\npu
 lm_head 11 ms（根因③）。~~第三轮（stateful 化）~~：**已证伪（2026-11-01 探针）**——NPU 支持
 VariableState（状态跨 infer 设备侧累积），但每步成本 ≈5-6 ms/MB（0.18 GB/s），比参数绑定
 （8.4 MB 全步骤 6 ms，≈1.4 GB/s）慢 7 倍，路线反模式；参数绑定 + 级别裁剪即当前最优架构。
-下一个独立杠杆：lm_head 11 ms。探针存档 tools/npu-probes/，细节见 HANDOFF 2026-11-01 第三轮节。
+lm_head 杠杆亦已探察并证伪（2026-11-01）：NPU 上 lm_head（与 token_embd 共享，Q6_K）为 F16 常量 524 MB（历史规避 Q8_0_C 编译失败），13.7 ms/步近带宽界；改走与其余层同款的 u4（GGML_OPENVINO_REQUANT_EMBD_Q4，默认关）实测 13.0 → 2.5 t/s 慢 5×，精度无损但反模式。decode 性能攻坚收官，转里程碑 2.2 热启动。探针存档 tools/npu-probes/，细节见 HANDOFF 2026-11-01 第三轮节。
 
 <details><summary>第一轮解剖（2026-11-01，存档）</summary>
 

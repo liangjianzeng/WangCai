@@ -366,3 +366,20 @@
   级别裁剪大幅缩小，下一个独立杠杆是 lm_head（11 ms，[2048]×[128000] 单发 GEMV）。
 - 过程注意：**平铺 [1, N] 大形状的 elementwise 图会让 NPUW 编译爆炸**（0.5 MB 平铺 add 图编译
   数分钟、CPU 占满）——探针一律保持 4D 结构。
+
+## 2026-11-01：缺陷 2 lm_head 杠杆探察——u4 化证伪，F16 常量即当前快路径
+- 判定（IR 解析 + 代码路径）：LFM3 的 lm_head 与 token_embd 共享（GGUF 无 output.weight，
+  token_embd 为 Q6_K）。NPU 上被 `ggml_openvino_get_requant_type` 强制 **F16 常量（~524 MB）**
+  ——历史原因是 Q8_0_C cluster 布局在 NPUW 上 execute 崩（ZE_RESULT_ERROR_UNINITIALIZED），
+  注释以"vocab 每 token 只读一次"接受之。多级 decode 图落地后它成了最大单项：
+  **13.7 ms/步（38 GB/s，带宽界附近）**。CPU 静态路径则是 Q8_0_C（i8 262 MB）。
+- 实验（新增 `GGML_OPENVINO_REQUANT_EMBD_Q4=1`，token_embd → Q4_0_128，与其余层同款 u4；
+  已登记 extra_cfg allowlist）：NPU 实测 **13.0 → 2.5 t/s，慢 5 倍**——NPUW 压缩 MatMul
+  （GatherMatMulCompressed）对 [1,2048]×[2048,128000] 高瘦形状不划算；三问验收 3/3 精度无损
+  但性能反模式。**结论：u4 lm_head 证伪，F16 常量即当前快路径**；选项保留为默认关（零风险，
+  blob 缓存键已隔离）。
+- c512（level==ctx）decode 步现状（PROFILING=2，多级 build）：状态输入两 Parameter 合计
+  ~33.7 ms（level 256 时 KV≈全 ctx，裁剪无收益）+ attention Multiply 22.4 ms + lm_head 13.7 ms。
+  decode 15 t/s 下进一步提速的可行方向只剩：状态 I/O 的布局/搬运优化（非 stateful，已证伪）、
+  attention Multiply 的算子降级路径、或 llama.cpp 侧 vocab 裁剪（只算候选 token 的 logits，
+  涉及采样器改动，超出本轮）。**decode 攻坚就此收官，转 2.2 热启动。**

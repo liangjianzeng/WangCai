@@ -152,6 +152,10 @@ void ggml_openvino_device_config::init() {
         "GGML_OPENVINO_NATIVE_SOFTPLUS",
         "GGML_OPENVINO_DISABLE_REMOTE_OUTPUTS",
         "GGML_OPENVINO_REQUANT_KQUANT",
+        // 1 = requantize token_embd/output (the tied lm_head) to grouped u4 on the NPU too,
+        // instead of the default F16 constant (see ggml_openvino_get_requant_type): halves the
+        // per-step lm_head read (~524 MB f16 -> ~131 MB u4), at a top-1 accuracy cost to measure.
+        "GGML_OPENVINO_REQUANT_EMBD_Q4",
         "GGML_OPENVINO_DISABLE_KV_STATE_RELAYOUT",
         // Build the precise (but O(n_nodes)) graph cache key. Needed by op tests.
         "GGML_OPENVINO_FULL_GRAPH_KEY",
@@ -393,6 +397,13 @@ std::optional<ExtraQuantType> ggml_openvino_get_requant_type(const ggml_tensor *
         return std::nullopt;
     }
     if (strncmp(tensor->name, "token_embd.weight", 17) == 0) {
+        // GGML_OPENVINO_REQUANT_EMBD_Q4=1 opts the tied lm_head into the same grouped u4 layout
+        // every other weight uses on the NPU: the multi-level decode trim made the F16 constant
+        // the largest single decode cost (13.7 ms/step, ~524 MB at ~38 GB/s), and u4 reads
+        // ~131 MB instead. Accuracy trade is measured by the acceptance gate before enabling.
+        if (ggml_openvino_getenv_int("GGML_OPENVINO_REQUANT_EMBD_Q4")) {
+            return ExtraQuantType::Q4_0_128;
+        }
         // F16 on the NPU regardless of the source type: a Q8_0 checkpoint arrives with its
         // embedding table already in Q8_0, and the Q8_0_C cluster layout there makes the NPUW
         // graph fail at execute time (L0 pfnAppendGraphExecute, ZE_RESULT_ERROR_UNINITIALIZED)
