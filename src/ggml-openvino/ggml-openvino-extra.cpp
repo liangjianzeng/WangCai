@@ -462,6 +462,16 @@ std::optional<ExtraQuantType> ggml_openvino_get_requant_type(const ggml_tensor *
     // i.e. the plugin cannot take the grouped-Q4_K-with-zero-point layout, which is presumably why
     // upstream forces grouped 4 bit here at all.
     if (ggml_openvino_is_npu() && !rq) {
+        // The omni audio encoder ("a."-prefixed mmproj tensors) is requant-sensitive: its conv
+        // stacks lose cos 0.963 -> 0.9997 (projected embeddings vs the CPU static reference)
+        // under the group-128 regrouping, and the collapsed embeddings made the audio answer
+        // die right after "<think>" (2026-11-01 audio-regression round). Q4_0 is already the
+        // NPU-standard symmetric u4 layout, so native costs nothing. The LLM weights keep the
+        // group-128 regrouping: GatherMatmulCompressed is tuned for it, and native Q4_0 there
+        // cost the 1.7B decode ~40% (14.5 -> 8.5 t/s) plus a mid-generation failure.
+        if (tensor->type == GGML_TYPE_Q4_0 && strncmp(tensor->name, "a.", 2) == 0) {
+            return std::nullopt;
+        }
         // A group size larger than the row cannot be expressed. LFM3 carries attn_gate.weight
         // [2048, 16] -- half of one Q8_0 block -- and forcing it into group-128 repacking yields
         // a weight node whose scales the L0 driver rejects at AppendGraphExecute
