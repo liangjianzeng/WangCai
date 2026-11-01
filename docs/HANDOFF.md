@@ -449,3 +449,15 @@
 - 预期账目（即使全部打通）：CM 缓存净省 ≈2.6 s（转换 2.3 + 编译省差），热启动 8.9 → ~6.3 s；
   到 <5 s 还需解决首次设备图下载 1.1 s 与 NPUW blob import 的 ~1 s——需要 NPUW 深处（LLM
   compiled model 的 init schedule）或接受 6 s 量级作为 2.2 的阶段性目标。
+
+### 2.2 后续：CM 缓存 NPU 实测——机制性不可行，保持 opt-in 关闭（本轮终态）
+- 打通后发现：prefill 能 OPTIMIZE_SPEED 内嵌权重导出/导入（4.1 GB 缓存目录，import 0.3 s ✓），
+  但 **imported 模型的权重 bank 与后续编译的 decode 图不共享**——设备权重重复，执行劣化 10×
+  （decode 729 ms/token vs 正常 75 ms），踩缺陷-7 的设备预算。decode 图也不能 CM import：
+  shared bank 的 `read_and_add_tensor` 对重复 UID 直接 assert（NPUW import 无去重——GenAI 流程
+  每进程只 import 一个模型）。
+- 结论：**NPU 上不要设 GGML_OPENVINO_COMPILED_MODEL_CACHE_DIR**（默认未设，无影响）。CM 缓存
+  代码保留（CPU/GPU 路径可能受益），<5 s 的剩余 ~4 s 需等 NPUW 支持 bank 感知的 blob import
+  （权重句柄 provider / bank 去重），已记录于此。
+- 热启动终态：**默认路径 8.9-9.4 s**（repack 并行化贡献 ~14 s）。无回归：NPU 三问 3/3、
+  CPU accept-smoke 3/3。
