@@ -144,7 +144,7 @@ src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 
 | `GGML_OPENVINO_DEVICE=NPU` | 选 NPU 而不是 OpenVINO-CPU |
 | `GGML_OPENVINO_CACHE_DIR` | 持久化 36 s 的图编译缓存；**每种配置用独立目录**，否则过期编译图会无声胜出 |
 | `-c` ≤ 8192 实测通过 | 多跨度 decode 图组落地后 decode 速度与 ctx 无关（c=8192 实测 14.1 t/s）；更高 ctx 未验证 |
-| 4B 模型（NPU）：`GGML_OPENVINO_PREFILL_CHUNK_SIZE=128` | 4B 权重（requant 后 ~2.3 GB）默认配置在执行期撞驱动主机内存预算；削 prefill 图后可跑（Spark-X2.6-4B 热缓存稳态 decode ~6 t/s；4B decode 上限 ≈ 7 t/s，权重带宽决定） |
+| 4B 模型（NPU）：`GGML_OPENVINO_PREFILL_CHUNK_SIZE=64`（短 prompt）/ `128`（长 prompt） | 4B 权重（requant 后 ~2.3 GB）默认 chunk 256 在执行期撞驱动主机内存预算；削 prefill 图后可跑（Spark-X2.6-4B 热缓存稳态 decode ~6 t/s，上限 ≈ 7 t/s 由权重带宽决定；短 prompt 首 token 延迟 chunk64 比 128 好 ~17%，32 以下固定开销反噬） |
 
 `llama-server.exe` 也一并构建，可用同样的环境变量提供 OpenAI 兼容 HTTP 服务；`-c`/-fa/-np 约束相同。
 完整参数说明、首次运行的预期日志与三个最容易踩的坑见

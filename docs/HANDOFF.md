@@ -654,3 +654,9 @@ PERFTRACE 插桩（WARMTRACE 门控，decode 步 bind/outbind/infer 分解）+ �
   唯一未试的权重侧杠杆。
 - **结论：4B 稠密 Q4_K_M 在 NPU 3720 上的 decode 上限 ≈ 7 t/s（带宽决定），已达成 ~85%。**
   再往上只剩上游依赖（NPUW bank-aware blob import、更高带宽的驱动/硬件）。
+
+### prefill chunk 扫描（4B 首 token 延迟）
+chunk 64/128/32 实测（Spark-4B c512，13 token prompt，冷启动含编译）：prefill 20.0 / 17.1 /
+15.5 t/s，端到端 51 / 58 / ~60 s。chunk64 短 prompt 最优；32 以下每 chunk 固定开销反噬。
+EMBD_Q4（权重侧唯一未试杠杆）经复查对 decode 无效——decode 只读 output.weight（Q8_0_C），
+token_embd 每步只读一行；且 lm_head u4 化在 1.7B 已证伪（同一下降路径），不复测。
