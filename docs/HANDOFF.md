@@ -512,3 +512,15 @@
 - mtmd-cli"退出路径"项核销：修复后 NPU 音频输出与 native 参照含停止点逐字一致（EOS 是模型行为），
   perf footer 本就是 mtmd-cli（experimental CLI）不打印的——非缺陷。
 - 测试资产：D:\llm\npu\test_image.png（合成图，红圆+绿条）；ctrl/vis_native.ps1、vis_ov.ps1。
+
+### 视觉缺陷精确定位（cgraph dump 证据）
+- cgraph（vis_cg/cgraph_ov.txt）全程 784 token（448/16 patch ✓），ROPE 节点 Q[64,16,784]/
+  K[64,8,784] 正常。3136 只在 OV 翻译产物里出现：失败 Multiply 的 Concat 输入 [1,3136,1,64]
+  = **4×784——视觉 rope 的 4 段式位置表（每 patch 4 行，2D 轴向 rope 的 4 个分段）被当成
+  784×4 个 token 直接喂进 Multiply**，而 native 动态翻译会对分段做切片。
+- 修复方向：静态 rope lowering 支持 mrope 分段（读 rope src 的分段配置，按段切片 cos/sin 再
+  逐段乘回），或视觉图走动态翻译（编码器图非 decode，动态路径本就支持——查它为何被路由进
+  静态：编码器图 is_static 判定 + FORCE_STATIC 强制；FORCE_STATIC 下编码器图也可考虑豁免走
+  动态，先验证数值再谈性能）。
+- 快速验证建议：FORCE_STATIC=0 + 设备 CPU（动态路径）跑视觉——若通过则"豁免编码器图走动态"
+  即为最小修复；NPU 上编码器图动态执行是否可行另测（编码器非 decode，设备预算压力小）。
