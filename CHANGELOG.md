@@ -10,6 +10,33 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 2026-11-01 在硬件上验证的三批改动。
 
+### 新增 —— 跨模型验证（副靶 Spark-X2.6-4B + Qwen3-4B 复测）
+
+- **副靶立项并通过**：讯飞 Spark-X2.6-4B（标准稠密 Transformer，与 LFM3 混合架构不同系）端到端跑通
+  全部路径：native ✓（151.9/19.9 t/s）、OV-CPU 动态 ✓（77.4/8.2）、OV-CPU 静态三问 3/3、
+  **NPU 三问 3/3**（chunk128 + 禁 levels，decode 2.4 t/s）。
+- **Qwen3-4B NPU 复测翻案**：2026-10-31 记录的"从第一步单 token 塌缩（GGGG…）"在当前引擎上
+  不再复现——副靶配置（chunk128 + 禁 levels + c512）下输出连贯且**三问验收 3/3**。两个外部模型
+  家族全部通过 NPU 精度验收，引擎翻译层跨模型成立的第一个实证。
+- NPU 4B 预算实测：默认配置（chunk256 + levels）在图编译完成后**执行期**撞
+  `ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY`（系统 RAM 空闲 28.8 GB，驱动侧预算）；levels 开启反而更慢
+  （level 图与权重 bank 竞争预算）。副靶配置脚本 `tools/spark-npu-accept.ps1`。
+
+### 修复 —— u4 权重宿主视图 + 精确 f16 零点（横切所有模型）
+
+- **u4 无法包宿主内存**：这份 OV 构建里 `ov::Tensor(u4, shape, ptr)` 与
+  `ov::Constant(u4, shape, raw_ptr)` 都抛 `is_pointer_representable`（i4/u8 通过）——所有非对称
+  4-bit 路径从未可用：native Q4_K/Q4_1 的 OV-CPU 路径（Q4_K_M 是最常见 checkpoint 格式）与
+  `REQUANT_KQUANT=q4_asym64*`。三层修复：`wrap_or_detach` 内部分配+回写槽位、
+  `make_int4_weights` unsigned 分支改由 Tensor 拷贝构造 Constant、`count_bad_f16` 只校验 f16
+  元素类型的 scales/zp（u4 zp 上 `data<f16>()` 本身就是抛出点）。修复后 q4_asym64_all 实测
+  151.6/28.9 t/s。
+- **native 非对称提取统一精确 f16 零点**：整数 zp 的 `round(min/scale)` 舍入让 LFM3 静态图思考
+  退化成 "\n" 死循环（动态路径侥幸正确；MoE 专家因同一误差早已改 f16）。推广到全部 native 非对称
+  提取（Q4_K/Q4_1/Q5_1/Q5_K），`extract_quantized_weights`/`process_weight_tensor`/
+  `get_extracted_layout` 三处同步。修复后 LFM3 与 Spark 的 OV-CPU 静态三问**无 env** 全 3/3，
+  `accept-smoke.ps1` 的 requant env 已摘除。
+
 ### 新增 —— 引擎（decode 性能主攻）
 
 - **多跨度离散 decode 图组（缺陷 2 根因①的修复）：NPU decode 14–15 t/s 且与上下文长度无关。**

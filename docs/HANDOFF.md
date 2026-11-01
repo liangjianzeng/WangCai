@@ -540,3 +540,58 @@
   "positions" 的方式不同（native/OV-CPU 动态均正确），说明修复点在静态绑定/下钻：
   按 rope sections（op_params 内）每 token 取 4 坐标展开，与文本 inp_pos 的绑定对齐。
 - 状态留档：cgraph dump 证据在 ctrl/cgraph_ov.txt（临时，下轮开工时重新生成即可）。
+
+## 2026-11-01：副靶立项 Spark-X2.6-4B——跨模型验证 + u4 权重宿主视图修复
+
+**目的**：主靶一直是 LFM3 系（混合架构），引擎的算子翻译层是否只对 LFM3 成立需要一副靶回答。
+选定讯飞 **Spark-X2.6-4B**（bartowski Q4_K_M GGUF，2.5 GB，标准稠密 Transformer，上游 llama.cpp
+已原生支持，vendored abb76ab 直接加载无需改模型代码）。
+
+### 结果矩阵（同机 275HX / OV 2026.4.1）
+
+| 路径 | LFM3-1.7B | Spark-X2.6-4B |
+|---|---|---|
+| native CPU（`-dev none`，参照） | ✓ | ✓ 151.9/19.9 t/s |
+| OV-CPU 动态 | ✓ 96.3/23.1 t/s（裸跑，无 requant env） | ✓ 77.4/8.2 t/s（裸跑） |
+| OV-CPU 静态（三问验收） | ✓ 3/3（无 env） | ✓ 3/3 |
+| NPU 静态 | ✓ 14.7 t/s（c1024） | ✓ 3/3（2.4 t/s，chunk128+禁 levels） |
+
+**跨模型结论：引擎翻译层不是 LFM3 专用**——另一家族、另一架构、另一模板（含 thinking）的 4B
+模型在同一套 ggml-openvino 路径上端到端跑通并通过全部精度验收。
+
+### 修复一：u4 无法包宿主内存（阻塞所有非对称 4-bit 路径）
+这份 OV 构建里 `ov::Tensor(u4, shape, host_ptr)` 与 `ov::Constant(u4, shape, raw_ptr)` 都抛
+`is_pointer_representable`（u4/i8 通过）——**所有非对称 4-bit 权重路径从未可用**：native
+Q4_K/Q4_1（Q4_K_M 最常见格式的 OV-CPU 路径，README 的 OV-CPU 数字当年必然带了 requant env，
+accept-smoke.ps1 里的 env 注释即为佐证）和 `REQUANT_KQUANT=q4_asym64*`。三层修复：
+1. `process_weight_tensor` 的 `wrap_or_detach`：u4 槽位改为内部分配 + 提取后回写（槽位契约不变）；
+2. `make_int4_weights` unsigned 分支：`Constant` 从 ov::Tensor 拷贝构造，不再裸指针共享；
+3. `count_bad_f16` 校验只对 f16 元素类型的 scales/zp 做（u4 zp 上 `data<f16>()` 本身就是那条断言
+   的抛出点——detach 打通前两关后才暴露）。
+
+### 修复二：native 非对称提取统一精确 f16 零点
+修完 1 之后 native Q4_K 首次可用，随即暴露：整数 zp 的 `round(min/scale)` 舍入让 LFM3 静态图
+思考退化成 "\n" 死循环（动态路径侥幸正确）。MoE 专家早因同一误差改用精确 f16 零点（bias 形态，
+仍可融合 GatherMatmulCompressed）；现在推广到全部 native 非对称提取（Q4_K/Q4_1/Q5_1/Q5_K），
+`extract_quantized_weights` / `process_weight_tensor` / `get_extracted_layout` 三处同步。修复后
+LFM3 与 Spark 的 OV-CPU 静态三问无 env 全 3/3，`accept-smoke.ps1` 的 requant env 已摘除。
+
+### NPU 4B 预算实测
+- 4B（requant 后 ~2.3 GB 权重）默认配置（chunk256 + decode levels）在图编译完成后**执行期**撞
+  `ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY`（系统 RAM 空闲 28.8 GB，是驱动侧预算，非系统内存）。
+- `GGML_OPENVINO_PREFILL_CHUNK_SIZE=128` + `GGML_OPENVINO_DISABLE_DECODE_LEVELS=1` + c512 可跑：
+  prefill 16.8 t/s（chunk 口径失真偏保守）、decode 2.4 t/s。**开 levels 反而更慢**（1.5 t/s）——
+  level 图与权重 bank 竞争预算。副靶配置脚本：tools/spark-npu-accept.ps1。
+- 4B 是当前驱动/驱动配置下的实际上限候选；2.3 GB 权重 + 单图编译的预算结构见
+  npu-internals.md（未再深挖，留给上游 NPUW bank-aware import）。
+
+### 遗留
+- NPU 4B decode 2.4 t/s 未优化（lm_head F16 常量在 4B 上更贵——152k×4096 词表；u4 化已被
+  里程碑 2.2 轮证伪，但那是 1.7B 的结论，4B 值得复测一次）。
+- 视觉 4 坐标 positions 静态绑定修复仍是下轮主任务（本节未动）。
+
+### 补充（同轮）：Qwen3-4B NPU 复测翻案
+2026-10-31 记录的 Qwen3-4B NPU"从第一步单 token 塌缩（GGGG…）"在当前引擎上不再复现：副靶配置
+（chunk128 + 禁 levels + c512）下输出连贯，三问验收 **3/3**（decode 2.3 t/s）。两个外部模型家族
+（Spark-X2.6-4B、Qwen3-4B）全部通过 NPU 精度验收。当时塌缩的根因未单独定案（其间落地了 KV 环
+修复、level 自动降级、u4/f16-zp 修复等多个改动），按复测证据翻案。

@@ -65,6 +65,7 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | Prefill 追平 CPU | 🟡 已达参照的 73%，仍在找余量 |
 | Decode 追平 CPU | 🟡 **多跨度 decode 图组落地（2026-11-01）：14–15 t/s 且与 ctx 无关**（c=8192 从 0.9 t/s 提升 17×），距 OV-CPU 参照 21.7–29.2 还差 ~1.5–2×；后续杠杆已探察定案（stateful 7× 慢、lm_head u4 5× 慢、CM 缓存与权重 bank 冲突）——decode 攻坚收官 |
 | LFM3 全模态（音频 / 视觉输入） | 🟡 **音频输入 NPU 端到端 + 三层因果链闭合（2026-11-01）**：编码器 requant 精度修复（"a."-豁免，嵌入 cos 0.963→0.9997）、量化对齐后与 native Q8_0 参照逐字一致、level 图撞设备预算自动降级重试（零 env）；视觉输入 native ✓ / OV-CPU 动态 ✓，静态翻译与 NPU 的 4 段式视觉 rope 待修 |
+| **副靶：跨模型验证（Spark-X2.6-4B + Qwen3-4B）** | ✅ **两个外部模型家族端到端跑通（2026-11-01）**：讯飞 Spark-X2.6-4B 与 Qwen3-4B（均为标准稠密 Transformer，与 LFM3 混合架构不同系）在 NPU 三问验收全 3/3；副靶顺带修好两个横切缺陷——u4 权重无法包宿主内存（曾阻塞所有非对称 4-bit 路径）与整数零点舍入（曾让静态图精度退化），Q4_K_M checkpoint 现在 OV-CPU 开箱即用。NPU 跑 4B 需 `PREFILL_CHUNK_SIZE=128`+`DISABLE_DECODE_LEVELS=1`（驱动预算，decode 2.3–2.4 t/s） |
 | **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
 | **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
 
@@ -142,6 +143,7 @@ src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 
 | `GGML_OPENVINO_DEVICE=NPU` | 选 NPU 而不是 OpenVINO-CPU |
 | `GGML_OPENVINO_CACHE_DIR` | 持久化 36 s 的图编译缓存；**每种配置用独立目录**，否则过期编译图会无声胜出 |
 | `-c` ≤ 8192 实测通过 | 多跨度 decode 图组落地后 decode 速度与 ctx 无关（c=8192 实测 14.1 t/s）；更高 ctx 未验证 |
+| 4B 模型（NPU）：`GGML_OPENVINO_PREFILL_CHUNK_SIZE=128` + `GGML_OPENVINO_DISABLE_DECODE_LEVELS=1` | 4B 权重（requant 后 ~2.3 GB）默认配置在执行期撞驱动主机内存预算；削图后可跑（Spark-X2.6-4B 实测 decode 2.4 t/s） |
 
 `llama-server.exe` 也一并构建，可用同样的环境变量提供 OpenAI 兼容 HTTP 服务；`-c`/-fa/-np 约束相同。
 完整参数说明、首次运行的预期日志与三个最容易踩的坑见

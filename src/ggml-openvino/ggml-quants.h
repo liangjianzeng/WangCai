@@ -39,6 +39,10 @@ struct OvWeight {
     ov::Tensor weights;
     ov::Tensor scales;
     ov::Tensor zp;
+    // Slot back-pointers for detached u4 buffers (u4 cannot wrap host memory in this OpenVINO
+    // build -- see wrap_or_detach in process_weight_tensor); null when the slot is wrapped in place.
+    uint8_t * detached_weights_slot = nullptr;
+    uint8_t * detached_zp_slot = nullptr;
 
     bool is_quantized() const { return layout.scales_size > 0; }
 };

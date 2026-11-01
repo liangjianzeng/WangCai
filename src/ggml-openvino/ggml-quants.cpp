@@ -681,9 +681,15 @@ ov::Output<ov::Node> make_int4_weights(ov::Tensor & weight,
         result = mul;
     } else {
         // Unsigned path
-        auto weights_node = std::make_shared<ov::op::v0::Constant>(ov::element::u4, packed_shape,
-                                                                   static_cast<uint8_t *>(weight.data()), nullptr);
-        weights_node->get_rt_info()["__gguf_tensor_holder"] = weight;
+        // ov::Constant(element_type, shape, raw_ptr) runs the same
+        // is_pointer_representable check as ov::Tensor(element_type, shape, ptr), and u4
+        // fails it in this OpenVINO build (i4/u8 pass) -- so build the u4 constant from an
+        // ov::Tensor (which copies the packed bytes) instead of sharing host memory. The
+        // copy is small relative to the weights and the __gguf_tensor_holder lifetime trick
+        // is not needed for a copying constant.
+        ov::Tensor weight_u4(ov::element::u4, packed_shape);
+        memcpy(weight_u4.data(), weight.data(), weight_u4.get_byte_size());
+        auto weights_node = std::make_shared<ov::op::v0::Constant>(weight_u4);
         auto weights_f16 = std::make_shared<ov::op::v0::Convert>(weights_node, ov::element::f16);
 
         if (use_bias && zp.get_size() > 0) {
@@ -1068,8 +1074,15 @@ std::shared_ptr<ov::Node> extract_quantized_weights(const ggml_tensor * tensor,
     // (see make_int8_weights/make_int4_weights) rather than the rounded integer zero point --
     // round(min/scale) error is what corrupts Q4_K/Q5_1 experts, and the f16-zp form still fuses
     // into GatherMatmulCompressed since it stays a Subtract, not an Add.
+    // 2026-11-01: native asymmetric extraction (Q4_K/Q4_1/Q5_1/Q5_K, the plain Q4_K_M checkpoint
+    // path, unlocked on the CPU device by the u4 host-view fix) uses the exact f16 zero point
+    // everywhere now, not just for experts: with the rounded integer zero point the static CPU
+    // graph degenerated LFM3-1.7B's thinking into a "\n" loop, while the same weights with the
+    // exact f16 zero point (and the native CPU reference) answer correctly.
     const bool for_gather_matmul = tensor->ne[2] > 1;
-    use_bias = use_bias || for_gather_matmul;
+    const bool native_asym = (tensor->type == GGML_TYPE_Q4_1 || tensor->type == GGML_TYPE_Q4_K ||
+                              tensor->type == GGML_TYPE_Q5_1 || tensor->type == GGML_TYPE_Q5_K);
+    use_bias = use_bias || for_gather_matmul || native_asym;
 
     // Extract quantized data
     switch (tensor->type) {
@@ -1120,8 +1133,13 @@ std::shared_ptr<ov::Node> extract_quantized_weights(const ggml_tensor * tensor,
             return bad;
         };
         // operator bool, not get_size(): see the same comment in requantize_to_buffers.
-        const size_t bad_scales = scales ? count_bad_f16(scales) : 0;
-        const size_t bad_zp = zp ? count_bad_f16(zp) : 0;
+        // Only f16-backed buffers can be validated here: the packed-u4 zero points (asymmetric
+        // native Q4_K/Q4_1) have no f16 view -- data<f16>() on them throws the
+        // is_pointer_representable assert -- and mxfp4 scales are e8m0 bytes.
+        const bool scales_f16 = scales && scales.get_element_type() == ov::element::f16;
+        const bool zp_f16 = zp && zp.get_element_type() == ov::element::f16;
+        const size_t bad_scales = scales_f16 ? count_bad_f16(scales) : 0;
+        const size_t bad_zp = zp_f16 ? count_bad_f16(zp) : 0;
         if (bad_scales || bad_zp) {
             GGML_LOG_ERROR("%s: tensor '%s' (%s): %zu bad scales, %zu bad zero points -- the "
                            "driver will likely reject this graph at execute time\n",
@@ -1350,8 +1368,12 @@ std::shared_ptr<ov::Node> requantize_to_buffers(const ggml_tensor * tensor,
         // operator bool, not get_size(): for symmetric requant targets (Q4_0_128 etc.) zp is
         // intentionally default-constructed, and get_size() on it throws "Tensor was not
         // initialized" -- which made every weight fail to process on the NPU path.
-        const size_t bad_scales = scales ? count_bad_f16(scales) : 0;
-        const size_t bad_zp = zp ? count_bad_f16(zp) : 0;
+        // Only f16-backed buffers can be validated: packed-u4 zero points (q4_asym64 etc.)
+        // have no f16 view -- data<f16>() on them throws is_pointer_representable.
+        const bool scales_f16 = scales && scales.get_element_type() == ov::element::f16;
+        const bool zp_f16 = zp && zp.get_element_type() == ov::element::f16;
+        const size_t bad_scales = scales_f16 ? count_bad_f16(scales) : 0;
+        const size_t bad_zp = zp_f16 ? count_bad_f16(zp) : 0;
         if (bad_scales || bad_zp) {
             GGML_LOG_ERROR("%s: tensor '%s' (%s): %zu bad scales, %zu bad zero points -- the "
                            "driver will likely reject this graph at execute time\n",
@@ -1422,13 +1444,18 @@ OvWeight process_weight_tensor(const ggml_tensor * tensor, const void * data, vo
         OPENVINO_THROW("Unsupported quantized type: ", ggml_type_name(tensor->type));
     }
 
-    // 3D MoE expert weights (for_gather_matmul) always use the exact f16 zero-point path (see
-    // extract_quantized_weights) -- must be kept in sync with the "use_bias || for_gather_matmul"
-    // check in ggml_openvino_get_extracted_layout, which sizes/offsets the zp slot accordingly.
-    // Requantized tensors (layout.is_requant) are handled by requantize_to_buffers instead, whose
-    // zp sizing/type is unaffected by for_gather_matmul, so they are excluded here.
+    // Exact f16 zero-point path (see extract_quantized_weights) now covers all non-requant
+    // asymmetric extraction (MoE experts always, native Q4_K/Q4_1/Q5_1/Q5_K since the u4
+    // host-view fix) -- must be kept in sync with the zp sizing in
+    // ggml_openvino_get_extracted_layout, which sizes/offsets the zp slot accordingly.
+    // Requantized tensors (layout.is_requant) are handled by requantize_to_buffers instead,
+    // whose zp sizing/type is unaffected by for_gather_matmul, so they are excluded here.
     const bool for_gather_matmul = tensor->ne[2] > 1;
-    const bool zp_is_f16 = !layout.is_requant && (use_bias || for_gather_matmul);
+    // Must match extract_quantized_weights: native asymmetric extraction (Q4_K/Q4_1/Q5_1/Q5_K)
+    // writes an exact f16 zero point, everything else keeps the packed integer form.
+    const bool native_asym = (tensor->type == GGML_TYPE_Q4_1 || tensor->type == GGML_TYPE_Q4_K ||
+                              tensor->type == GGML_TYPE_Q5_1 || tensor->type == GGML_TYPE_Q5_K);
+    const bool zp_is_f16 = !layout.is_requant && (use_bias || for_gather_matmul || native_asym);
 
     const bool is_3d_mxfp4_moe = tensor->type == GGML_TYPE_MXFP4 && (tensor->ne[2] > 1 || tensor->ne[3] > 1);
     if (is_3d_mxfp4_moe) {
@@ -1510,10 +1537,31 @@ OvWeight process_weight_tensor(const ggml_tensor * tensor, const void * data, vo
 
     if (output_base_ptr) {
         uint8_t * buf_base = static_cast<uint8_t *>(output_base_ptr);
-        result.weights = ov::Tensor(weight_type, node_shape, buf_base + layout.weights_offset);
+        // Sub-byte UNSIGNED element types cannot wrap host memory in this OpenVINO build:
+        // ov::Tensor(u4, shape, ptr) throws "element type u4, is not representable as pointer
+        // to f16" (make_tensor.cpp is_pointer_representable), while i4/u8 over the same memory
+        // are accepted. That broke every asymmetric u4 weight path -- native Q4_K extraction on
+        // the CPU device (the most common checkpoint format) and GGML_OPENVINO_REQUANT_KQUANT
+        // q4_asym64* on any device. Detach those buffers: allocate internally, let the
+        // extraction/requant below write into the copy, then copy back into the buffer slot
+        // after it finishes so the slot contract (blob export, fingerprinting) still holds.
+        auto wrap_or_detach = [](ov::element::Type type, const ov::Shape & shape,
+                                 uint8_t * slot) -> ov::Tensor {
+            if (type.bitwidth() == 4 && !type.is_signed() && slot != nullptr) {
+                return ov::Tensor(type, shape);
+            }
+            return ov::Tensor(type, shape, slot);
+        };
+        result.weights = wrap_or_detach(weight_type, node_shape, buf_base + layout.weights_offset);
+        if (result.weights.data() != static_cast<void *>(buf_base + layout.weights_offset)) {
+            result.detached_weights_slot = buf_base + layout.weights_offset;
+        }
         result.scales = ov::Tensor(scale_type, scale_shape, buf_base + layout.scales_offset);
         if (!layout.is_symmetric) {
-            result.zp = ov::Tensor(zp_type, scale_shape, buf_base + layout.zp_offset);
+            result.zp = wrap_or_detach(zp_type, scale_shape, buf_base + layout.zp_offset);
+            if (result.zp.data() != static_cast<void *>(buf_base + layout.zp_offset)) {
+                result.detached_zp_slot = buf_base + layout.zp_offset;
+            }
         }
         // else: result.zp remains default-constructed (empty) for symmetric
     } else {
@@ -1542,6 +1590,15 @@ OvWeight process_weight_tensor(const ggml_tensor * tensor, const void * data, vo
     } else {
         result.weight_node =
             extract_quantized_weights(tensor, data, result.weights, result.scales, result.zp, use_bias);
+    }
+
+    // Detached u4 buffers were written by the extraction above; copy them back into their
+    // buffer slots (see wrap_or_detach) so the slot contents match what the weight node reads.
+    if (result.detached_weights_slot != nullptr) {
+        memcpy(result.detached_weights_slot, result.weights.data(), result.weights.get_byte_size());
+    }
+    if (result.detached_zp_slot != nullptr) {
+        memcpy(result.detached_zp_slot, result.zp.data(), result.zp.get_byte_size());
     }
 
     return result;

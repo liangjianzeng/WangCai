@@ -28,7 +28,7 @@ $env:GGML_OPENVINO_CACHE_DIR = $tmp
 # K-quants (Q4_K_M) need the requant strategy the NPU path applies by default: without it,
 # the u4-compressed weights fail to copy on the CPU plugin ("element type u4 is not
 # representable as pointer to f16") and 136 ffn weights load as garbage.
-$env:GGML_OPENVINO_REQUANT_KQUANT = 'q4_sym128_all'
+# (removed 2026-11-01) u4 weights now import natively on the CPU plugin -- see the u4 wrap_or_detach fix
 # Runtime DLLs: the exe's directory first, then any extra lib dirs (the OpenVINO pip
 # package's libs dir on CI).
 $exeDir = Split-Path -Parent $Exe

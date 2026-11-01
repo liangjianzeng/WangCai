@@ -254,3 +254,23 @@ llama-server 把可用内存吃掉后，**0.98 GB 的 Omni-Q4_0 在 `-c 4096` �
    "自信且错误"结论的方法。
 3. **证明设备。** `--list-devices` 加上一次转储比对——两台设备不可能逐位相同，而一次吞吐长得像 CPU 的
    "NPU 运行"，其实是跑在 CPU 上。
+
+### 6. 副靶跨模型验证——Spark-X2.6-4B + Qwen3-4B 复测（2026-11-01）
+
+两个与 LFM3 无关的外部模型家族（讯飞 Spark-X2.6-4B 稠密 Transformer、Qwen3-4B 复测）：
+
+| 模型 | native / OV-CPU 动态 | OV-CPU 静态（三问） | NPU |
+|---|---|---|---|
+| `Spark-X2.6-4B-Q4_K_M`，`-c 512` | 全 ✓（77.4/8.2 t/s，裸跑） | **3/3（无 env）** | **3/3**（chunk128+禁 levels，decode 2.4 t/s） |
+| `Qwen3-4B-Q4_K_M`，`-c 512`（复测） | ✓ | — | **3/3**（同配置，decode 2.3 t/s；2026-10-31 的单 token 塌缩不再复现） |
+| `LFM3-1.7B-Q4_K_M`（对照重验） | ✓ 96.3/23.1 t/s | **3/3（无 env）** | ✓ 14.7 t/s 无回归 |
+
+本轮副靶带来两个横切修复（影响所有模型，不止副靶）：
+1. **u4 宿主视图修复**：这份 OV 构建 `ov::Tensor(u4, shape, ptr)` 抛 `is_pointer_representable`，
+   所有非对称 4-bit 路径（native Q4_K 的 OV-CPU、q4_asym64 requant）此前不可用；修复后
+   Q4_K_M 裸跑开箱即用，accept-smoke.ps1 已摘 requant env。
+2. **native 非对称提取统一精确 f16 零点**：整数 zp 舍入让 LFM3 静态图思考退化（MoE 专家同因
+   早已改 f16），推广到全模型后静态与 native 参照对齐。
+
+NPU 4B 预算：默认配置执行期 `OUT_OF_HOST_MEMORY`（驱动侧）；chunk128+禁 levels 可跑。
+配置与数字明细见 HANDOFF 2026-11-01 副靶节；脚本 tools/spark-npu-accept.ps1。

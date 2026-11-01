@@ -701,10 +701,13 @@ ggml_openvino_extracted_layout ggml_openvino_get_extracted_layout(const ggml_ten
     // block instead of a packed u4/u8 integer zero point.
     if (layout.is_symmetric) {
         layout.zp_size = 0;
-    } else if (use_bias || for_gather_matmul) {
-        layout.zp_size = n_blocks * sizeof(uint16_t);
     } else {
-        layout.zp_size = layout.is_u4 ? ((n_blocks + 1) / 2) : n_blocks;
+        // Exact f16 zero point for every non-requant asymmetric extraction: MoE experts always
+        // did (round(min/scale) error), and since the u4 host-view fix unlocked native Q4_K on
+        // the CPU device the same reasoning applies model-wide (integer-zp static graphs made
+        // LFM3-1.7B degenerate). Must match zp_is_f16 in process_weight_tensor and the
+        // use_bias decision in extract_quantized_weights.
+        layout.zp_size = n_blocks * sizeof(uint16_t);
     }
 
     // Layout in buffer: [weights | scales | zp] with alignment
