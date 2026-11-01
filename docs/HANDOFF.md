@@ -532,3 +532,11 @@
   对 4 段位置表同样不兼容。NPU 视觉的两条路线：①静态 rope lowering 支持 mrope 分段（与 CPU 静态
   同修）；②NPUW 侧配置/变换规避（NPUW_DQ/FOLD 类开关逐个试）。均列下轮。
 - 里程碑 4.x 现状：音频 ✓（NPU/CPU），视觉 native ✓ / OV-CPU 动态 ✓ / 静态与 NPU 待修。
+
+### 视觉 rope 最终证据：positions 叶子 [3136] 与 784 patch 的静态绑定错位
+- cgraph：ROPE src[1] = `positions` [3136,1,1,1]，标记 **CPU 后端叶子**——视觉 2D 轴向 rope 的
+  4 坐标/patch 位置表（784 patch × 4）。静态绑定路径把它当 3136 个 token 喂进 rope 的
+  theta 计算（cos_theta reshape [1,3136,1,64]），与 data [1,784,16,64] 失配。动态路径绑定
+  "positions" 的方式不同（native/OV-CPU 动态均正确），说明修复点在静态绑定/下钻：
+  按 rope sections（op_params 内）每 token 取 4 坐标展开，与文本 inp_pos 的绑定对齐。
+- 状态留档：cgraph dump 证据在 ctrl/cgraph_ov.txt（临时，下轮开工时重新生成即可）。
