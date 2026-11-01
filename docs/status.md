@@ -20,7 +20,7 @@
 | **1.1** | **NPU 输出与 CPU 参照数值对齐** | ✅（2026-10-31） | 根因定案并修复：静态 decode 图 RoPE 的 cos/sin 头轴隐式广播在 NPUW 降级下错误 tile（[defect1-rootcause.md](defect1-rootcause.md) 终章）。修复后缓存 row0 四头 cos 0.997+、范数逐位一致 |
 | 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | ✅（2026-10-31） | 修复后复测：p220 续写 CPU-static 与 NPU **64 token 逐字节一致**（修复前同等判据即通过、修复中断、现已恢复）；三问验收 3/3；zh 指令生成的 NPU 文本 72 token 连贯无坍塌。注意：自由生成的 top-1 与 f32 参照在第 5 步起分歧（f16 噪声复利，cos 维持 0.5–0.9，无修复前的 0.25 平台期）——判据按"逐 token 一致"以续写路径为准 |
 | 1.3 | CI 里有验收测试 | ✅（2026-10-31） | `tools/accept-smoke.ps1`：三问贪心验收跑在 CPU 静态路径（覆盖 rope tile/rank align/set_rows 等设备无关翻译，requant 对齐 NPU 默认）；CI build job（windows）下载 Q4_K_M 并执行，缓存 1 GB 模型。NPU 专属闸门仍是本地 accept.ps1 |
-| 2.1 | NPU 解码快过 OpenVINO-CPU | ⬜ | `llama-cli` 解码 8.3–8.7 t/s，对比 21.7–29.2（CPU）/ 54.1（原生）。`llama-bench tg32 @ -p 1024`：NPU 15.3 对 OV-CPU 30.5。**ctx 线性代价实测：-c 8192 下 decode 0.9 t/s**（KV 状态进出随 ctx 线性放大，正是缺陷 2 的状态流量项） |
+| 2.1 | NPU 解码快过 OpenVINO-CPU | ⬜ | `llama-cli` 解码 8.3–12.6 t/s，对比 21.7–29.2（CPU）/ 54.1（原生）。**三项根因已定案（2026-11-01，见缺陷 2 节）**：KV 状态每步全量 host↔device 往返（~32 ms，无 remote tensor）、注意力跨度烤死全 ctx（c=2048 超线性到 294 ms/步）、lm_head 11 ms；运行时切片修复被 NPU 静态形状限制证伪，重型路线（多跨度图组 / remote tensor）已规划 |
 | 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；`pp1024`：NPU 368 对 OV-CPU 626 / 原生 605；**8K prompt 实测 prefill 122.6 t/s** |
 | 2.2 | 热启动 < 5 s | ⬜ | 缓存目录有效，冷启动 36 s（-c 16384 为 61 s） |
 | 3.x | 模型线宽度（0.3 B–8 B、长上下文） | 🟡 | **长上下文打通：-c 8192（7K prompt 端到端）与 -c 16384（图级）在 NPU 通过**。Q8_0 被驱动主机内存预算阻塞（见缺陷 7） |
@@ -87,13 +87,29 @@ tools\top-token.ps1 -Dir tmp\dumps\cpu ; tools\top-token.ps1 -Dir tmp\dumps\npu
 tools\compare-tensors.ps1 -A tmp\dumps\cpu -B tmp\dumps\npu
 ```
 
-### 2. NPU 解码比 CPU 参照慢 6 倍（对核心主张是阻塞性的）
+### 2. NPU 解码比 CPU 参照慢 6 倍（对核心主张是阻塞性的）—— **三项根因已定案（2026-11-01）**
 
-同一模型同一台机器上：8.3–8.7 t/s，对比原生 54.1 t/s、OpenVINO-CPU 21.7–29.2 t/s——大约是**可用
-TOPS 的 0.03**。用 NPU 的全部理由就是每瓦性能；绝对吞吐输給 CPU 而 CPU 还全程空闲，这件事至今没有
-解释。注意它**只发生在解码**：`pp512` 的预填充是有竞争力的（415 对 570 t/s），所以插件并不是整体配置
-错了。嫌疑按序：每步重绑无状态缓存、激活量化的开销、解码形状图的编译提示、以及按运行期索引的
-conv 状态 `Gather`。
+同一模型同一台机器上：8.3–12.6 t/s，对比原生 54.1 t/s、OpenVINO-CPU 21.7–29.2 t/s。逐节点剖析
+（`GGML_OPENVINO_PROFILING=2` 已接入静态路径，每步输出 CSV）把 70 ms/步（-c 512）拆成：
+
+| 分量 | 耗时 | 机制 |
+|---|---:|---|
+| KV 状态 host↔device 往返 | ~32 ms/步 | NPU 没有 remote tensor（GPU 的 USMTensor 零拷贝在 NPU 不可用），每步全量搬运 ~11.5 MB，实测 0.4 GB/s |
+| 全 ctx 跨度注意力 | 随 ctx 超线性 | 静态 decode 图把 attention_size **烤死为全 ctx**（`compute_llm_params` 的 `is_static` 分支）：c=512→70.6 ms、1024→115.7、2048→293.7，哪怕只填了 40 个 cell |
+| lm_head MatMul | 10.9 ms/步 | [2048]×[128000] 单发 GEMV |
+| 其余 MatMul/逐元素 | ~20 ms/步 | 短卷积、FFN 等 |
+
+bind 开销只有 0.3 ms——时间全在 `infer_request->infer()` 内部。NPUW 开关
+（DQ/FOLD/FUNCALL_FOR_ALL）全部无效，瓶颈不在折叠/量化策略。
+
+**已证伪的修复**：把 attention_size 参数化（bind 真实 n_kv，FA 的 flat-KV reshape 本来就吃这个
+输入）→ NPU 插件编译期拒绝动态中间形状（"to_shape was called on a dynamic shape"）——**NPU
+静态图不容忍任何动态形状**。代码保留为 `GGML_OPENVINO_TRIM_DECODE_ATTENTION`（默认关，
+CPU/GPU 静态实验用），blob 缓存键已隔离。
+
+**NPU 兼容路线（未实施）**：① 离散多跨度 decode 图组——每个 PAD(n_kv,256) 级别一张全静态图，
+按填充级别切换，权重经 NPUW_WEIGHTS_BANK=shared 共享；② 状态往返需 NPU remote tensor 或
+stateful 化。见 HANDOFF 2026-11-01 节。
 
 ### 3. 超出 KV 缓存的序列会把 OpenVINO 后端拖垮 —— **根因已找到并修复（2026-10-31）**
 
