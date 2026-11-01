@@ -46,6 +46,15 @@
 2. 上游：NPUW bank-aware blob import（热启动 <5 s）；NPUW FOLD×FUNCALL bug 报告。
 3. 音频 top-1 级 f16 分歧（非阻塞，复利行为同类）。
 
+### 视觉吞吐基线（2026-11-01 实测，单图 448×448 → 784 patch，`mtmd batch encoding` 行）
+- native ggml CPU（`-dev none`）：**435 ms**
+- OV-CPU 动态：**956 ms**
+- NPU 静态（本修复后）：**5061 ms**（比 native 慢 11.6×、比 OV-CPU 慢 5.3×）
+- 下一性能轮靶子：clip 图在 NPUW 上的显式 softmax/Reshape/Concat 路径（warmup 已列
+  unsupported-ops 清单：SOFT_MAX/CONT/PERMUTE/RESHAPE/CONCAT 全部回退执行）；对照文本侧
+  经验（requant/f16 折叠、bank 冲突）逐项排除。工具：ctrl/vis-npu-fix.ps1（NPU）、
+  vis-cpu-b.ps1、vis-nat-b.ps1；缓存目录 cache_vis_fix / cache_vis_cpu_b / cache_vis_nat_b。
+
 ---
 
 > **✅ 已收尾（2026-10-31）：** 下方记录的 decode K 分支缺陷**已定案并修复**（commit `63179ef`，
