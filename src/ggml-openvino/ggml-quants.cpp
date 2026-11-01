@@ -22,6 +22,7 @@
 #include <openvino/core/type/float16.hpp>
 #include <openvino/core/type/float4_e2m1.hpp>
 #include <openvino/core/type/float8_e8m0.hpp>
+#include <thread>
 #include <openvino/op/add.hpp>
 #include <openvino/op/constant.hpp>
 #include <openvino/op/convert.hpp>
@@ -43,6 +44,8 @@ bool get_single_value(const std::shared_ptr<ov::op::v0::Constant> & const_node,
 }  // namespace ov::op::util
 
 namespace {
+// TEMP warm-start trace (remove after milestone 2.2)
+static int64_t g_requant_us = 0;
 void unpack_32_4(const uint8_t * data, uint8_t * dst) {
     std::fill_n(dst, 16, 0);
     for (int j = 0; j < 16; ++j) {
@@ -771,13 +774,16 @@ void quantize_q4_0(const float * x,
                    ov::Tensor & scales_arr,
                    ov::Tensor & zp_arr,
                    int64_t k,
-                   int64_t qk) {
+                   int64_t qk,
+                   bool symmetric = false) {
     assert(k % qk == 0);
     const int nb = k / qk;
 
     auto * weights = static_cast<uint8_t *>(weights_arr.data());
     auto * scales = scales_arr.data<ov::element_type_traits<ov::element::f16>::value_type>();
-    bool is_symmetric = (weights_arr.get_element_type() == ov::element::i4);  // Signed i4 path
+    // Signed i4 path. Callers that hand in byte-offset views (parallel requant chunks) pass an
+    // explicit flag -- a u8 view cannot carry the i4/u4 distinction in its element type.
+    bool is_symmetric = symmetric || (weights_arr.get_element_type() == ov::element::i4);
 
     if (!is_symmetric) {
         auto * zp = static_cast<uint8_t *>(zp_arr.data());
@@ -1169,24 +1175,128 @@ std::shared_ptr<ov::Node> requantize_to_buffers(const ggml_tensor * tensor,
                                 !(block_size > 0 && ne0 % block_size != 0);
 
     if (!stream_requant) {
-        // Full materialization (original behavior): dequantize the whole tensor to F32,
-        // then convert/quantize in one call.
-        std::vector<float> weights_f32(n_elements);
-        type_traits->to_float(data, weights_f32.data(), n_elements);
-        if (requant_type == ExtraQuantType::F16) {
-            ggml_get_type_traits(GGML_TYPE_F16)->from_float_ref(weights_f32.data(), weights.data(), n_elements);
-            auto result = std::make_shared<ov::op::v0::Constant>(weights);
-            result->set_friendly_name(tensor->name);
-            return result;
+        // Full materialization. The dequant+requant pass is embarrassingly parallel but the
+        // scalar loops below run at ~100 MB/s single-threaded, and every process start
+        // requantizes the whole model here (~10 s of the NPU warm-start budget). Chunk the
+        // work by whole rows and run the chunks in parallel; each thread owns its output
+        // range exclusively. Rows also keep the u4 zero-point packing intact: a chunk whose
+        // first target block is even (guaranteed below) sees the same local even/odd block
+        // parity as a whole-array call, and whole zp bytes never straddle chunk borders.
+        // Q4_1_64 stays serial: its zp packing was never verified against chunking.
+        const int64_t qk = block_size > 0 ? block_size : ne0;
+        const bool row_aligned = (qk > 0) && (ne0 % qk == 0);
+        const int64_t blocks_per_row = row_aligned ? ne0 / qk : 0;
+        const int64_t hw = (int64_t) std::thread::hardware_concurrency();
+        int64_t chunk_rows = 0;
+        if (row_aligned && hw > 1 && n_rows >= 4 && requant_type != ExtraQuantType::Q4_1_64) {
+            const int64_t target_chunks = hw * 4;
+            chunk_rows = (n_rows + target_chunks - 1) / target_chunks;
+            if (blocks_per_row % 2 != 0) {
+                chunk_rows += chunk_rows % 2;  // even blocks per chunk
+            }
         }
-        if (requant_type == ExtraQuantType::Q4_1_64) {
-            quantize_q4_1_asym(weights_f32.data(), weights, scales, zp, n_elements, block_size);
-        } else if (is_u4) {
-            quantize_q4_0(weights_f32.data(), weights, scales, zp, n_elements, block_size);
-        } else if (requant_type == ExtraQuantType::Q8_1_C) {
-            quantize_q8_1(weights_f32.data(), weights, scales, zp, n_elements, block_size);
-        } else {
-            quantize_q8_0(weights_f32.data(), weights, scales, zp, n_elements, block_size);
+        const bool parallel = chunk_rows > 0 && chunk_rows < n_rows;
+        {   // TEMP warm-start trace (remove after milestone 2.2)
+            static const bool trace = getenv("GGML_WARM_TRACE") != nullptr;
+            if (trace && ggml_nbytes(tensor) > 4 * 1024 * 1024) {
+                GGML_LOG_INFO("WARMTRACE:   requant %s ne0=%d rows=%d qk=%d chunks_rows=%d parallel=%d\n",
+                              tensor->name, (int) ne0, (int) n_rows, (int) qk, (int) chunk_rows, (int) parallel);
+            }
+        }
+        if (parallel) {
+            const bool f16_target = (requant_type == ExtraQuantType::F16);
+            // NOTE: ov::parallel_for is a serial fallback in OpenVINO builds without TBB/OpenMP
+            // (measured: 0 worker threads) -- drive the chunks with real std::threads instead.
+            const int64_t n_tasks = (n_rows + chunk_rows - 1) / chunk_rows;
+            const int n_threads = (int) std::min<int64_t>(hw, n_tasks);
+            std::atomic<int64_t> next_task{0};
+            {   // TEMP warm-start trace (remove after milestone 2.2)
+                static const bool trace = getenv("GGML_WARM_TRACE") != nullptr;
+                if (trace && ggml_nbytes(tensor) > 4 * 1024 * 1024) {
+                    GGML_LOG_INFO("WARMTRACE:   requant %s ne0=%d rows=%d qk=%d chunk_rows=%d threads=%d\n",
+                                  tensor->name, (int) ne0, (int) n_rows, (int) qk, (int) chunk_rows, n_threads);
+                }
+            }
+            auto worker = [&]() {
+                for (;;) {
+                    const int64_t c = next_task.fetch_add(1);
+                    if (c >= n_tasks) {
+                        break;
+                    }
+                const int64_t r0 = c * chunk_rows;
+                if (r0 >= n_rows) {
+                    continue;
+                }
+                const int64_t rows = std::min(chunk_rows, n_rows - r0);
+                const int64_t elems = rows * ne0;
+                std::vector<float> scratch((size_t) elems);
+                type_traits->to_float((const char *) data + (size_t) r0 * src_row_bytes, scratch.data(), elems);
+                if (f16_target) {
+                    auto * f16_base = static_cast<uint8_t *>(weights.data()) + (size_t) r0 * ne0 * 2;
+                    ggml_get_type_traits(GGML_TYPE_F16)->from_float_ref(scratch.data(), f16_base, elems);
+                    continue;
+                }
+                const int64_t block_offset = (r0 * ne0) / qk;  // even when blocks_per_row is even
+                if (requant_type == ExtraQuantType::Q8_1_C) {
+                    quantize_q8_1(scratch.data(), weights, scales, zp, elems, qk, block_offset);
+                    continue;
+                }
+                if (requant_type == ExtraQuantType::Q8_0_C) {
+                    quantize_q8_0(scratch.data(), weights, scales, zp, elems, qk, block_offset);
+                    continue;
+                }
+                // u4 targets: hand the scalar quantizer byte-offset views of the output buffers.
+                // All offsets are whole bytes (block_offset is even), and the quantizer's local
+                // even/odd block parity matches the global one, so the packed zp bytes land
+                // exactly where the serial whole-array call would put them. Symmetric i4 has
+                // no zero-point buffer at all -- pass the (empty) original tensor through.
+                const size_t n_blocks = (size_t) (elems / qk);
+                const bool has_zp = weights.get_element_type() != ov::element::i4;
+                ov::Tensor w_view(ov::element::u8, ov::Shape{n_blocks * (size_t) qk / 2},
+                                  static_cast<uint8_t *>(weights.data()) +
+                                      (size_t) block_offset * (size_t) qk / 2);
+                // scales are read through data<f16>() (type-checked): keep the real element type
+                // and count in elements, not bytes.
+                ov::Tensor s_view(scales.get_element_type(), ov::Shape{n_blocks},
+                                  static_cast<uint8_t *>(scales.data()) + (size_t) block_offset * 2);
+                if (has_zp) {
+                    ov::Tensor z_view(ov::element::u8, ov::Shape{n_blocks / 2},
+                                      static_cast<uint8_t *>(zp.data()) + (size_t) block_offset / 2);
+                    quantize_q4_0(scratch.data(), w_view, s_view, z_view, elems, qk, false);
+                } else {
+                    // symmetric i4: no zero-point buffer exists; pass the empty tensor through
+                    quantize_q4_0(scratch.data(), w_view, s_view, zp, elems, qk, true);
+                }
+                }
+            };
+            std::vector<std::thread> pool;
+            for (int t = 0; t < n_threads - 1; t++) {
+                pool.emplace_back(worker);
+            }
+            worker();
+            for (auto & th : pool) {
+                th.join();
+            }
+            if (f16_target) {
+                auto result = std::make_shared<ov::op::v0::Constant>(weights);
+                result->set_friendly_name(tensor->name);
+                return result;
+            }
+            // fall through to the shared weight-subgraph tail (make_int4/int8_weights)
+        }
+        // Original serial path (small tensors, rows whose blocks straddle target blocks, Q4_1_64).
+        if (!parallel) {
+            std::vector<float> weights_f32(n_elements);
+            type_traits->to_float(data, weights_f32.data(), n_elements);
+            if (requant_type == ExtraQuantType::Q4_1_64) {
+                quantize_q4_1_asym(weights_f32.data(), weights, scales, zp, n_elements, block_size);
+            } else if (is_u4) {
+                quantize_q4_0(weights_f32.data(), weights, scales, zp, n_elements, block_size);
+            } else if (requant_type == ExtraQuantType::Q8_1_C) {
+                quantize_q8_1(weights_f32.data(), weights, scales, zp, n_elements, block_size);
+            } else {
+                quantize_q8_0(weights_f32.data(), weights, scales, zp, n_elements, block_size);
+            }
         }
     } else {
         // Streaming path for Q8_0_C / Q8_1_C / F16 (covers token_embd, output.weight,
@@ -1416,8 +1526,19 @@ OvWeight process_weight_tensor(const ggml_tensor * tensor, const void * data, vo
     }
 
     if (layout.is_requant && layout.requant_type.has_value()) {
+        {   // TEMP warm-start trace (remove after milestone 2.2)
+            static const bool trace = getenv("GGML_WARM_TRACE") != nullptr;
+            if (trace) { g_requant_us = ggml_time_us(); }
+        }
         result.weight_node = requantize_to_buffers(tensor, data, layout.requant_type.value(), layout.weights_per_block,
                                                    result.weights, result.scales, result.zp);
+        {   // TEMP warm-start trace (remove after milestone 2.2)
+            static const bool trace = getenv("GGML_WARM_TRACE") != nullptr;
+            if (trace) {
+                GGML_LOG_INFO("WARMTRACE:   requant-only %-24s %8.2f MiB  %8.3f s\n", tensor->name,
+                              ggml_nbytes(tensor) / 1048576.0, (ggml_time_us() - g_requant_us) / 1e6);
+            }
+        }
     } else {
         result.weight_node =
             extract_quantized_weights(tensor, data, result.weights, result.scales, result.zp, use_bias);

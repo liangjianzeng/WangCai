@@ -383,3 +383,31 @@
   decode 15 t/s 下进一步提速的可行方向只剩：状态 I/O 的布局/搬运优化（非 stateful，已证伪）、
   attention Multiply 的算子降级路径、或 llama.cpp 侧 vocab 裁剪（只算候选 token 的 logits，
   涉及采样器改动，超出本轮）。**decode 攻坚就此收官，转 2.2 热启动。**
+
+## 2026-11-01：里程碑 2.2 第一轮——热启动 23 s → 8.9 s（三项修复）
+### 启动时间分解（-lv 5 + GGML_WARM_TRACE 逐段实测，c512、warm blob 缓存）
+原 23 s 的构成：**权重 repack ~10 s** + 图转换 ~2.3 s + NPUW 编译/导入 ~2×1 s + 首次推理 ~1.1 s
++ 采样/其它。逐项发现：
+- **repack 串行且标量**：`requantize_to_buffers` 的全量物化路径对每张 8.44 MB FFN 权重耗时
+  ~0.09 s（94 MB/s），153 张张量串行 ≈ 10 s；token_embd（Q6_K→F16，205 MB）单张 0.75 s，其中
+  大头是 1 GB 的一次性 f32 暂存分配。
+- **ov::parallel_for 是串行回退**：本机 OpenVINO 构建无 TBB/OpenMP 时它退化为单线程
+  （实测 worker threads = 0）——不能指望它并行化任何加载期工作。
+### 修复（本轮落地）
+1. **requant 全量物化路径按行分块并行**（ggml-quants.cpp）：std::thread 池（24 线程），chunk 边界
+   对齐偶数块保持 u4 zp 字节对（对称 i4 无 zp，显式 symmetric 参数绕过元素类型推导——
+   字节偏移 view 的 u8 包装会骗过 is_symmetric 判断）；每 chunk 独立 scratch，消掉 1 GB 暂存。
+   token_embd 0.75→0.11 s，FFN 单张 0.09→0.01 s，**整体 repack ~10 s → ~1 s**。
+   不满足行对齐/块偶数条件时回退原串行路径（Q4_1_64 一律串行）。
+2. **make_dirs 的盘符 bug**（model-cache.cpp）：`_mkdir("D:")` 返回 EACCES 使
+   GGML_OPENVINO_COMPILED_MODEL_CACHE_DIR 在任何 Windows 盘符路径下**静默失效**。跳过 "X:" 组件。
+3. **多级 decode 图接入 COMPILED_MODEL_CACHE_DIR**（utils.cpp build_static_model）：prefill /
+   decode@level 各自指纹（phase tag + level 混入 extra_cfg），import 跳过转换+编译。
+### 当前状态与剩余
+- 热启动实测 **8.9 s**（llama-completion -n 4，warm blob 缓存）。距离 <5 s 目标剩两项：
+  ① CM 缓存在 NPU 上 import 失败——**NPUW 导出的 blob 不含权重**（26 MB/图），import 需要提供
+  WEIGHTS_PATH 或 MODEL_PTR（指向与导出时相同的权重存储）；三种图各报一次 WARN 后回退编译。
+  下一轮把权重缓冲 dump 成文件并注入 NPUW 权重属性（预期再省 ~4.4 s：转换 2.3 + 编译 2.1）。
+  ② 首次 prefill 推理 1.1 s（图首次下载到设备）。
+- 无回归：NPU 14.5 t/s + 三问 3/3；CPU accept-smoke 3/3。
+- 测量基建：GGML_WARM_TRACE=1 打开 repack/加载分段 trace（env 门控，标记 TEMP，2.2 收官时拆除）。

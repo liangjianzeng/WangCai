@@ -1631,6 +1631,12 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
 
     auto prefill_chunk_size = get_prefill_chunk_size();
     const auto & config = ggml_openvino_get_compile_config();
+    // Compiled-model cache directory (blob + manifest with weights) for the level graphs below.
+    // The static path is single-sequence: stateful/recurrent are both false here.
+    const std::string model_cache_dir = ggml_openvino_model_cache_dir();
+    const uint64_t cache_extra_base = ggml_openvino_model_cache_extra_cfg(false, false);
+    // Split-model fragments never take the compiled-model cache (same rule as the old static path).
+    const bool model_is_splitted = is_model_splitted(cgraph);
 
     if (is_naive(cgraph)) {
         return naive_compute(cgraph, core, device, config, *r_ctx->compiled_cache);
@@ -1801,14 +1807,62 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         std::unique_lock<std::mutex> compile_lock(shared_cache->mutex);
         auto weight_names = get_weight_names(cgraph);
 
-        const auto build_static_model = [&core, &compile_config, dump_ir_enabled = ggml_openvino_getenv_int(
-                                                                     "GGML_OPENVINO_DUMP_IR")](
+        const auto build_static_model = [&core, &compile_config, &model_cache_dir, &cgraph,
+                                         dump_ir_enabled = ggml_openvino_getenv_int(
+                                             "GGML_OPENVINO_DUMP_IR")](
                                             const std::shared_ptr<GgmlOvDecoder> & decoder, const char * tag,
                                             std::shared_ptr<ov::Model> & model,
                                             ov::CompiledModel & compiled_model,
                                             std::shared_ptr<ov::InferRequest> & infer_request,
                                             int64_t & local_conversion_end_time,
-                                            int64_t & local_compile_end_time) {
+                                            int64_t & local_compile_end_time,
+                                            uint64_t cache_fp = 0,
+                                            std::vector<std::string> * cached_in_names = nullptr,
+                                            std::vector<std::string> * cached_out_names = nullptr) {
+            // Compiled-model cache (blob + manifest with weights): a hit skips both the frontend
+            // translation (~2 s) and the plugin compile (~1 s) on every process start.
+            if (cache_fp != 0 && !model_cache_dir.empty()) {
+                const std::string blob_path = ggml_openvino_model_cache_blob_path(model_cache_dir, cache_fp);
+                const std::string manifest_path = ggml_openvino_model_cache_manifest_path(model_cache_dir, cache_fp);
+                std::ifstream blob_in(blob_path, std::ios::binary);
+                std::vector<std::string> saved_inputs, saved_outputs;
+                if (blob_in.is_open() &&
+                    ggml_openvino_model_cache_verify_manifest(manifest_path, cgraph, cache_fp, saved_inputs,
+                                                              saved_outputs)) {
+                    try {
+                        ov::CompiledModel cm = core.import_model(blob_in, device, compile_config);
+                        std::vector<std::string> in_names, out_names;
+                        if (!saved_inputs.empty() || !saved_outputs.empty()) {
+                            in_names = std::move(saved_inputs);
+                            out_names = std::move(saved_outputs);
+                        } else {
+                            for (const auto & p : cm.inputs()) {
+                                in_names.push_back(p.get_node()->get_friendly_name());
+                            }
+                            for (const auto & o : cm.outputs()) {
+                                out_names.push_back(o.get_node()->get_friendly_name());
+                            }
+                        }
+                        if (!compiled_model_matches_graph(cm, in_names, out_names, *decoder)) {
+                            GGML_LOG_WARN("ggml-openvino: model cache IMPORT mismatch for %s; recompiling\n", tag);
+                        } else {
+                            compiled_model = std::move(cm);
+                            infer_request = std::make_shared<ov::InferRequest>(compiled_model.create_infer_request());
+                            if (cached_in_names != nullptr) {
+                                *cached_in_names = std::move(in_names);
+                            }
+                            if (cached_out_names != nullptr) {
+                                *cached_out_names = std::move(out_names);
+                            }
+                            local_conversion_end_time = local_compile_end_time = ggml_time_us();
+                            GGML_LOG_INFO("ggml-openvino: model cache IMPORT %s\n", tag);
+                            return;
+                        }
+                    } catch (const std::exception & e) {
+                        GGML_LOG_WARN("ggml-openvino: model cache import failed for %s: %s\n", tag, e.what());
+                    }
+                }
+            }
             auto input_model = std::make_shared<ov::frontend::ggml::InputModel>(decoder);
             model = ov::frontend::ggml::FrontEnd::convert(input_model);
             decoder->clear_model_weights();
@@ -1825,6 +1879,40 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             compiled_model = core.compile_model(model, device, compile_config);
             infer_request = std::make_shared<ov::InferRequest>(compiled_model.create_infer_request());
             local_compile_end_time = ggml_time_us();
+            if (cache_fp != 0 && !model_cache_dir.empty()) {
+                // Publish blob first, then manifest, so a cache hit only sees complete artifacts.
+                try {
+                    const std::string blob_path = ggml_openvino_model_cache_blob_path(model_cache_dir, cache_fp);
+                    const std::string manifest_path =
+                        ggml_openvino_model_cache_manifest_path(model_cache_dir, cache_fp);
+                    const std::string blob_tmp = ggml_openvino_model_cache_temp_path(blob_path);
+                    const std::string manifest_tmp = ggml_openvino_model_cache_temp_path(manifest_path);
+                    std::vector<std::string> in_names, out_names;
+                    for (const auto & p : model->get_parameters()) {
+                        in_names.push_back(p->get_friendly_name());
+                    }
+                    for (const auto & r : model->get_results()) {
+                        out_names.push_back(r->get_friendly_name());
+                    }
+                    if (ggml_openvino_model_cache_write_manifest(manifest_tmp, cgraph, cache_fp, in_names,
+                                                                 out_names)) {
+                        std::ofstream blob_out(blob_tmp, std::ios::binary | std::ios::trunc);
+                        if (blob_out.is_open()) {
+                            compiled_model.export_model(blob_out);
+                            blob_out.close();
+                            if (blob_out.good() && std::rename(blob_tmp.c_str(), blob_path.c_str()) == 0 &&
+                                std::rename(manifest_tmp.c_str(), manifest_path.c_str()) == 0) {
+                                GGML_LOG_INFO("ggml-openvino: model cache WROTE %s\n", tag);
+                            } else {
+                                std::remove(blob_tmp.c_str());
+                                std::remove(manifest_tmp.c_str());
+                            }
+                        }
+                    }
+                } catch (const std::exception & e) {
+                    GGML_LOG_WARN("ggml-openvino: model cache export failed for %s: %s\n", tag, e.what());
+                }
+            }
         };
 
         if (is_prefill && compile_prefill && compile_decode) {
@@ -1891,8 +1979,30 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             int64_t decode_conversion_end_time;
             int64_t prefill_compile_end_time;
             int64_t decode_compile_end_time;
+            // Per-phase compiled-model cache fingerprints: the phase tag and decode level are
+            // mixed into extra_cfg so each level graph gets its own blob.
+            uint64_t fp_prefill = 0;
+            uint64_t fp_decode = 0;
+            std::vector<std::string> cached_in_prefill;
+            std::vector<std::string> cached_out_prefill;
+            std::vector<std::string> cached_in_decode;
+            std::vector<std::string> cached_out_decode;
+            if (!model_cache_dir.empty() && !model_is_splitted) {
+                fp_prefill = ggml_openvino_model_fingerprint(
+                    cgraph, device, /*fa=*/true, m_params.rope_params, 16,
+                    cache_extra_base ^ 0x9E3779B97F4A7C15ull /* "prefill" */,
+                    dynamic_graph_signature(cgraph, *ggml_decoder_prefill, m_params));
+                if (!no_kv_cache) {
+                    fp_decode = ggml_openvino_model_fingerprint(
+                        cgraph, device, /*fa=*/true, m_params.rope_params, 16,
+                        cache_extra_base ^ 0xC2B2AE3D27D4EB4Full /* "decode" */ ^
+                            (uint64_t) std::max<int64_t>(c_params.attention_size, 0),
+                        dynamic_graph_signature(cgraph, *ggml_decoder_decode, m_params));
+                }
+            }
             build_static_model(ggml_decoder_prefill, "prefill", model_prefill, compiled_model_prefill,
-                               infer_request_prefill, prefill_conversion_end_time, prefill_compile_end_time);
+                               infer_request_prefill, prefill_conversion_end_time, prefill_compile_end_time,
+                               fp_prefill, &cached_in_prefill, &cached_out_prefill);
             if (no_kv_cache) {
                 model_decode = model_prefill;
                 compiled_model_decode = compiled_model_prefill;
@@ -1901,7 +2011,8 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
                 decode_compile_end_time = prefill_compile_end_time;
             } else {
                 build_static_model(ggml_decoder_decode, "decode", model_decode, compiled_model_decode,
-                                   infer_request_decode, decode_conversion_end_time, decode_compile_end_time);
+                                   infer_request_decode, decode_conversion_end_time, decode_compile_end_time,
+                                   fp_decode, &cached_in_decode, &cached_out_decode);
             }
             conversion_end_time = std::max(prefill_conversion_end_time, decode_conversion_end_time);
             compile_end_time = std::max(prefill_compile_end_time, decode_compile_end_time);
@@ -1922,19 +2033,30 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             // parameter list, and binding a graph against the other's names fails.
             std::vector<std::string> ov_input_names_prefill_local;
             std::vector<std::string> ov_output_names_prefill_local;
-            for (const auto & ov_param : model_prefill->get_parameters()) {
-                ov_input_names_prefill_local.push_back(ov_param->get_friendly_name());
-            }
-            for (const auto & ov_output : model_prefill->get_results()) {
-                ov_output_names_prefill_local.push_back(ov_output->get_friendly_name());
+            if (!cached_in_prefill.empty()) {
+                // imported from the compiled-model cache: no frontend model, use the saved names
+                ov_input_names_prefill_local = std::move(cached_in_prefill);
+                ov_output_names_prefill_local = std::move(cached_out_prefill);
+            } else {
+                for (const auto & ov_param : model_prefill->get_parameters()) {
+                    ov_input_names_prefill_local.push_back(ov_param->get_friendly_name());
+                }
+                for (const auto & ov_output : model_prefill->get_results()) {
+                    ov_output_names_prefill_local.push_back(ov_output->get_friendly_name());
+                }
             }
             std::vector<std::string> ov_input_names_decode_local;
             std::vector<std::string> ov_output_names_decode_local;
-            for (const auto & ov_param : model_decode->get_parameters()) {
-                ov_input_names_decode_local.push_back(ov_param->get_friendly_name());
-            }
-            for (const auto & ov_output : model_decode->get_results()) {
-                ov_output_names_decode_local.push_back(ov_output->get_friendly_name());
+            if (!cached_in_decode.empty()) {
+                ov_input_names_decode_local = std::move(cached_in_decode);
+                ov_output_names_decode_local = std::move(cached_out_decode);
+            } else {
+                for (const auto & ov_param : model_decode->get_parameters()) {
+                    ov_input_names_decode_local.push_back(ov_param->get_friendly_name());
+                }
+                for (const auto & ov_output : model_decode->get_results()) {
+                    ov_output_names_decode_local.push_back(ov_output->get_friendly_name());
+                }
             }
             if (no_kv_cache) {
                 // One model serves both phases: keep the lists identical so either lookup works.
@@ -2000,19 +2122,35 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             int64_t level_conversion_end_time;
             int64_t level_compile_end_time;
             ov::CompiledModel compiled_model_level;
+            uint64_t fp_level = 0;
+            std::vector<std::string> cached_in_level;
+            std::vector<std::string> cached_out_level;
+            if (!model_cache_dir.empty() && !model_is_splitted) {
+                fp_level = ggml_openvino_model_fingerprint(
+                    cgraph, device, /*fa=*/true, m_params.rope_params, 16,
+                    cache_extra_base ^ 0xC2B2AE3D27D4EB4Full /* "decode" */ ^
+                        (uint64_t) std::max<int64_t>(c_params.attention_size, 0),
+                    dynamic_graph_signature(cgraph, *decoder_level, m_params));
+            }
             build_static_model(decoder_level, "decode", model_level, compiled_model_level, infer_request,
-                               level_conversion_end_time, level_compile_end_time);
+                               level_conversion_end_time, level_compile_end_time, fp_level, &cached_in_level,
+                               &cached_out_level);
             conversion_end_time = level_conversion_end_time;
             compile_end_time = level_compile_end_time;
             ggml_decoder = decoder_level;
 
             std::vector<std::string> ov_input_names_level_local;
             std::vector<std::string> ov_output_names_level_local;
-            for (const auto & ov_param : model_level->get_parameters()) {
-                ov_input_names_level_local.push_back(ov_param->get_friendly_name());
-            }
-            for (const auto & ov_output : model_level->get_results()) {
-                ov_output_names_level_local.push_back(ov_output->get_friendly_name());
+            if (!cached_in_level.empty()) {
+                ov_input_names_level_local = std::move(cached_in_level);
+                ov_output_names_level_local = std::move(cached_out_level);
+            } else {
+                for (const auto & ov_param : model_level->get_parameters()) {
+                    ov_input_names_level_local.push_back(ov_param->get_friendly_name());
+                }
+                for (const auto & ov_output : model_level->get_results()) {
+                    ov_output_names_level_local.push_back(ov_output->get_friendly_name());
+                }
             }
             ov_input_names_local = ov_input_names_level_local;
             ov_output_names_local = ov_output_names_level_local;
@@ -2037,19 +2175,34 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             int64_t prefill_conversion_end_time;
             int64_t prefill_compile_end_time;
             ov::CompiledModel compiled_model_prefill;
+            uint64_t fp_prefill_only = 0;
+            std::vector<std::string> cached_in_prefill_only;
+            std::vector<std::string> cached_out_prefill_only;
+            if (!model_cache_dir.empty() && !model_is_splitted) {
+                fp_prefill_only = ggml_openvino_model_fingerprint(
+                    cgraph, device, /*fa=*/true, m_params.rope_params, 16,
+                    cache_extra_base ^ 0x9E3779B97F4A7C15ull /* "prefill" */,
+                    dynamic_graph_signature(cgraph, *decoder_prefill, m_params));
+            }
             build_static_model(decoder_prefill, "prefill", model_prefill_only, compiled_model_prefill,
-                               infer_request, prefill_conversion_end_time, prefill_compile_end_time);
+                               infer_request, prefill_conversion_end_time, prefill_compile_end_time,
+                               fp_prefill_only, &cached_in_prefill_only, &cached_out_prefill_only);
             conversion_end_time = prefill_conversion_end_time;
             compile_end_time = prefill_compile_end_time;
             ggml_decoder = decoder_prefill;
 
             std::vector<std::string> ov_input_names_prefill_local;
             std::vector<std::string> ov_output_names_prefill_local;
-            for (const auto & ov_param : model_prefill_only->get_parameters()) {
-                ov_input_names_prefill_local.push_back(ov_param->get_friendly_name());
-            }
-            for (const auto & ov_output : model_prefill_only->get_results()) {
-                ov_output_names_prefill_local.push_back(ov_output->get_friendly_name());
+            if (!cached_in_prefill_only.empty()) {
+                ov_input_names_prefill_local = std::move(cached_in_prefill_only);
+                ov_output_names_prefill_local = std::move(cached_out_prefill_only);
+            } else {
+                for (const auto & ov_param : model_prefill_only->get_parameters()) {
+                    ov_input_names_prefill_local.push_back(ov_param->get_friendly_name());
+                }
+                for (const auto & ov_output : model_prefill_only->get_results()) {
+                    ov_output_names_prefill_local.push_back(ov_output->get_friendly_name());
+                }
             }
             ov_input_names_local = ov_input_names_prefill_local;
             ov_output_names_local = ov_output_names_prefill_local;

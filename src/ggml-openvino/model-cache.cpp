@@ -147,9 +147,14 @@ bool make_dirs(const std::string & path) {
                           || c == '\\'
 #endif
         );
-        // Create each intermediate component (skip a leading "/" root).
+        // Create each intermediate component (skip a leading "/" root). A "D:" drive prefix is
+        // not a creatable directory on Windows -- _mkdir("D:") fails with EACCES, which used to
+        // silently disable the whole cache for any drive-letter path.
         if (sep && acc.size() > 1) {
             std::string component = acc.substr(0, acc.size() - 1);
+            if (component.size() == 2 && component[1] == ':') {
+                continue;
+            }
             if (!make_dir(component)) {
                 return false;
             }

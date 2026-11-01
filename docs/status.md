@@ -22,7 +22,7 @@
 | 1.3 | CI 里有验收测试 | ✅（2026-10-31） | `tools/accept-smoke.ps1`：三问贪心验收跑在 CPU 静态路径（覆盖 rope tile/rank align/set_rows 等设备无关翻译，requant 对齐 NPU 默认）；CI build job（windows）下载 Q4_K_M 并执行，缓存 1 GB 模型。NPU 专属闸门仍是本地 accept.ps1 |
 | 2.1 | NPU 解码快过 OpenVINO-CPU | 🟡 | **多跨度 decode 图组落地（2026-11-01 第二轮）：decode 14-15 t/s 与 ctx 无关**——c=8192 从 0.9 → 14.1 t/s（17×），c=2048 从 3.3 → 14.3（4.5×）。对 OpenVINO-CPU 参照 21.7–29.2 仍差一截。后续杠杆已逐一探察收官（2026-11-01）：stateful 化证伪（7× 慢）、lm_head u4 化证伪（5× 慢，F16 524 MB @38 GB/s 即带宽界快路径）——残差为状态 I/O 与 attention 算子路径，decode 攻坚收官。根因定案与测量见缺陷 2 节 |
 | 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；`pp1024`：NPU 368 对 OV-CPU 626 / 原生 605；**8K prompt 实测 prefill 122.6 t/s** |
-| 2.2 | 热启动 < 5 s | ⬜ | 缓存目录有效，冷启动 36 s（-c 16384 为 61 s） |
+| 2.2 | 热启动 < 5 s | 🟡 | **热启动 23 s → 8.9 s（2026-11-01）**：requant 全量物化路径行分块并行（发现 ov::parallel_for 在本机构建是串行回退，改用 std::thread 池）+ 修 make_dirs 盘符 bug（Windows 下 CM 缓存曾静默失效）+ 多级图接入 COMPILED_MODEL_CACHE_DIR。剩 <5 s 需解决 NPUW blob 无权重 import（WEIGHTS_PATH/MODEL_PTR）与首次图下载 1.1 s，见 HANDOFF 2026-11-01 2.2 节 |
 | 3.x | 模型线宽度（0.3 B–8 B、长上下文） | 🟡 | **长上下文打通：-c 8192（7K prompt 端到端）与 -c 16384（图级）在 NPU 通过**。Q8_0 被驱动主机内存预算阻塞（见缺陷 7） |
 | 4.x | LFM3 全模态（音频输入、视觉输入） | 🟡 | **LFM3-Omni-2B-Q4_0 文本链路在 NPU 端到端跑通**（8.3 t/s，含编译 48 s）；**音频输入 NPU 端到端跑通**（2026-10-31 深夜：raw-embd chunk-pad + 动态维传播，编码 3 chunk → LLM 消费 → 生成音频描述；与 f32 参照有 top-1 分歧，与文本自由生成的 f16 复利同类）；视觉输入待接入 |
 
