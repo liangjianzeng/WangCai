@@ -274,3 +274,7 @@ llama-server 把可用内存吃掉后，**0.98 GB 的 Omni-Q4_0 在 `-c 4096` �
 
 NPU 4B 预算：默认配置执行期 `OUT_OF_HOST_MEMORY`（驱动侧）；chunk128+禁 levels 可跑。
 配置与数字明细见 HANDOFF 2026-11-01 副靶节；脚本 tools/spark-npu-accept.ps1。
+
+性能轮（同日）：4B NPU decode 2.4 → ~6 t/s 稳态（level 预算三图问题修复，设备已贴 2.3 GB
+权重带宽下限 ~7 t/s 的 85%）。数字口径：热缓存 + n≥128（n=64 的 headline 被 level 编译停顿
+摊薄）。排查链与剩余杠杆见 HANDOFF 2026-11-01 性能轮及补记。

@@ -637,3 +637,20 @@ level 基数 256 vs 128 实测持平（4.7 vs 4.5），保持 256（少一次 le
 2. host ~50 ms/步（150 参数逐个 set_input_tensor）——静态参数预绑定。
 3. 4B 权重字节：token_embd F16（~795 MB）+ output Q8_0_C（~400 MB）占一半；EMBD_Q4 在
    1.7B 上证伪过，4B 上权重占比更大，值得复测。
+
+### 性能轮补记（同日）：稳态真实数字与算子开销定案
+
+PERFTRACE 插桩（WARMTRACE 门控，decode 步 bind/outbind/infer 分解）+ 长生成消歧：
+- **稳态分解（Spark level-256）**：infer 141 ms ≈ 权重带宽下限 145 ms（2.3 GB ÷ 15.7 GB/s），
+  bind 3 ms、outbind ~0——**设备已贴带宽地板，主机侧无肉**。
+- **headline 失真修正**：`Generation t/s` 含每次进程的 level 图编译停顿与 gen 相位固定开销，
+  n=64 时 4.2–4.7，n=128 摊薄后 Spark **5.9 t/s**（逐 token 时间戳实测 145 ms = 6.9 t/s）；
+  Qwen3-4B n=128 稳态 **4.5 t/s**（修复前 2.3）。测 4B 必须热缓存 + ≥128 token。
+- 算子级 profile（level 图 360 实例）：MatMul ≈ 带宽下限；Add/Multiply/Scatter/Parameter/
+  Concat 合计 ~258 实例 × ~0.6 ms 调度开销——但它们与 MatMul 重叠流水，净空 <25 ms/步。
+  "把注意力链折叠进 DPU 大子图"的期望收益被实测压缩到 ~10–15%（非此前估计的 2×）。
+- KV zeroize（NO_KV_ZEROIZE 探针）：~0.3 t/s，保留（正确性必需）。
+- 编译开关（FUNCALL/DQ/FOLD overrides）已证无效；EMBD_Q4 复测（4B 权重字节占 1/3）仍是
+  唯一未试的权重侧杠杆。
+- **结论：4B 稠密 Q4_K_M 在 NPU 3720 上的 decode 上限 ≈ 7 t/s（带宽决定），已达成 ~85%。**
+  再往上只剩上游依赖（NPUW bank-aware blob import、更高带宽的驱动/硬件）。

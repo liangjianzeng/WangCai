@@ -2299,6 +2299,11 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         }
         infer_end_time = ggml_time_us();
     } else {
+        // TEMP perf-round trace (remove after the 4B decode round): per-phase split of the
+        // decode step -- input bind (incl. the KV zeroize inside the converters), output bind,
+        // infer. Compare against the weight-bandwidth floor to see what is left to win.
+        const bool perf_trace = getenv("GGML_WARM_TRACE") != nullptr;
+        const int64_t bind_start_us = perf_trace ? ggml_time_us() : 0;
         for (size_t i = 0; i < ov_input_names_local.size(); i++) {
             const auto & param_name = ov_input_names_local[i];
             auto input_tensor = get_ov_input_tensor_static_decode(ggml_decoder, param_name);
@@ -2323,6 +2328,7 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             auto output_tensor = create_ov_output_tensor(ggml_decoder, infer_request, i, ggml_tensor);
             infer_request->set_output_tensor(i, output_tensor);
         }
+        const int64_t bind_end_us = perf_trace ? ggml_time_us() : 0;
 
         ov_raw_infer_start = ggml_time_us();
         try {
@@ -2351,6 +2357,15 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         }
         infer_end_time = ggml_time_us();
         ov_raw_infer_total = infer_end_time - ov_raw_infer_start;
+        if (perf_trace) {
+            static std::atomic<int> perf_step{0};
+            const int step = perf_step.fetch_add(1);
+            if (step >= 2 && step <= 12) {
+                GGML_LOG_INFO("PERFTRACE: step %d level %d bind_us %d outbind_us %d infer_us %d\n", step,
+                              (int) decode_level, (int) (bind_end_us - bind_start_us),
+                              (int) (ov_raw_infer_start - bind_end_us), (int) ov_raw_infer_total);
+            }
+        }
 
         if (ggml_openvino_getenv_int("GGML_OPENVINO_DEBUG_OUTPUT") ||
             ggml_openvino_getenv_str("GGML_OPENVINO_DEBUG_NODE")) {
