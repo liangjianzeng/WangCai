@@ -91,6 +91,12 @@ struct decoder_runtime_ctx {
     // parameter names, so one decoder object mutated through m_is_prefill can no longer serve
     // both. ptr serves decode (and the whole dynamic path); ptr_prefill serves prefill.
     std::shared_ptr<GgmlOvDecoder> ptr_prefill;
+    // Static decode graphs compiled per discrete attention level (see decode_attention_level in
+    // utils.cpp): NPU graphs reject dynamic shapes, so one fully-static graph per 256*2^k level
+    // keeps decode work proportional to the filled cells instead of the whole context. Requests
+    // live in ov_runtime_context::infer_request_cache_decode_levels (per backend context, like
+    // infer_request_cache); decoders live here.
+    std::map<int, std::shared_ptr<GgmlOvDecoder>> ptr_decode_levels;
 };
 
 struct ov_compiled_graph {
@@ -128,6 +134,9 @@ struct ov_runtime_context {
     std::unordered_map<graph_key, std::shared_ptr<decoder_runtime_ctx>, graph_key_hash> decoder_cache;
     std::unordered_map<graph_key, std::shared_ptr<ov::InferRequest>, graph_key_hash> infer_request_cache;
     std::unordered_map<graph_key, std::shared_ptr<ov::InferRequest>, graph_key_hash> infer_request_cache_prefill;
+    // Static decode requests per discrete attention level (see decoder_runtime_ctx::ptr_decode_levels).
+    std::unordered_map<graph_key, std::map<int, std::shared_ptr<ov::InferRequest>>, graph_key_hash>
+            infer_request_cache_decode_levels;
     // The decode list also serves the dynamic path (a single graph, never prefill-split).
     std::unordered_map<graph_key, std::vector<std::string>, graph_key_hash> ov_input_names_cache;
     std::unordered_map<graph_key, std::vector<std::string>, graph_key_hash> ov_output_names_cache;
@@ -148,6 +157,7 @@ struct ov_runtime_context {
         decoder_cache.clear();
         infer_request_cache.clear();
         infer_request_cache_prefill.clear();
+        infer_request_cache_decode_levels.clear();
         ov_input_names_cache.clear();
         ov_output_names_cache.clear();
         kv_state_input_name_map.clear();

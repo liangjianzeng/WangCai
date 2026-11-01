@@ -119,11 +119,6 @@ void ggml_openvino_device_config::init() {
         "GGML_OPENVINO_DUMP_BIN",
         // Integer values (use ggml_openvino_getenv_int)
         "GGML_OPENVINO_PREFILL_CHUNK_SIZE",
-        // 1 = bind the static decode graph's attention span as a runtime parameter (llama.cpp's
-        // per-step n_kv) so decode only works the filled span. Default OFF: the NPU plugin
-        // rejects the dynamic intermediate shapes at compile time (see compute_llm_params in
-        // ggml-decoder.cpp); CPU/GPU static runs may enable it.
-        "GGML_OPENVINO_TRIM_DECODE_ATTENTION",
         // 1 = build the attention mask from token positions instead of using llama.cpp's padded
         // mask (see get_ov_input_tensor_static_prefill).
         "GGML_OPENVINO_MASK_MODE",
@@ -141,6 +136,10 @@ void ggml_openvino_device_config::init() {
         "GGML_OPENVINO_ENABLE_CACHE",
         "GGML_OPENVINO_DISABLE_CACHE",
         "GGML_OPENVINO_DISABLE_KV_SLICE",
+        // 1 = compile one decode graph baked to the whole context (the pre-multi-level
+        // behavior) instead of the discrete per-level graphs; see decode_attention_level in
+        // utils.cpp.
+        "GGML_OPENVINO_DISABLE_DECODE_LEVELS",
         "GGML_OPENVINO_ENABLE_FALLBACK",
         "GGML_OPENVINO_MANUAL_GQA_ATTN",
         "GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN",

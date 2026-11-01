@@ -122,12 +122,10 @@ static uint64_t ggml_openvino_model_cache_extra_cfg(bool stateful, bool recurren
     extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_KV_SLICE") ? 1u : 0u);
     extra_cfg = extra_cfg * 131 + (manual_gqa_enabled ? 1u : 0u);
     extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_PROFILING") >= 2 ? 1u : 0u);
-    // The static decode graph's attention_size is a runtime parameter when the decode attention
-    // trim is on (GGML_OPENVINO_TRIM_DECODE_ATTENTION, default OFF: the NPU plugin rejects the
-    // dynamic intermediate shapes this produces at compile time -- "to_shape was called on a
-    // dynamic shape"), a baked constant otherwise -- different compiled graphs, so the blob
-    // cache key has to distinguish them.
-    extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_TRIM_DECODE_ATTENTION") ? 1u : 0u);
+    // Multi-level static decode graphs (see decode_attention_level): the decode half's baked
+    // attention span changed from the whole context to a per-level constant, so older
+    // disk-cache blobs must not match.
+    extra_cfg = extra_cfg * 131 + 3u;
     return extra_cfg;
 }
 
@@ -191,6 +189,22 @@ static void dump_ov_outputs_raw(const std::shared_ptr<ov::InferRequest> & infer_
                  << '\n';
         }
     }
+}
+
+// Smallest 256*2^k attention span that covers n_kv, capped at ctx. llama.cpp pads its per-call
+// KV span to a multiple of 256, so this discrete level set lets the static decode phase compile
+// one fully-static graph per level (NPU graphs reject dynamic shapes, and baking the whole
+// context makes every step attend the full span however few cells are filled -- decode at
+// -c 2048 measured 294 ms/step vs 70 ms at -c 512 with ~40 filled cells).
+static int decode_attention_level(int n_kv, int ctx) {
+    if (n_kv <= 0) {
+        return 0;
+    }
+    int level = 256;
+    while (level < n_kv && level < ctx) {
+        level *= 2;
+    }
+    return std::min(level, std::max(ctx, 1));
 }
 
 static std::string compiled_graph_key(const ggml_cgraph * graph,
@@ -542,6 +556,40 @@ ov::Tensor convert_ggml_input_to_ov(const std::shared_ptr<GgmlOvDecoder> & ggml_
 
     if (auto sliced = try_make_kv_sliced_tensor(ggml_decoder, name, ggml_tensor)) {
         return *sliced;
+    }
+
+    // Static decode graphs trim the KV cache parameter to the graph's attention level (see
+    // get_graph_input_shape): bind a level-shaped view over the same contiguous buffer so the
+    // per-step state round trip is level-sized too. The buffer prefix is exactly what the
+    // graph reads (attention rows [0, level)) and writes (cell ids < fill <= level).
+    //
+    // Either way the rows between the fill and the read span hold reused-heap garbage, and a
+    // NaN bit pattern in there poisons the QK scores before the -INF mask can zero the column
+    // (NaN + -INF = NaN) -- the observed acceptance flake. Zero [fill, span) on every decode
+    // bind: the cost is a few hundred KB of memset and the rows are only ever read masked or
+    // written first.
+    if (ggml_decoder->is_static() && !ggml_decoder->is_prefill() &&
+        ggml_decoder->get_compute_params().attention_size > 0) {
+        const auto * kv_op = ggml_decoder->get_tensor_used_op(ggml_tensor);
+        const bool flat_kv = ggml_tensor->ne[1] == 1 && ggml_tensor->ne[2] == 1 && ggml_tensor->ne[3] == 1;
+        if (GgmlOvDecoder::is_kvcache(ggml_tensor, kv_op) && !flat_kv && ggml_is_contiguous(ggml_tensor)) {
+            const int64_t span = std::min<int64_t>(ggml_decoder->get_compute_params().attention_size,
+                                                   (int64_t) ggml_tensor->ne[1]);
+            const auto * inp_pos_t = ggml_decoder->get_input_ggml_tensor("inp_pos");
+            if (inp_pos_t != nullptr && inp_pos_t->ne[0] == 1 && inp_pos_t->data != nullptr &&
+                !ggml_openvino_getenv_int("GGML_OPENVINO_NO_KV_ZEROIZE")) {
+                const int64_t fill = *(const int32_t *) inp_pos_t->data;
+                if (fill > 0 && fill < span) {
+                    memset((char *) ggml_tensor->data + fill * ggml_tensor->nb[1], 0,
+                           (size_t) (span - fill) * ggml_tensor->nb[1]);
+                }
+            }
+            if (ggml_decoder->get_compute_params().attention_size < (int64_t) ggml_tensor->ne[1]) {
+                ov::Shape level_shape = GgmlOvDecoder::get_shape(ggml_tensor);
+                level_shape[2] = (size_t) ggml_decoder->get_compute_params().attention_size;
+                return ov::Tensor(GgmlOvDecoder::get_ov_type(ggml_tensor), level_shape, ggml_tensor->data);
+            }
+        }
     }
 
     if (ggml_tensor->extra != nullptr && !ggml_decoder->is_splited_model()) {
@@ -1638,13 +1686,38 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     }
 
     std::lock_guard<std::mutex> lock(*(entry->mutex));
-    cache_hit = cache_hit && entry->ptr && r_ctx->infer_request_cache.count(key) != 0 &&
-                r_ctx->infer_request_cache_prefill.count(key) != 0;
 
-    if (cache_hit) {
-        ggml_decoder = entry->ptr;
-        old_m_params = ggml_decoder->get_model_params();
-        cache_hit = old_m_params.can_reuse_statically(m_params);
+    // Static decode runs against one graph per discrete attention level (NPU graphs cannot trim
+    // their span at runtime, and baking the whole context makes every step attend the full span
+    // however few cells are filled). Prefill and the dynamic path keep the single prefill/decode
+    // pair.
+    int decode_level = 0;
+    if (is_static && !no_kv_cache && !is_prefill && c_params.attention_size_raw > 0 &&
+        !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_DECODE_LEVELS")) {
+        decode_level = decode_attention_level(c_params.attention_size_raw, m_params.ctx_per_seq);
+        c_params.attention_size = decode_level;
+    }
+
+    bool reuse_ok = true;
+    if (decode_level > 0) {
+        cache_hit = cache_hit && entry->ptr_decode_levels.count(decode_level) != 0 &&
+                    r_ctx->infer_request_cache_decode_levels.count(key) != 0 &&
+                    r_ctx->infer_request_cache_decode_levels.at(key).count(decode_level) != 0;
+        if (cache_hit) {
+            ggml_decoder = entry->ptr_decode_levels.at(decode_level);
+            old_m_params = ggml_decoder->get_model_params();
+            reuse_ok = old_m_params.can_reuse_statically(m_params);
+            cache_hit = reuse_ok;
+        }
+    } else {
+        cache_hit = cache_hit && entry->ptr && r_ctx->infer_request_cache.count(key) != 0 &&
+                    r_ctx->infer_request_cache_prefill.count(key) != 0;
+        if (cache_hit) {
+            ggml_decoder = entry->ptr;
+            old_m_params = ggml_decoder->get_model_params();
+            reuse_ok = old_m_params.can_reuse_statically(m_params);
+            cache_hit = reuse_ok;
+        }
     }
 
     std::vector<std::string> ov_input_names_local;
@@ -1658,7 +1731,8 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         // the maps under whatever mode the object carries, and a mutated mode would rebuild the
         // prefill decoder's inputs under the decode naming (or vice versa) behind the binding's
         // back.
-        ggml_decoder = (is_prefill && entry->ptr_prefill) ? entry->ptr_prefill : entry->ptr;
+        ggml_decoder = decode_level > 0 ? entry->ptr_decode_levels.at(decode_level) :
+                                          (is_prefill && entry->ptr_prefill) ? entry->ptr_prefill : entry->ptr;
         ggml_decoder->set_model_params(m_params);
         ggml_decoder->set_compute_params(c_params);
         if (old_m_params.kv_buffer_changed(m_params) || !ggml_decoder->is_bound_to(cgraph)) {
@@ -1667,8 +1741,12 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         ggml_decoder->add_extra_inputs();
         {
             std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
-            infer_request =
-                is_prefill ? r_ctx->infer_request_cache_prefill.at(key) : r_ctx->infer_request_cache.at(key);
+            if (decode_level > 0) {
+                infer_request = r_ctx->infer_request_cache_decode_levels.at(key).at(decode_level);
+            } else {
+                infer_request =
+                    is_prefill ? r_ctx->infer_request_cache_prefill.at(key) : r_ctx->infer_request_cache.at(key);
+            }
             auto & input_names_map =
                 is_prefill ? r_ctx->ov_input_names_cache_prefill : r_ctx->ov_input_names_cache;
             auto & output_names_map =
@@ -1688,26 +1766,77 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         conversion_end_time = decoder_end_time;
         compile_end_time = decoder_end_time;
     } else {
-        if (cache_enabled) {
+        // Only a failed compatibility check invalidates what is already compiled: a missing
+        // decode level compiles alongside the still-valid pair, and a prefill-only compile
+        // leaves existing decode levels alone.
+        if (cache_enabled && !reuse_ok) {
             std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
             r_ctx->infer_request_cache.erase(key);
             r_ctx->infer_request_cache_prefill.erase(key);
+            r_ctx->infer_request_cache_decode_levels.erase(key);
+            entry->ptr_decode_levels.clear();
         }
 
-        // Static execution shares a compiled prefill/decode pair. Each backend
-        // creates and retains its own requests for both phases.
+        // What needs compiling: prefill passes compile the prefill graph (plus the legacy
+        // context-baked decode graph on a fresh entry); decode passes compile only the missing
+        // attention level. A failed can_reuse_statically erases the request caches above, so
+        // request presence is the source of truth for what to rebuild. Each level's span is a
+        // compile-time constant -- the NPU plugin rejects the dynamic intermediate shapes a
+        // runtime-parameterized bound would produce (see compute_llm_params), so discrete
+        // fully-static graphs are the only trim.
+        const bool prefill_request_ok = reuse_ok && r_ctx->infer_request_cache_prefill.count(key) != 0;
+        const bool decode_pair_request_ok = reuse_ok && r_ctx->infer_request_cache.count(key) != 0;
+        const bool compile_prefill = is_prefill && !prefill_request_ok;
+        const bool compile_decode =
+                is_prefill ? (!decode_pair_request_ok && entry->ptr_decode_levels.empty()) : true;
+
+        // The prefill graph always bakes the whole context span; only the decode graphs take the
+        // discrete level (c_params carries it on decode passes, see the hit-determination above).
+        ComputeParams c_params_ctx = c_params;
+        if (decode_level > 0) {
+            c_params_ctx.attention_size = m_params.ctx_per_seq;
+        }
+
         auto shared_cache = r_ctx->compiled_cache;
         std::unique_lock<std::mutex> compile_lock(shared_cache->mutex);
         auto weight_names = get_weight_names(cgraph);
+
+        const auto build_static_model = [&core, &compile_config, dump_ir_enabled = ggml_openvino_getenv_int(
+                                                                     "GGML_OPENVINO_DUMP_IR")](
+                                            const std::shared_ptr<GgmlOvDecoder> & decoder, const char * tag,
+                                            std::shared_ptr<ov::Model> & model,
+                                            ov::CompiledModel & compiled_model,
+                                            std::shared_ptr<ov::InferRequest> & infer_request,
+                                            int64_t & local_conversion_end_time,
+                                            int64_t & local_compile_end_time) {
+            auto input_model = std::make_shared<ov::frontend::ggml::InputModel>(decoder);
+            model = ov::frontend::ggml::FrontEnd::convert(input_model);
+            decoder->clear_model_weights();
+            local_conversion_end_time = ggml_time_us();
+
+            if (dump_ir_enabled) {
+                const auto dump_ir_timestamp = static_cast<long long>(ggml_time_us());
+                char timestamped_filename[64];
+                snprintf(timestamped_filename, sizeof(timestamped_filename), "model_%s_%lld.xml", tag,
+                         dump_ir_timestamp);
+                ov::serialize(model, timestamped_filename);
+            }
+
+            compiled_model = core.compile_model(model, device, compile_config);
+            infer_request = std::make_shared<ov::InferRequest>(compiled_model.create_infer_request());
+            local_compile_end_time = ggml_time_us();
+        };
+
+        if (is_prefill && compile_prefill && compile_decode) {
         // One decoder per phase (see ptr_prefill in utils.h): the prefill graph registers the
         // renamed SWA write-index parameters, the decode graph the merged ones.
         auto local_decoder_prefill = std::make_shared<GgmlOvDecoder>(
-            cgraph, m_params, c_params, weight_names, is_static, stateful, false, true, prefill_chunk_size);
+            cgraph, m_params, c_params_ctx, weight_names, is_static, stateful, false, true, prefill_chunk_size);
         auto local_decoder_decode =
             no_kv_cache ? local_decoder_prefill :
                           std::make_shared<GgmlOvDecoder>(cgraph, m_params, c_params, weight_names, is_static,
                                                           stateful, false, false, prefill_chunk_size);
-        auto & local_decoder = is_prefill ? local_decoder_prefill : local_decoder_decode;
+        auto & local_decoder = local_decoder_prefill;
         const std::string shared_key =
             cache_enabled ? compiled_graph_key(cgraph, *local_decoder, device, prefill_chunk_size) : "";
         auto shared_it = shared_cache->graphs.find(shared_key);
@@ -1720,15 +1849,24 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             ggml_decoder = local_decoder;
             entry->ptr_prefill = local_decoder_prefill;
             entry->ptr = local_decoder_decode;
-            infer_request = is_prefill ? prefill_request : decode_request;
+            if (!no_kv_cache) {
+                const int baked_decode_level =
+                    decode_attention_level(c_params.attention_size, m_params.ctx_per_seq);
+                entry->ptr_decode_levels[baked_decode_level] = local_decoder_decode;
+                std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
+                r_ctx->infer_request_cache_decode_levels[key][baked_decode_level] = decode_request;
+            }
+            infer_request = prefill_request;
             // The prefill and decode models carry different parameter lists once the SWA
             // write-index rename applies to prefill only; bind against the matching one.
-            ov_input_names_local = is_prefill ? compiled.input_names_prefill : compiled.input_names_decode;
-            ov_output_names_local = is_prefill ? compiled.output_names_prefill : compiled.output_names_decode;
+            ov_input_names_local = compiled.input_names_prefill;
+            ov_output_names_local = compiled.output_names_prefill;
             r_ctx->infer_request_cache_prefill[key] = prefill_request;
             r_ctx->infer_request_cache[key] = decode_request;
-            r_ctx->ov_input_names_cache[key] = ov_input_names_local;
-            r_ctx->ov_output_names_cache[key] = ov_output_names_local;
+            r_ctx->ov_input_names_cache[key] = compiled.input_names_decode;
+            r_ctx->ov_output_names_cache[key] = compiled.output_names_decode;
+            r_ctx->ov_input_names_cache_prefill[key] = ov_input_names_local;
+            r_ctx->ov_output_names_cache_prefill[key] = ov_output_names_local;
             decoder_end_time = conversion_end_time = compile_end_time = ggml_time_us();
             GGML_LOG_DEBUG("ggml-openvino: shared compiled model HIT (static)\n");
         } else {
@@ -1736,37 +1874,13 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             auto model_weights = GgmlOvDecoder::create_weight_nodes(cgraph);
 
             auto ggml_decoder_prefill = std::make_shared<GgmlOvDecoder>(
-                cgraph, m_params, c_params, model_weights, is_static, stateful, false, true, prefill_chunk_size);
+                cgraph, m_params, c_params_ctx, model_weights, is_static, stateful, false, true, prefill_chunk_size);
             auto ggml_decoder_decode =
                 no_kv_cache ? ggml_decoder_prefill :
                               std::make_shared<GgmlOvDecoder>(cgraph, m_params, c_params, model_weights, is_static,
                                                               stateful, false, false, prefill_chunk_size);
             decoder_end_time = ggml_time_us();
 
-            const bool dump_ir = ggml_openvino_getenv_int("GGML_OPENVINO_DUMP_IR");
-            const auto dump_ir_timestamp = static_cast<long long>(ggml_time_us());
-
-            auto build_static_model = [&core, &compile_config, dump_ir, dump_ir_timestamp](
-                                          const std::shared_ptr<GgmlOvDecoder> & decoder, const char * tag,
-                                          std::shared_ptr<ov::Model> & model, ov::CompiledModel & compiled_model,
-                                          std::shared_ptr<ov::InferRequest> & infer_request,
-                                          int64_t & local_conversion_end_time, int64_t & local_compile_end_time) {
-                auto input_model = std::make_shared<ov::frontend::ggml::InputModel>(decoder);
-                model = ov::frontend::ggml::FrontEnd::convert(input_model);
-                decoder->clear_model_weights();
-                local_conversion_end_time = ggml_time_us();
-
-                if (dump_ir) {
-                    char timestamped_filename[64];
-                    snprintf(timestamped_filename, sizeof(timestamped_filename), "model_%s_%lld.xml", tag,
-                             dump_ir_timestamp);
-                    ov::serialize(model, timestamped_filename);
-                }
-
-                compiled_model = core.compile_model(model, device, compile_config);
-                infer_request = std::make_shared<ov::InferRequest>(compiled_model.create_infer_request());
-                local_compile_end_time = ggml_time_us();
-            };
             std::shared_ptr<ov::Model> model_prefill;
             std::shared_ptr<ov::Model> model_decode;
             ov::CompiledModel compiled_model_prefill;
@@ -1843,15 +1957,110 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
                                       ov_output_names_decode_local});
             }
 
+            // The decode half's baked span becomes its discrete level: ctx on a prefill-first
+            // pass, the current level on the rare decode-first dual compile.
+            const int baked_decode_level =
+                decode_attention_level(no_kv_cache ? m_params.ctx_per_seq : c_params.attention_size,
+                                       m_params.ctx_per_seq);
             if (cache_enabled) {
                 std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
                 r_ctx->infer_request_cache_prefill[key] = infer_request_prefill;
                 r_ctx->infer_request_cache[key] = infer_request_decode;
+                r_ctx->infer_request_cache_decode_levels[key][baked_decode_level] = infer_request_decode;
                 r_ctx->ov_input_names_cache[key] = ov_input_names_decode_local;
                 r_ctx->ov_output_names_cache[key] = ov_output_names_decode_local;
                 r_ctx->ov_input_names_cache_prefill[key] = ov_input_names_prefill_local;
                 r_ctx->ov_output_names_cache_prefill[key] = ov_output_names_prefill_local;
             }
+            if (!no_kv_cache) {
+                entry->ptr_decode_levels[baked_decode_level] = ggml_decoder_decode;
+            }
+        }
+        } else if (compile_decode) {
+            // Decode-only: the pair exists (or prefill is deferred to its first pass); compile
+            // just this attention level. Private to this backend -- the shared pair cache holds
+            // two-phase entries only.
+            //
+            // The NPU device budget fits prefill plus ONE decode graph: with a second decode
+            // level resident, its first execute dies with ZE_RESULT_ERROR_UNINITIALIZED (the
+            // defect-7 signature -- weights banks are per CompiledModel, and prefill+decode of
+            // one pair already take the budget). Evict the other levels; a later switch back
+            // reloads them from the disk blob cache.
+            {
+                std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
+                r_ctx->infer_request_cache_decode_levels.erase(key);
+                entry->ptr_decode_levels.clear();
+            }
+            std::shared_ptr<ov::Model> model_level;
+            auto model_weights = GgmlOvDecoder::create_weight_nodes(cgraph);
+            auto decoder_level = std::make_shared<GgmlOvDecoder>(cgraph, m_params, c_params, model_weights,
+                                                                 is_static, stateful, false, false,
+                                                                 prefill_chunk_size);
+            decoder_end_time = ggml_time_us();
+            int64_t level_conversion_end_time;
+            int64_t level_compile_end_time;
+            ov::CompiledModel compiled_model_level;
+            build_static_model(decoder_level, "decode", model_level, compiled_model_level, infer_request,
+                               level_conversion_end_time, level_compile_end_time);
+            conversion_end_time = level_conversion_end_time;
+            compile_end_time = level_compile_end_time;
+            ggml_decoder = decoder_level;
+
+            std::vector<std::string> ov_input_names_level_local;
+            std::vector<std::string> ov_output_names_level_local;
+            for (const auto & ov_param : model_level->get_parameters()) {
+                ov_input_names_level_local.push_back(ov_param->get_friendly_name());
+            }
+            for (const auto & ov_output : model_level->get_results()) {
+                ov_output_names_level_local.push_back(ov_output->get_friendly_name());
+            }
+            ov_input_names_local = ov_input_names_level_local;
+            ov_output_names_local = ov_output_names_level_local;
+
+            if (cache_enabled) {
+                std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
+                r_ctx->infer_request_cache_decode_levels[key][decode_level] = infer_request;
+                // All levels share one parameter list (constants differ only in value).
+                r_ctx->ov_input_names_cache[key] = ov_input_names_level_local;
+                r_ctx->ov_output_names_cache[key] = ov_output_names_level_local;
+            }
+            entry->ptr_decode_levels[decode_level] = decoder_level;
+            GGML_LOG_INFO("ggml-openvino: compiled decode graph for attention level %d\n", decode_level);
+        } else {
+            // Prefill-only: decode levels already exist from a decode-first pass.
+            std::shared_ptr<ov::Model> model_prefill_only;
+            auto model_weights = GgmlOvDecoder::create_weight_nodes(cgraph);
+            auto decoder_prefill = std::make_shared<GgmlOvDecoder>(cgraph, m_params, c_params_ctx, model_weights,
+                                                                   is_static, stateful, false, true,
+                                                                   prefill_chunk_size);
+            decoder_end_time = ggml_time_us();
+            int64_t prefill_conversion_end_time;
+            int64_t prefill_compile_end_time;
+            ov::CompiledModel compiled_model_prefill;
+            build_static_model(decoder_prefill, "prefill", model_prefill_only, compiled_model_prefill,
+                               infer_request, prefill_conversion_end_time, prefill_compile_end_time);
+            conversion_end_time = prefill_conversion_end_time;
+            compile_end_time = prefill_compile_end_time;
+            ggml_decoder = decoder_prefill;
+
+            std::vector<std::string> ov_input_names_prefill_local;
+            std::vector<std::string> ov_output_names_prefill_local;
+            for (const auto & ov_param : model_prefill_only->get_parameters()) {
+                ov_input_names_prefill_local.push_back(ov_param->get_friendly_name());
+            }
+            for (const auto & ov_output : model_prefill_only->get_results()) {
+                ov_output_names_prefill_local.push_back(ov_output->get_friendly_name());
+            }
+            ov_input_names_local = ov_input_names_prefill_local;
+            ov_output_names_local = ov_output_names_prefill_local;
+
+            if (cache_enabled) {
+                std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
+                r_ctx->infer_request_cache_prefill[key] = infer_request;
+                r_ctx->ov_input_names_cache_prefill[key] = ov_input_names_prefill_local;
+                r_ctx->ov_output_names_cache_prefill[key] = ov_output_names_prefill_local;
+            }
+            entry->ptr_prefill = decoder_prefill;
         }
     }
 

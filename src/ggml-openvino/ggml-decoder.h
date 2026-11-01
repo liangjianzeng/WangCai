@@ -66,6 +66,11 @@ struct ComputeParams {
     int attention_size = -1;
     int attention_size_swa = -1;
     int attention_size_static = -1;  // encoder/cross-attn KV fill level (whisper)
+    // llama.cpp's raw per-call KV span (mask width, PAD'ed to 256) before the static path
+    // overrides attention_size with the whole context. The static decode phase re-bakes
+    // attention_size to a discrete trim level derived from this (see decode_attention_level
+    // in utils.cpp): one fully-static graph per level, switched by fill.
+    int attention_size_raw = -1;
     // Sliding window width, read back from the band of ggml's own SWA mask. ggml never passes
     // n_swa down to a backend, but fill_mask() bakes it into the mask contents, so the widest
     // unmasked row recovers it. Shorter than n_swa while the sequence is still short, which is

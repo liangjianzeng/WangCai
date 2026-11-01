@@ -11,7 +11,7 @@ param(
     [Parameter(Mandatory = $true)][string]$Model,
     [string]$PathPrefix = '',   # extra dirs for the runtime DLLs (OpenVINO libs); ';'-separated
     [int]$Ctx = 1024,
-    [int]$Tokens = 48
+    [int]$Tokens = 96
 )
 $ErrorActionPreference = 'Stop'
 
@@ -58,7 +58,20 @@ foreach ($q in $questions) {
         $failed++
         continue
     }
-    if ($text -notmatch $q.Expect) {
+    # Match the answer section only (between the echoed prompt and the perf footer), never
+    # the whole log: the "[ Prompt: 23.7 t/s | Generation: 29.0 t/s ]" footer contains
+    # arbitrary digits, so a single-digit expectation like '2' randomly false-passed or
+    # false-failed on timing noise (the Q3 flake of 2026-11-01).
+    $answer = $text
+    $promptEcho = '> ' + $q.Prompt
+    $idx = $text.IndexOf($promptEcho)
+    if ($idx -ge 0) {
+        $start = $idx + $promptEcho.Length
+        $end = $text.IndexOf('[ Prompt:', $start)
+        if ($end -lt 0) { $end = $text.Length }
+        $answer = $text.Substring($start, $end - $start)
+    }
+    if ($answer -notmatch $q.Expect) {
         Write-Output ("FAIL(missing '{0}')  answer:" -f $q.Expect)
         $head = ($text -split "`n" | Select-String -Pattern 'thinking|answer|We need' | Select-Object -First 3)
         $head | ForEach-Object { Write-Output ('  ' + $_.Line.Substring(0, [Math]::Min(160, $_.Line.Length))) }

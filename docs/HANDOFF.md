@@ -319,3 +319,34 @@
   stateful 化，独立工作量。
 - 当轮结论：12.5 t/s @c512 已接近 OpenVINO GenAI 在 NPU 3720 上 1-2B 模型的公开水平；要显著
   超越需要上面两条重型改造，本聚焦轮先落地测量基建（PROFILING=2 已接入静态路径）与根因记录。
+
+## 2026-11-01：缺陷 2 第二轮——离散多跨度 decode 图组落地（17× @c8192）+ accept-smoke Q3 flake 定案
+### 多级 decode 图（已实施、已验证）
+- 方案：`decode_attention_level(n_kv, ctx)`——按 PAD(n_kv,256) 的离散级别（256/512/…/ctx）
+  每级一张全静态 decode 图，llama.cpp 每步按当前 n_kv 选级；KV cache 参数与绑定按级别裁视图
+  （level_shape[2]=level），每步状态 I/O 与该级别成正比。`ComputeParams::attention_size_raw`
+  在烤死前捕获 mask->ne[0]，供命中判定用。
+- 实现（ggml-openvino）：utils.cpp 三编译分支（dual=prefill+decode@ctx / decode-only=私编某级，
+  编前**驱逐**其他级——NPU 设备预算只容 prefill+一张 decode 图，第二张常驻在首次 execute 即
+  ZE_RESULT_ERROR_UNINITIALIZED（缺陷-7 签名） / prefill-only）；convert_ggml_input_to_ov 里
+  KV 零填充（fill>0 且 fill<span 时把 [fill,span) 段清零，杜绝上一序列残留跨级别泄漏）；
+  ggml-decoder.cpp is_kvcache 输入形状按级别裁剪；GGML_OPENVINO_DISABLE_DECODE_LEVELS=1 逃生门
+  回退全 ctx 单图。escape 门全部登记进 ggml-openvino-extra.cpp allowlist。
+- 实测（LFM3-1.7B Q4_K_M，NPU 3720）：**decode 15.0-15.1 t/s 与 ctx 无关**——c=8192 从 0.9 t/s
+  →15（**17×**），c=2048 从 3.3→15（4.5×）；600-token 任务跨 256/512/1024 三级切换全程无错；
+  7K prompt 在 4096 级正常；token 流在不同 ctx 下逐字节一致；level 图 vs ctx 图 48 步 logits
+  逐位一致（diff-lines: 0）。
+- 教训（过程事故）：D: 工作树的未提交多级修改曾被意外还原到早晨版（/md5 与 E: 提交一致/），
+  从 /tmp/mlnew 备份恢复后重建验证通过。**多轮实验期间必须保持 /tmp 双备份**（mlnew=当前，
+  mlbak=已提交基线）。
+### accept-smoke Q3 flake 定案（测试基建 bug，非引擎回归）
+- 现象：Q3（"1+1"）在多级代码上 2/3、NO_KV_ZEROIZE 下 3/3，看似 zeroing 相关。
+- 真因（两层）：① 判定 `$text -match '2'` 匹配**整个日志**，性能行
+  `[ Prompt: 23.7 t/s | Generation: 29.0 t/s ]` 的 t/s 数字随机含 '2'，假通过/假失败随机器
+  负载漂移——之前的 "zeroing 相关性" 完全是这行数字噪声，小样本巧合；② n=48 对 LFM3 的思维
+  链太短：note-4 文本（"or simply '4'" 幻觉）动/静态路径**逐字节一致**（非引擎回归），n=96
+  时两路径都到 "Thus 1+1 = 2"。
+- 修复：accept-smoke.ps1 改为只匹配答案区段（回显 prompt 与 `[ Prompt:` 性能行之间），默认
+  -n 96。修复后 3 轮 3/3 全过、完全确定。
+- zeroing 结论：保留（level 切换时清 [fill,span) 是跨级别正确性保障；A/B logits 逐位一致，
+  无数值代价）；GGML_OPENVINO_NO_KV_ZEROIZE 保留为调试逃生门。
