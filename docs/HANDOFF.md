@@ -424,3 +424,28 @@
   weightless blob 的权重重定位契约（或改用权重内嵌导出 + 每图 1.3 GB 暂存副本的方案）。已列入下一轮。
 - 其它备选（记录）：dual 分支的 decode@ctx 图改惰性可省启动 ~1.5 s，但把 1.5 s 卡顿挪到 256-token
   跨级点，且后台预热会与 NPU 设备预算（缺陷-7）冲突，暂不动。
+
+### 2.2 后续：NPUW 权重分离（WSH）契约已从源码完全打开
+- NPUW 插件源码已定位并 sparse-clone 到本机：`D:\llm\npu\probe_stateful\ovsrc`
+  （openvinotoolkit/openvino master，`src/plugins/intel_npu/src/plugin/npuw/`；注意 master 里 npuw
+  已从 `src/npuw` 移到 `src/plugin/npuw`）。
+- 关键代码路径：
+  - `npuw/compiled_model.cpp:98` `should_use_weightless_flow`：NPUW_FOLD 开（默认）且
+    const_to_offset 非空 → 导出 weightless blob；
+  - `npuw/compiled_model.cpp:120` `make_import_weights_ctx`：import 时按优先级
+    `WEIGHTS_HANDLE_PROVIDER`（ov::FileHandleProvider 回调，可给 mmap 句柄）→
+    `WEIGHTS_PATH`（ov::weights_path，mmap 文件）→ `MODEL_PTR`（**ov::hint::model**，
+    是 `shared_ptr<const ov::Model>`，不是裸指针——名字有误导）；
+  - 权重引用 = blob 里记录的 `(bin_offset, size)` 对，`bin_offset` 由
+    `src/core/src/weight_sharing_util.cpp`（ov::weight_sharing WSH pass）在编译预处理时打进
+    `WeightlessCacheAttribute`——**指向 WSH 重建的共享权重存储**，不是我们的 backend 缓冲。
+- **下一轮实现方案（按优先级）**：
+  1. 引擎侧自行走 WSH 等价流程：把三张图共用的 1.3 GB 权重缓冲写一次
+     `<cache_cm>/weights.bin`，并给 create_weight_nodes 产出的常量打上对应 bin_offset 的
+     WeightlessCacheAttribute（或改从 ov::read_model(xml,bin) 读回），使 NPUW 导出/导入的
+     offset 语义对齐——import 即 mmap weights.bin（~0.45 s/图）。
+  2. 或者放弃 weightless：让常量在编译期持副本（每图 +1.3 GB 暂存），blob 内嵌权重，
+     import 免属性——磁盘 3.9 GB、净省 ~2.6 s。
+- 预期账目（即使全部打通）：CM 缓存净省 ≈2.6 s（转换 2.3 + 编译省差），热启动 8.9 → ~6.3 s；
+  到 <5 s 还需解决首次设备图下载 1.1 s 与 NPUW blob import 的 ~1 s——需要 NPUW 深处（LLM
+  compiled model 的 init schedule）或接受 6 s 量级作为 2.2 的阶段性目标。
