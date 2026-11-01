@@ -461,3 +461,26 @@
   （权重句柄 provider / bank 去重），已记录于此。
 - 热启动终态：**默认路径 8.9-9.4 s**（repack 并行化贡献 ~14 s）。无回归：NPU 三问 3/3、
   CPU accept-smoke 3/3。
+
+## 2026-11-01：音频"回归"定案——三层因果链闭合（NPU 音频恢复正确输出）
+- 现象回顾：NPU/CPU 静态音频在多级 decode 提交后输出坍缩为 "<think>"+EOS/静默退出；NPU 另有
+  level 图 UNINITIALIZED 崩溃。逐层 dump 对比（GGML_OPENVINO_DUMP_BIN + 逐层 KV cos）定位：
+- **因果①（已修复）音频编码器 requant 精度**：NPU 默认把 Q4_0 重分组到 group-128 对称，对
+  mmproj conv 栈（"a."-前缀张量）是纯损失——projected 嵌入对 CPU 静态参照 cos 0.963（范数系统性
+  +12%），音频答案在 <think> 后立即 EOS。修复：NPU 默认对 "a."-前缀 Q4_0 走 native（其余 Q4_0
+  保持 Q4_0_128——LLM 侧 group-128 是 GatherMatmulCompressed 的性能最优，native 化会让 1.7B
+  decode 掉到 8.5 t/s）。修复后编码器嵌入 cos 0.9997（fp16 噪声级）。
+- **因果②LLM 权重量化不一致**：CPU 静态（q4_sym128_all → Q4_0 native）与 NPU 默认（Q4_0→128）
+  的 LLM 权重不同。逐层 KV cos 显示两条路径的 NPU-vs-CPU 分歧幅度同级（文本 layer12=0.734、
+  音频 layer12=0.76），文本答案余量大不受影响、音频答案落在边际敏感区被翻转。NPU 用
+  `REQUANT_KQUANT=q4_sym128_all`（与 CPU 参照同量化）后，NPU 音频输出与 CPU 静态/native Q8_0
+  参照逐字一致："A high-pitched, pure"。
+- **因果③（遗留）Omni-2B + level 图 = 缺陷-7 设备预算**：Omni-2B 的 decode level 图首次
+  execute 即 ZE_RESULT_ERROR_UNINITIALIZED（非确定性，与设备碎片化相关；曾有一次全程成功）。
+  Omni 上需 `DISABLE_DECODE_LEVELS=1`。1.7B 文本模型不受影响（15 t/s ctx 无关保持）。
+- 验证矩阵（本轮终态）：NPU 音频正确输出 ✓（q4_sym128_all + levels off）；CPU 静态音频 ✓；
+  1.7B NPU decode 14.0-14.7 t/s @c2048/c8192 ✓；CPU accept-smoke 3/3 ✓。
+- 已知待办：①引擎级 fallback——level 图 execute 撞 UNINITIALIZED 时自动降级重编 ctx 图重试
+  （消灭 Omni 上的 env 需求）；②mtmd-cli 无 perf footer 且尾部截断的退出路径（三方向都在，
+  与本回归无关）；③"top-1 分歧定性"升级为"分岐幅度定性"——文本/音频同量级，答案余量决定
+  是否可见，原"f16 复利"结论成立并已量化。
