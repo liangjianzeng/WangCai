@@ -96,7 +96,10 @@ tools\compare-tensors.ps1 -A tmp\dumps\cpu -B tmp\dumps\npu
 回退全 ctx 单图。
 
 **剩余分量**：状态 host↔device 往返（根因②，~30 ms/步 @c512 随级别缩小后仍是主要残差）与
-lm_head 11 ms（根因③）。第三轮（独立）：NPU remote tensor / stateful 化。
+lm_head 11 ms（根因③）。~~第三轮（stateful 化）~~：**已证伪（2026-11-01 探针）**——NPU 支持
+VariableState（状态跨 infer 设备侧累积），但每步成本 ≈5-6 ms/MB（0.18 GB/s），比参数绑定
+（8.4 MB 全步骤 6 ms，≈1.4 GB/s）慢 7 倍，路线反模式；参数绑定 + 级别裁剪即当前最优架构。
+下一个独立杠杆：lm_head 11 ms。探针存档 tools/npu-probes/，细节见 HANDOFF 2026-11-01 第三轮节。
 
 <details><summary>第一轮解剖（2026-11-01，存档）</summary>
 

@@ -350,3 +350,19 @@
   -n 96。修复后 3 轮 3/3 全过、完全确定。
 - zeroing 结论：保留（level 切换时清 [fill,span) 是跨级别正确性保障；A/B logits 逐位一致，
   无数值代价）；GGML_OPENVINO_NO_KV_ZEROIZE 保留为调试逃生门。
+
+## 2026-11-01：缺陷 2 第三轮先导探针——NPU stateful（VariableState）路线证伪
+- 探针（tools/npu-probes/，OpenVINO 2026.4.1 Python API，LFM3 同机）：
+  - `npu-stateful-probe.py`：read_value/assign 最小图。**NPU 支持 VariableState**——query_state()
+    正常、状态跨 infer() 在设备上累积（out2=2 证明；初始值张量被忽略、按 0 初始化）。
+    注意 OV Python 构造坑：Model([results], [sinks], [params], name) 的 sinks 在参数**之前**，
+    且 sink 必须是 Assign 节点本身（Result 不算 Sink）。
+  - `npu-state-vs-param-bench.py`：8.4 MB f16 KV 量级状态，每步耗时对比：
+    **参数绑定 6.1-6.3 ms/步（≈1.4 GB/s） vs 设备驻留 state 43-45 ms/步**——stateful 慢 7 倍。
+  - 状态大小扫描（2/8/32 MB）：11.4 / 43 / 205 ms/步，≈**5-6 ms/MB（0.18 GB/s）**，
+    成本随大小线性——每次 infer() 都走慢速状态检查点路径，不是固定开销。
+- **结论**：stateful 化（设备驻留 KV）在当前驱动/插件上是性能反模式，路线证伪；多级 decode 图的
+  参数绑定 + 级别裁剪就是当前 OpenVINO NPU 上的最优架构。defect-2 剩余分量里，state I/O 已被
+  级别裁剪大幅缩小，下一个独立杠杆是 lm_head（11 ms，[2048]×[128000] 单发 GEMV）。
+- 过程注意：**平铺 [1, N] 大形状的 elementwise 图会让 NPUW 编译爆炸**（0.5 MB 平铺 add 图编译
+  数分钟、CPU 占满）——探针一律保持 4D 结构。
