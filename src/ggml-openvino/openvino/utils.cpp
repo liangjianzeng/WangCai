@@ -125,6 +125,13 @@ std::pair<ov::Output<Node>, ov::Output<Node>> make_sin_cos(int32_t * rope_params
     const bool is_mrope = (mode == TYPE_MROPE);
     const bool is_multi = is_imrope || is_vision || is_mrope;
 
+    // TEMP vision-round trace (remove after the vision static-binding fix): shapes flowing
+    // into the sin/cos construction, to pin the [1,3136,1,64] table mismatch.
+    if (getenv("GGML_WARM_TRACE") != nullptr) {
+        fprintf(stderr, "VISROPE: make_sin_cos mode=%d inp_pos_ps=%s n_dims=%d head_dim=%d\n", mode,
+                inp_pos->get_output_partial_shape(0).to_string().c_str(), (int) rope_params[1], (int) head_dim);
+    }
+
     if (stateful) {
         inp_pos =
             std::make_shared<ov::op::v0::Squeeze>(inp_pos, ov::op::v0::Constant::create(ov::element::i64, {1}, {0}));

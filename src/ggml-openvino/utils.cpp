@@ -1667,6 +1667,20 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     const ov::AnyMap compile_config = no_kv_cache ? without_npuw(config) : config;
     if (m_params.n_heads_kv == -1) {
         prefill_chunk_size = inp_pos->ne[0];
+        // Multi-plane position tables (mtmd vision encoder, IMROPE/VISION/MROPE) pack the 4
+        // planes INTO ne[0]: the chunk is the per-plane token count, not the raw length. The
+        // decoder multiplies the planes back when sizing the positions parameter, so taking
+        // the raw ne[0] double-counted them -- a [1,1,1,12544] parameter on a 784-patch image
+        // (4x3136), [1,3136,1,64] rope tables against [1,784,16,64] data, and the vision
+        // static translation died at shape validation. The audio encoder is unaffected: its
+        // positions are single-plane, so the divisor is 1.
+        for (int i = 0; i < cgraph->n_nodes; i++) {
+            const ggml_tensor * node = cgraph->nodes[i];
+            if (node->op == GGML_OP_ROPE && node->src[1] == inp_pos) {
+                prefill_chunk_size /= GgmlOvDecoder::get_inp_pos_n_planes(node);
+                break;
+            }
+        }
     }
     graph_key key(cgraph);
     static const bool cache_enabled = !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_CACHE");

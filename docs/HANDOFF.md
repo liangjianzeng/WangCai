@@ -667,3 +667,23 @@ llama-bench -p 512 -n 0：native 166.6 / OV-CPU 95.1 / **NPU(chunk128) 89.4 t/s*
 付 64-128 列）。与 1.7B 的 69% 相比的 15 个点差值 = 预算把 chunk 压到 128/64 的 pad 浪费 +
 每 chunk 固定开销；回到 chunk256 需要上游 NPUW bank 去重。测量纪律：短 prompt 看首 token
 延迟（秒），长 prompt 看 t/s。
+
+## 2026-11-01：视觉静态翻译跑通——多平面 positions 双计修复（残留精度缺陷另立）
+
+**根因（VISROPE 插桩 + IR 对照实锤）**：视觉编码器是无 KV 的 cacheless 图，`utils.cpp` 里
+`prefill_chunk_size = inp_pos->ne[0]` 取了 **3136**——但 llama.cpp 视觉 rope 的 positions 本身
+已把 4 个平面打包进 ne[0]（4×784）；decoder 定参时再乘 n_planes → **[1,1,1,12544]** 参数，
+make_sin_cos 的多平面 reshape 按每平面 3136 个"token"切 → [1,3136,1,64] 的 cos/sin 表对
+[1,784,16,64] 的数据——即此前记录的 Multiply 形状验证失败。音频编码器未爆是因为其 positions
+是单平面（除数为 1）。translate_session 的共享 sin_cos（无 mode 参数）已被注释是死路径；
+rope.cpp 的 op_case 映射（VISION→3）与绑定侧的多平面处理本身都是对的。
+
+**修复**：cacheless 图取 chunk 时按 ROPE 的 op 分辨多平面并除以平面数（vision → 784）。
+
+**结果**：LFM3-Omni-2B + mmproj 视觉编码器 + LLM 静态翻译端到端跑通（CPU FORCE_STATIC），
+此前直接死于形状验证。对照 native：描述方向对（识别出红色图形）但整体描述错误
+（native："一面旗帜，上半部分纯黑"；static："三个红色的椭圆形"）——**残留精度缺陷**，
+模式与音频轮的编码器精度回归相似（内容要素对、结构错）。下轮：先隔离是视觉编码器还是
+LLM 侧图像 token 的 4 平面位置处理（音频路径已验证过 LLM 静态 + 单平面，图像 token 的
+mrope 位置是新领域），再对照 patch embeddings 级别找差异。VISROPE/WARMTRACE 插桩暂留
+（门控环境变量，精度缺陷关闭后统一拆除）。
