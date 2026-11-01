@@ -171,9 +171,14 @@ OutputVector translate_flash_attn_ext(const NodeContext & context) {
     //    int64_t factor = num_heads / num_heads_kv;
     //    if (factor > 1 && num_heads_kv > 1) {
     auto q_shape = context.get_input_shape(0).to_shape();
-    auto k_shape = context.get_input_shape(1).to_shape();
+    // With the decode attention trim (GGML_OPENVINO_TRIM_DECODE_ATTENTION) the KV length is a
+    // runtime dimension, so K's partial shape is dynamic and to_shape() would throw. The head
+    // count is compile-time data either way: take it from K's ggml metadata view shape.
+    auto k_shape_ps = context.get_input_shape(1);
+    const int64_t num_heads_kv =
+        k_shape_ps.is_static() ? (int64_t) k_shape_ps.to_shape()[1]
+                               : (int64_t) context.get_view_input_ggml_shape(1, 0)[1];
     const int64_t num_heads = q_shape[1];
-    const int64_t num_heads_kv = k_shape[1];
     const int64_t head_size = q_shape[3];
     const int64_t factor = num_heads / num_heads_kv;
 

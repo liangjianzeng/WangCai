@@ -746,7 +746,8 @@ static int get_swa_window_from_mask(const ggml_tensor * mask) {
     return window > 0 ? (int) window : -1;
 }
 
-std::pair<ModelParams, ComputeParams> GgmlOvDecoder::compute_llm_params(ggml_cgraph * cgraph, bool is_static) {
+std::pair<ModelParams, ComputeParams> GgmlOvDecoder::compute_llm_params(ggml_cgraph * cgraph, bool is_static,
+                                                                        bool is_prefill) {
     ModelParams model_params;
     ComputeParams compute_params;
     auto get_attention_pattern_case = [](const ggml_tensor * node) -> int {
@@ -984,7 +985,21 @@ std::pair<ModelParams, ComputeParams> GgmlOvDecoder::compute_llm_params(ggml_cgr
                 compute_params.attention_size = mask->ne[0];
             }
             if (is_static) {
-                compute_params.attention_size = model_params.ctx_per_seq;
+                // Static prefill chunks always attend the whole context span (their chunk
+                // geometry and mask padding are built for it). The static DECODE graph bakes
+                // attention_size to the full context too: the FA path reshapes its flat KV
+                // through the attention_size input, so a runtime parameter bound to llama.cpp's
+                // per-step n_kv (PAD'ed to 256) would trim every decode step's attention work
+                // to the filled span -- but the dynamic intermediate shapes are rejected by the
+                // NPU plugin at compile time ("to_shape was called on a dynamic shape"), so the
+                // trim stays OFF by default (GGML_OPENVINO_TRIM_DECODE_ATTENTION=1 to try it on
+                // CPU/GPU static runs). The measured cost of the baked span: decode at -c 2048
+                // runs 4.2x slower than -c 512 (70 -> 294 ms/step) even when only ~40 cells are
+                // filled. A discrete multi-extent decode graph set (one fully-static graph per
+                // PAD(n_kv,256) level, switched by fill) is the NPU-compatible variant.
+                if (is_prefill || !ggml_openvino_getenv_int("GGML_OPENVINO_TRIM_DECODE_ATTENTION")) {
+                    compute_params.attention_size = model_params.ctx_per_seq;
+                }
                 compute_params.attention_size_swa = model_params.ctx_per_seq_swa;
                 compute_params.token_len_per_seq = 1;
             }
@@ -1337,7 +1352,15 @@ void GgmlOvDecoder::add_extra_inputs() {
     };
 
     if (m_compute_params.attention_size != -1) {
-        create_1d_input("attention_size", m_compute_params.attention_size);
+        // Decode phase with GGML_OPENVINO_TRIM_DECODE_ATTENTION: llama.cpp's per-step n_kv
+        // (PAD'ed to 256) travels as a runtime parameter so the FA flat-KV reshape trims to the
+        // filled span (see the note in compute_llm_params). Everything else keeps the baked
+        // chunk/context-span constant -- including the static decode graph with the trim off,
+        // because a parameterized bound makes intermediate shapes dynamic and the NPU plugin
+        // refuses to compile those.
+        const bool trim_decode_attention =
+                !m_is_prefill && ggml_openvino_getenv_int("GGML_OPENVINO_TRIM_DECODE_ATTENTION") != 0;
+        create_1d_input("attention_size", m_compute_params.attention_size, trim_decode_attention);
     }
     if (m_compute_params.attention_size_static != -1) {
         create_1d_input("attention_size_static", m_compute_params.attention_size_static);

@@ -286,3 +286,36 @@
 - 排查过程留档：先用 reshape-bake/view-bake 临时插桩定位烤死常量的来源（cont.cpp 的
   dst_shape 全烘焙路径），插桩已全部拆除。mtmd-audio-c512.ps1 里还有一行 DEBUG_INPUT='1'
   需在最终验收时移除。
+
+## 2026-11-01：缺陷 2（NPU 解码性能）第一轮解剖——三项根因定案
+- 测量方法：GGML_OPENVINO_PROFILING=1（每步 Graph inference / OV raw infer 分解）+ =2（逐节点
+  CSV，注意 CSV 写入进程 CWD，-n N 时只覆盖前 N+1 个文件，取最后一个；且逐节点耗时总和可能
+  超过 wall time——DPU/DMA 并行记账）
+- **时间都花在哪（-c 512，70 ms/步，12.5 t/s）**：bind 开销仅 0.3 ms，77 ms 几乎全在
+  `infer_request->infer()` 内部。逐节点：Parameter（状态输入）31.8 ms（单节点 DMA 20 ms +
+  Shave 9.8 ms，~11.5 MB KV 状态 → **0.4 GB/s，host→device 每步全量搬运**）、Multiply 25.5 ms、
+  MatMul 22.5 ms（其中 **lm_head 一项 10.9 ms**）。
+- **ctx 线性项实测**：c=512→70.6 ms、1024→115.7、2048→293.7（超线性，二次项 ~5.6e-5 ms/token²）。
+  c=2048 逐节点：Add 112 ms + 一批 ~48 ms 节点（ScaledDotProductAttention / Transpose
+  cache_k_l2 / Multiply / MatMul）——全部是注意力路径对**静态全 ctx 跨度**的操作。
+- **根因 ①**：compute_llm_params 里 `if (is_static) attention_size = ctx_per_seq` 把静态 decode 图的
+  注意力跨度烤死为全 ctx——即使只填了 40 个 cell，每步也处理 2048。FA 路径的 flat-KV reshape
+  本来就吃 attention_size 输入（动态路径运行时切片、30 t/s 的原因）。
+- **修复尝试与证伪**：把 attention_size 参数化（bind 真实 n_kv=PAD(填充,256)）→ NPU 插件编译期
+  直接拒绝："to_shape was called on a dynamic shape"——**NPU 静态图不容忍任何动态中间形状**，
+  运行时切片在单张 NPU 图里不可行。代码保留为 GGML_OPENVINO_TRIM_DECODE_ATTENTION（默认 0，
+  仅 CPU/GPU 静态实验用），extra_cfg 位已隔离 blob 缓存。注意 flash_attn_ext.cpp 的
+  num_heads_kv 提取已改为容忍动态形状（对静态路径无害）。
+- **根因 ②**：NPU 上没有 remote tensor（"remote tensor is not used for NPU yet"，extra.cpp 注释；
+  create_tensor_extra 的 remote 分支 `GGML_ASSERT(ggml_openvino_is_gpu())`）→ KV 状态每步
+  host↔device 往返，~30 ms/步 @c512，随 ctx 线性放大。GPU 路径的 USMTensor 零拷贝方案在
+  NPU 上不可用。
+- **根因 ③**：NPUW 编译开关无效（NPUW_DQ:NO / FOLD:NO / FUNCALL_FOR_ALL:NO 全部持平或更慢）
+  ——瓶颈不在折叠/量化策略。
+- **NPU 兼容的修复路线（未实施）**：离散多跨度 decode 图组——每个 PAD(n_kv,256) 级别一张全静态
+  图（256/512/…/ctx），按填充级别切换请求；权重经 NPUW_WEIGHTS_BANK=shared 共享，冷编译
+  ctx/256 张图（NPUW_CACHE_DIR 持久化后一次性成本）。预期把 decode 恢复到与填充级别相关的
+  ~50 ms 基线，并消掉高 ctx 的超线性项。状态 I/O 项（根因②）另需 NPU remote tensor 或
+  stateful 化，独立工作量。
+- 当轮结论：12.5 t/s @c512 已接近 OpenVINO GenAI 在 NPU 3720 上 1-2B 模型的公开水平；要显著
+  超越需要上面两条重型改造，本聚焦轮先落地测量基建（PROFILING=2 已接入静态路径）与根因记录。

@@ -372,7 +372,8 @@ public:
 
     void clear_model_weights() { m_model_weights.clear(); }
 
-    static std::pair<ModelParams, ComputeParams> compute_llm_params(ggml_cgraph * cgraph, bool is_static);
+    static std::pair<ModelParams, ComputeParams> compute_llm_params(ggml_cgraph * cgraph, bool is_static,
+                                                                    bool is_prefill = false);
 
     ModelParams get_model_params() const { return m_model_params; }
 

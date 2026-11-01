@@ -122,6 +122,12 @@ static uint64_t ggml_openvino_model_cache_extra_cfg(bool stateful, bool recurren
     extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_KV_SLICE") ? 1u : 0u);
     extra_cfg = extra_cfg * 131 + (manual_gqa_enabled ? 1u : 0u);
     extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_PROFILING") >= 2 ? 1u : 0u);
+    // The static decode graph's attention_size is a runtime parameter when the decode attention
+    // trim is on (GGML_OPENVINO_TRIM_DECODE_ATTENTION, default OFF: the NPU plugin rejects the
+    // dynamic intermediate shapes this produces at compile time -- "to_shape was called on a
+    // dynamic shape"), a baked constant otherwise -- different compiled graphs, so the blob
+    // cache key has to distinguish them.
+    extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_TRIM_DECODE_ATTENTION") ? 1u : 0u);
     return extra_cfg;
 }
 
@@ -1588,9 +1594,11 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     std::shared_ptr<ov::InferRequest> infer_request;
     ModelParams m_params;
     ComputeParams c_params;
-    std::tie(m_params, c_params) = GgmlOvDecoder::compute_llm_params(cgraph, is_static);
+    const auto * inp_pos_early = get_inp_pos_tensor(cgraph);
+    const bool is_prefill_early = get_is_prefill(cgraph, inp_pos_early);
+    std::tie(m_params, c_params) = GgmlOvDecoder::compute_llm_params(cgraph, is_static, is_prefill_early);
 
-    const auto * inp_pos = get_inp_pos_tensor(cgraph);
+    const auto * inp_pos = inp_pos_early;
     const bool no_kv_cache = m_params.is_cacheless_attn;
     const auto is_prefill = no_kv_cache ? true : get_is_prefill(cgraph, inp_pos);
     const ov::AnyMap compile_config = no_kv_cache ? without_npuw(config) : config;
@@ -1932,6 +1940,7 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             }
         }
         dump_ov_outputs_raw(infer_request, ov_output_names_local, "decode");
+        dump_ov_profiling_info(*infer_request);
     }
 
     if (ggml_openvino_getenv_int("GGML_OPENVINO_PROFILING")) {
