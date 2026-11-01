@@ -44,8 +44,6 @@ bool get_single_value(const std::shared_ptr<ov::op::v0::Constant> & const_node,
 }  // namespace ov::op::util
 
 namespace {
-// TEMP warm-start trace (remove after milestone 2.2)
-static int64_t g_requant_us = 0;
 void unpack_32_4(const uint8_t * data, uint8_t * dst) {
     std::fill_n(dst, 16, 0);
     for (int j = 0; j < 16; ++j) {
@@ -1214,13 +1212,6 @@ std::shared_ptr<ov::Node> requantize_to_buffers(const ggml_tensor * tensor,
             }
         }
         const bool parallel = chunk_rows > 0 && chunk_rows < n_rows;
-        {   // TEMP warm-start trace (remove after milestone 2.2)
-            static const bool trace = getenv("GGML_WARM_TRACE") != nullptr;
-            if (trace && ggml_nbytes(tensor) > 4 * 1024 * 1024) {
-                GGML_LOG_INFO("WARMTRACE:   requant %s ne0=%d rows=%d qk=%d chunks_rows=%d parallel=%d\n",
-                              tensor->name, (int) ne0, (int) n_rows, (int) qk, (int) chunk_rows, (int) parallel);
-            }
-        }
         if (parallel) {
             const bool f16_target = (requant_type == ExtraQuantType::F16);
             // NOTE: ov::parallel_for is a serial fallback in OpenVINO builds without TBB/OpenMP
@@ -1228,13 +1219,6 @@ std::shared_ptr<ov::Node> requantize_to_buffers(const ggml_tensor * tensor,
             const int64_t n_tasks = (n_rows + chunk_rows - 1) / chunk_rows;
             const int n_threads = (int) std::min<int64_t>(hw, n_tasks);
             std::atomic<int64_t> next_task{0};
-            {   // TEMP warm-start trace (remove after milestone 2.2)
-                static const bool trace = getenv("GGML_WARM_TRACE") != nullptr;
-                if (trace && ggml_nbytes(tensor) > 4 * 1024 * 1024) {
-                    GGML_LOG_INFO("WARMTRACE:   requant %s ne0=%d rows=%d qk=%d chunk_rows=%d threads=%d\n",
-                                  tensor->name, (int) ne0, (int) n_rows, (int) qk, (int) chunk_rows, n_threads);
-                }
-            }
             auto worker = [&]() {
                 for (;;) {
                     const int64_t c = next_task.fetch_add(1);
@@ -1574,19 +1558,8 @@ OvWeight process_weight_tensor(const ggml_tensor * tensor, const void * data, vo
     }
 
     if (layout.is_requant && layout.requant_type.has_value()) {
-        {   // TEMP warm-start trace (remove after milestone 2.2)
-            static const bool trace = getenv("GGML_WARM_TRACE") != nullptr;
-            if (trace) { g_requant_us = ggml_time_us(); }
-        }
         result.weight_node = requantize_to_buffers(tensor, data, layout.requant_type.value(), layout.weights_per_block,
                                                    result.weights, result.scales, result.zp);
-        {   // TEMP warm-start trace (remove after milestone 2.2)
-            static const bool trace = getenv("GGML_WARM_TRACE") != nullptr;
-            if (trace) {
-                GGML_LOG_INFO("WARMTRACE:   requant-only %-24s %8.2f MiB  %8.3f s\n", tensor->name,
-                              ggml_nbytes(tensor) / 1048576.0, (ggml_time_us() - g_requant_us) / 1e6);
-            }
-        }
     } else {
         result.weight_node =
             extract_quantized_weights(tensor, data, result.weights, result.scales, result.zp, use_bias);

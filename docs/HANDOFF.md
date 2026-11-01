@@ -1,5 +1,53 @@
 # 会话交接（上下文耗尽时读我）
 
+## 2026-11-01 深夜：视觉精度两根因连定案，NPU 视觉端到端收官 ✅
+
+**结果**：NPU 视觉端到端描述与 native 一致（"black field + red circle + green band"），文本三问
+3/3（最终二进制上复测）。视觉里程碑（milestone 4.x 视觉半）完成；剩视觉 NPU 吞吐未测。
+
+### 根因①：cacheless 图 input_len=-1 → size_t 回绕 → 多平面位置表读越界
+- cacheless 图（mtmd 视觉编码器：显式 softmax，无 FLASH_ATTN_EXT）没有任何代码给
+  `compute_params.input_len` 赋值（赋值点只有 KV 路径 ggml-decoder.cpp:950 与 cacheless
+  FLASH_ATTN_EXT 扫描 :1102）。作为 size_t 回绕到 2^64-1，多平面 inp_pos 绑定的平面步长
+  `p * input_len` 回绕成 `-p`：第 2/3/4 平面从缓冲区**前面**读 p 个元素 → rope 角度按位置错位
+  （out[p][s] = h(s-p)）→ 编码器 cos 0.54。
+- 证据链：rope-2 输入 CPU dyn vs CPU static 逐位一致（cos=1）→ 发散在 rope 内 → DEBUG_INPUT
+  打出绑定 positions 与平铺 index 的差分模式 `out[p][s]=h(s-p)` → VISBIND 打出
+  input_len=18446744073709551615。修复：平面长度从张量自身取（`ne[0]/n_planes`，utils.cpp
+  静态 prefill 绑定），不依赖 decoder。CPU 静态 node_416 cos 1.00000 / maxabs 0（逐位一致）。
+
+### 根因②：NPUW 配置三元组在 clip 图上静默损坏（NPU-only cos 0.52）
+- 修复①后 CPU 静态逐位一致，NPU 仍 0.524。反转点：**同一 IR 在 python 里直接编译到 NPU
+  （默认配置）cos 0.995** → 图翻译无罪，缺陷在引擎的编译配置路径。
+- python 逐键二分（ir_vis2/model_prefill_13498411.xml，引擎 config 复现 cos 0.557）：
+  单键全干净、两两全干净，最小坏三元组 = `NPU_USE_NPUW + NPUW_FOLD + NPUW_FUNCALL_FOR_ALL`
+  （去掉 FUNCALL_FOR_ALL 或 FOLD 均恢复 0.995）。
+- 为什么视觉图会吃到 NPUW 配置：clip 图 softmax **没有 mask 输入**（双向注意力），
+  `is_cacheless_attn` 不置位 → `no_kv_cache=false` → 走完整 NPUW 配置而非 `without_npuw`。
+- 修复：`cgraph_is_vision_encoder()`（扫描 `GGML_ROPE_TYPE_VISION` rope）在三个编译点擦除
+  `NPUW_FUNCALL_FOR_ALL`（static 路径、naive 路径；擦除而非设 NO——顺带改变 config key 集，
+  与 extra_cfg 3→4 一起把旧坏 blob 挡在缓存外）。engine 端 env 反向验证：显式
+  FUNCALL_FOR_ALL=YES 复现漂移、NO 修复，因果链闭合。
+- **上游备案**：NPUW 的 FOLD×FUNCALL_FOR_ALL 交互 bug（单图 IR、默认 NPUW 选项即复现）值得报
+  OpenVINO；NPUW bank-aware blob import（热启动 <5 s 的最后依赖）仍未解决。
+
+### 过程教训（本轮新增）
+- **编译配置类缺陷先做"同 IR python 对拍"再怀疑图翻译**：一次对拍直接把搜索空间从 400+ 算子
+  砍到 config key 二分。
+- python `model.add_outputs()`（中间 checkpoint）在 NPUW 路径会让编译直接崩
+  （"invalid unordered_map key" / f16 输出类型不匹配）——判据改用模型自带 result 输出。
+- 引擎有两套"static"编译路径（naive_compute 与 ov_graph_compute_static），还有
+  `without_npuw` 过滤：改编译配置前先确认目标图实际走哪条（vision 图走
+  ov_graph_compute_static 的 full-config 分支，第一轮修错了点）。
+
+### 下一轮候选（按优先级）
+1. **性能主攻回到主线**：视觉 NPU 吞吐测量（prefill 编码器 t/s、端到端延迟），
+   然后回 4B decode / prefill 剩余杠杆（HANDOFF 性能轮清单）。
+2. 上游：NPUW bank-aware blob import（热启动 <5 s）；NPUW FOLD×FUNCALL bug 报告。
+3. 音频 top-1 级 f16 分歧（非阻塞，复利行为同类）。
+
+---
+
 > **✅ 已收尾（2026-10-31）：** 下方记录的 decode K 分支缺陷**已定案并修复**（commit `63179ef`，
 > rope.cpp 显式 Concat tile + 注册门扩到 NPU），三问验收 3/3 首次全对。终章见
 > [defect1-rootcause.md](defect1-rootcause.md)。本文其余内容保留为过程记录；首次验收闸门已过，

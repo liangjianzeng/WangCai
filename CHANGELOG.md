@@ -94,6 +94,28 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   make_dirs 盘符 bug（`_mkdir("D:")` EACCES 曾使 COMPILED_MODEL_CACHE_DIR 在 Windows 静默失效）；
   多级图接入 COMPILED_MODEL_CACHE_DIR（NPU 上与共享权重 bank 冲突，保持 opt-in 关，探针定案）。
 
+### 修复 —— 引擎（视觉静态精度，两个根因连定案；NPU 视觉端到端收官）
+
+- **根因①：cacheless 图的 `compute_params.input_len == -1` + size_t 回绕 → 多平面位置表读越界。**
+  cacheless 图（mtmd 视觉编码器走显式 softmax，不走 FLASH_ATTN_EXT）没有任何代码给 `input_len`
+  赋值，K/V 路径（ggml-decoder.cpp）与 cacheless FLASH_ATTN_EXT 扫描都只覆盖 KV 注意力图。作为
+  size_t 它回绕到 2^64-1，多平面 inp_pos 绑定的平面步长 `p * input_len` 回绕成 `-p`，第 2/3/4
+  平面从缓冲区**前面**读 p 个元素——rope 角度按位置错位（out[p][s] = h(s-p)），编码器输出 cos 0.54。
+  修复：平面长度是张量自身属性（`ne[0]` 已堆叠 4 个平面），改从 `ne[0]/n_planes` 读取。修复后
+  CPU 静态 node_416 与 native **逐位一致**（cos 1.00000，maxabs 0）。
+- **根因②：NPUW 配置三元组在 clip 图上静默损坏编码器。** 引擎 NPU 默认编译配置里
+  `NPU_USE_NPUW + NPUW_FOLD + NPUW_FUNCALL_FOR_ALL` 的组合把视觉编码器在 NPU 上打歪
+  （同一 IR python 直接编译 cos 0.995，引擎配置路径 0.557；python 逐键二分定位到最小坏三元组，
+  单键与两两组合全部干净）。clip 图的 softmax 没有 mask 输入，`is_cacheless_attn` 不置位，
+  于是它吃到的是完整 NPUW 配置而非 `without_npuw` 过滤后的——三元组因此漏进了视觉图。
+  修复：视觉 rope 图（`GGML_ROPE_TYPE_VISION`）编译时擦除 `NPUW_FUNCALL_FOR_ALL`；
+  `extra_cfg` 3→4 使旧坏 blob 失效。修复后 NPU 视觉端到端描述与 native 一致，文本三问 3/3。
+- **视觉 rope tile 扩展回退**：本轮曾把 decode 图的 cos/sin 头轴 tile 扩展到 VISION prefill
+  （假设 NPU 视觉缺陷是同一头轴广播）——被证伪（tile 生效后 cos 不变），按位中性但理由不成立，
+  回退到 LLM decode 专用，避免误导后来人。
+- **TEMP 插桩拆除**：VISROPE（openvino/utils.cpp、rope.cpp）、PERFTRACE（decode 分支）、
+  WARMTRACE 标记 TEMP 的 requant 计时块全部移除。
+
 ### 新增 —— 引擎（视觉输入，探察）
 
 - mmproj 含视觉编码器（133 v. 张量）。**native 与 OV-CPU 动态路径视觉端到端正确**（测试图描述

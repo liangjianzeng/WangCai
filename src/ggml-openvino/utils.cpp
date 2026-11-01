@@ -131,8 +131,10 @@ static uint64_t ggml_openvino_model_cache_extra_cfg(bool stateful, bool recurren
     extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_PROFILING") >= 2 ? 1u : 0u);
     // Multi-level static decode graphs (see decode_attention_level): the decode half's baked
     // attention span changed from the whole context to a per-level constant, so older
-    // disk-cache blobs must not match.
-    extra_cfg = extra_cfg * 131 + 3u;
+    // disk-cache blobs must not match. The 4 also covers the vision-encoder fix below
+    // (vision graphs now compile without NPUW_FUNCALL_FOR_ALL), so stale blobs compiled
+    // with the corrupted combination are never reimported.
+    extra_cfg = extra_cfg * 131 + 4u;
     return extra_cfg;
 }
 
@@ -748,11 +750,19 @@ ov::Tensor get_ov_input_tensor_static_prefill(const std::shared_ptr<GgmlOvDecode
         // input_len; pad every plane independently so they stay aligned to chunk_size.
         const int n_planes = GgmlOvDecoder::get_inp_pos_n_planes(op);
         const size_t element_size = ggml_type_size(ggml_tensor->type);
+        // Cacheless graphs (mtmd vision encoder) leave compute_params.input_len == -1: the
+        // input_len scan keys on FLASH_ATTN_EXT, and this graph attends through explicit
+        // softmax. As size_t that wraps to 2^64-1, so the plane stride below (p * input_len)
+        // wrapped to -p and every plane after the first read p elements BEFORE the buffer --
+        // the rope angles came out position-shifted and the encoder diverged. The per-plane
+        // length is a property of the tensor itself (ne[0] stacks the planes), so read it
+        // there instead of from the decoder.
+        const size_t plane_len = (size_t) ggml_tensor->ne[0] / (size_t) n_planes;
         ov::Shape input_shape = {1, 1, 1, (size_t) n_planes * chunk_size};
         ov::Tensor input_tensor(GgmlOvDecoder::get_ov_type(ggml_tensor), input_shape);
         for (int p = 0; p < n_planes; p++) {
             const char * src =
-                (const char *) ggml_tensor->data + (p * input_len + chunk_index * chunk_size) * element_size;
+                (const char *) ggml_tensor->data + (p * plane_len + chunk_index * chunk_size) * element_size;
             char * dst = (char *) input_tensor.data() + p * chunk_size * element_size;
             std::memcpy(dst, src, chunk_valid_size * element_size);
             if (chunk_pad_size > 0) {
@@ -937,6 +947,23 @@ ov::Tensor get_ov_input_tensor_static_prefill(const std::shared_ptr<GgmlOvDecode
     return get_ov_input_tensor(ggml_decoder, param_name);
 }
 
+// The mtmd vision encoder is the only graph whose rope runs in GGML_ROPE_TYPE_VISION mode.
+// Compiling it through NPUW with the LLM default trio (NPU_USE_NPUW + NPUW_FOLD +
+// NPUW_FUNCALL_FOR_ALL) silently corrupts the encoder: same IR on NPU in python gives
+// result cos 0.995 vs CPU, the same IR through the engine config gives 0.557, and the
+// minimal reproducing set is exactly that trio (python bisection, 2026-11-01). Dropping
+// FUNCALL_FOR_ALL alone restores 0.995. Erase the key (don't set NO) -- it is the only
+// change that both fixes NPUW's behavior and alters the hashed config key set.
+static bool cgraph_is_vision_encoder(const ggml_cgraph * cgraph) {
+    for (int i = 0; i < cgraph->n_nodes; i++) {
+        const auto * node = cgraph->nodes[i];
+        if (node->op == GGML_OP_ROPE && node->op_params[2] == GGML_ROPE_TYPE_VISION) {
+            return true;
+        }
+    }
+    return false;
+}
+
 enum ggml_status naive_compute(ggml_cgraph * cgraph,
                                ov::Core & core,
                                const std::string & device,
@@ -964,6 +991,9 @@ enum ggml_status naive_compute(ggml_cgraph * cgraph,
         compile_config[ov::hint::execution_mode.name()] = ov::hint::ExecutionMode::PERFORMANCE;
     } else {
         compile_config[ov::hint::execution_mode.name()] = ov::hint::ExecutionMode::ACCURACY;
+    }
+    if (cgraph_is_vision_encoder(cgraph)) {
+        compile_config.erase("NPUW_FUNCALL_FOR_ALL");
     }
     if (remote_context.has_value()) {
         infer_request = std::make_shared<ov::InferRequest>(
@@ -1419,7 +1449,10 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, const std::share
 
                 // Use the cache-stripped config when the frontend model cache is active, so
                 // the resulting CompiledModel can be exported and later re-imported.
-                const ov::AnyMap & compile_config = model_cache_dir.empty() ? config : mc_config;
+                ov::AnyMap compile_config = model_cache_dir.empty() ? config : mc_config;
+                if (cgraph_is_vision_encoder(cgraph)) {
+                    compile_config.erase("NPUW_FUNCALL_FOR_ALL");
+                }
                 ov::CompiledModel compiled_model;
                 auto remote_context = ggml_openvino_get_remote_context();
                 if (remote_context.has_value()) {
@@ -1664,7 +1697,18 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     const auto * inp_pos = inp_pos_early;
     const bool no_kv_cache = m_params.is_cacheless_attn;
     const auto is_prefill = no_kv_cache ? true : get_is_prefill(cgraph, inp_pos);
-    const ov::AnyMap compile_config = no_kv_cache ? without_npuw(config) : config;
+    const ov::AnyMap compile_config = [&] {
+        // The vision encoder's clip graph has NO mask input on its softmax (bidirectional
+        // attention), so is_cacheless_attn stays false and it takes the full NPUW config --
+        // where NPU_USE_NPUW + NPUW_FOLD + NPUW_FUNCALL_FOR_ALL silently corrupt it (result
+        // cos 0.557 vs 0.995 without the trio; python bisection 2026-11-01). Erase the
+        // FUNCALL key for vision-rope graphs; the extra_cfg bump (4u) keeps stale blobs out.
+        ov::AnyMap cfg = no_kv_cache ? without_npuw(config) : config;
+        if (cgraph_is_vision_encoder(cgraph)) {
+            cfg.erase("NPUW_FUNCALL_FOR_ALL");
+        }
+        return cfg;
+    }();
     if (m_params.n_heads_kv == -1) {
         prefill_chunk_size = inp_pos->ne[0];
         // Multi-plane position tables (mtmd vision encoder, IMROPE/VISION/MROPE) pack the 4
@@ -2313,11 +2357,6 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         }
         infer_end_time = ggml_time_us();
     } else {
-        // TEMP perf-round trace (remove after the 4B decode round): per-phase split of the
-        // decode step -- input bind (incl. the KV zeroize inside the converters), output bind,
-        // infer. Compare against the weight-bandwidth floor to see what is left to win.
-        const bool perf_trace = getenv("GGML_WARM_TRACE") != nullptr;
-        const int64_t bind_start_us = perf_trace ? ggml_time_us() : 0;
         for (size_t i = 0; i < ov_input_names_local.size(); i++) {
             const auto & param_name = ov_input_names_local[i];
             auto input_tensor = get_ov_input_tensor_static_decode(ggml_decoder, param_name);
@@ -2342,7 +2381,6 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             auto output_tensor = create_ov_output_tensor(ggml_decoder, infer_request, i, ggml_tensor);
             infer_request->set_output_tensor(i, output_tensor);
         }
-        const int64_t bind_end_us = perf_trace ? ggml_time_us() : 0;
 
         ov_raw_infer_start = ggml_time_us();
         try {
@@ -2371,15 +2409,6 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         }
         infer_end_time = ggml_time_us();
         ov_raw_infer_total = infer_end_time - ov_raw_infer_start;
-        if (perf_trace) {
-            static std::atomic<int> perf_step{0};
-            const int step = perf_step.fetch_add(1);
-            if (step >= 2 && step <= 12) {
-                GGML_LOG_INFO("PERFTRACE: step %d level %d bind_us %d outbind_us %d infer_us %d\n", step,
-                              (int) decode_level, (int) (bind_end_us - bind_start_us),
-                              (int) (ov_raw_infer_start - bind_end_us), (int) ov_raw_infer_total);
-            }
-        }
 
         if (ggml_openvino_getenv_int("GGML_OPENVINO_DEBUG_OUTPUT") ||
             ggml_openvino_getenv_str("GGML_OPENVINO_DEBUG_NODE")) {

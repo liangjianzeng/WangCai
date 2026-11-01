@@ -179,11 +179,6 @@ OutputVector translate_rope(const NodeContext & context) {
         if (mode != TYPE_NEOX) {
             auto cos_sin_shape = std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{4},
                                                                         std::vector<int64_t>{1, -1, 1, half});
-            // TEMP vision-round trace (remove after the vision static-binding fix).
-            if (getenv("GGML_WARM_TRACE") != nullptr) {
-                fprintf(stderr, "VISROPE: rope op mode=%d half=%d cos_in_ps=%s\n", mode, (int) half,
-                        cos_theta_node.get_node_shared_ptr()->get_output_partial_shape(0).to_string().c_str());
-            }
             cos_theta_node = std::make_shared<ov::op::v1::Reshape>(cos_theta_node, cos_sin_shape, true);
             sin_theta_node = std::make_shared<ov::op::v1::Reshape>(sin_theta_node, cos_sin_shape, true);
         }

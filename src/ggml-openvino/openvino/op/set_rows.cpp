@@ -1,4 +1,5 @@
 #include "../node_context.h"
+#include "ggml-impl.h"
 #include "../op_table.h"
 #include "../utils.h"
 
@@ -6,6 +7,10 @@
 #include <cstdint>
 #include <memory>
 #include <openvino/core/node.hpp>
+#include <openvino/op/add.hpp>
+#include <openvino/op/unsqueeze.hpp>
+#include <openvino/op/scatter_nd_update.hpp>
+#include <openvino/op/slice.hpp>
 #include <openvino/core/node_output.hpp>
 #include <openvino/core/type.hpp>
 #include <openvino/frontend/exception.hpp>
@@ -94,7 +99,41 @@ OutputVector translate_set_rows(const NodeContext & context) {
             ov::op::v0::Constant::create(ov::element::i64, {4},
                                          {(int64_t) 1, (int64_t) 1, (int64_t) -1, (int64_t) row_size}),
             false);
-        res = std::make_shared<ov::op::v3::ScatterUpdate>(dst, ind_squeezed, data_reshaped, axes);
+        if (context.is_static() && dst_shape[2].is_static()) {
+            // The NPU device's lowering of ScatterUpdate (through the NPUW pipeline) fails to
+            // commit the write for index 0: the static prefill's iota [0..n) loses exactly its
+            // 0, leaving the context-init decode warmup's dummy K/V in cache row 0 (rows 1..n
+            // land; decode indices are nonzero and land; the same translation is correct on
+            // CPU). ScatterND takes a different lowering path, so route the prefill write
+            // through it: indices become [N,3] rows (0,0,idx) selecting full [512] rows of the
+            // [1,1,rows,D] cache, updates become [N,D].
+            //
+            // 2026-11-01: extended to the static decode graph. Graph-output dumps proved the
+            // decode K value correct pre-write (dbg_k post-norm cos 0.997+ on NPU) while the
+            // cached row keeps correct values only in the even 128-blocks (h0/h2) and stale,
+            // build-independent garbage in the odd blocks (h1/h3) -- the decode ScatterUpdate
+            // lowering commits only half of each 512-element K row, and the correct odd-head
+            // blocks appear nowhere else in the cache. V is unaffected (same op, same shapes,
+            // only the dst parameter differs); prefill writes via ScatterND were complete.
+            // This write defect is the answer-quality root cause: attention reads the garbled
+            // BOS row at every decode step.
+            const int64_t dst_rows = dst_shape[2].get_length();
+            const int64_t d = dst_shape[3].get_length();
+            auto idx_i64 = std::make_shared<ov::op::v0::Convert>(ind_squeezed, ov::element::i64);
+            auto n_rows = std::make_shared<ov::op::v3::ShapeOf>(idx_i64, ov::element::i64);
+            auto two = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1}, {2});
+            auto prefix = std::make_shared<ov::op::v3::Broadcast>(
+                ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1, 2}, std::vector<int64_t>{0, 0}),
+                std::make_shared<ov::op::v0::Concat>(OutputVector{n_rows, two}, 0));
+            auto idx_col = std::make_shared<ov::op::v0::Unsqueeze>(idx_i64, ov::op::v0::Constant::create(ov::element::i64, {1}, {1}));
+            auto nd_idx = std::make_shared<ov::op::v0::Concat>(OutputVector{prefix, idx_col}, 1);
+            auto upd_flat = std::make_shared<ov::op::v1::Reshape>(
+                data_reshaped,
+                ov::op::v0::Constant::create(ov::element::i64, ov::Shape{2}, std::vector<int64_t>{-1, d}), false);
+            res = std::make_shared<ov::op::v3::ScatterNDUpdate>(dst, nd_idx, upd_flat);
+        } else {
+            res = std::make_shared<ov::op::v3::ScatterUpdate>(dst, ind_squeezed, data_reshaped, axes);
+        }
     }
 
     auto dst_reshape = ov::as_type_ptr<ov::op::v1::Reshape>(dst.get_node_shared_ptr());

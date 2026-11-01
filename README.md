@@ -64,7 +64,7 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | 指令跟随任务的数值一致性 | ✅ **完成（v0.0.1 收官修复）** — 根因定案：decode 图 RoPE cos/sin 头轴广播；三问验收 3/3 |
 | Prefill 追平 CPU | 🟡 已达参照的 73%，仍在找余量 |
 | Decode 追平 CPU | 🟡 **多跨度 decode 图组落地（2026-11-01）：14–15 t/s 且与 ctx 无关**（c=8192 从 0.9 t/s 提升 17×），距 OV-CPU 参照 21.7–29.2 还差 ~1.5–2×；后续杠杆已探察定案（stateful 7× 慢、lm_head u4 5× 慢、CM 缓存与权重 bank 冲突）——decode 攻坚收官 |
-| LFM3 全模态（音频 / 视觉输入） | 🟡 **音频输入 NPU 端到端 + 三层因果链闭合（2026-11-01）**：编码器 requant 精度修复（"a."-豁免，嵌入 cos 0.963→0.9997）、量化对齐后与 native Q8_0 参照逐字一致、level 图撞设备预算自动降级重试（零 env）；视觉输入 native ✓ / OV-CPU 动态 ✓，静态翻译与 NPU 的 4 段式视觉 rope 待修 |
+| LFM3 全模态（音频 / 视觉输入） | 🟡 **音频与视觉输入 NPU 均端到端（2026-11-01）**：音频与 native Q8_0 参照逐字一致；视觉两根因定案修复（cacheless `input_len=-1` 平面越界 + NPUW `FOLD×FUNCALL_FOR_ALL` 配置交互损坏 clip 图），NPU 描述与 native 一致、文本三问 3/3；视觉吞吐未测 |
 | **副靶：跨模型验证（Spark-X2.6-4B + Qwen3-4B）** | ✅ **两个外部模型家族端到端跑通（2026-11-01）**：讯飞 Spark-X2.6-4B 与 Qwen3-4B（均为标准稠密 Transformer，与 LFM3 混合架构不同系）在 NPU 三问验收全 3/3；副靶顺带修好两个横切缺陷——u4 权重无法包宿主内存（曾阻塞所有非对称 4-bit 路径）与整数零点舍入（曾让静态图精度退化），Q4_K_M checkpoint 现在 OV-CPU 开箱即用。4B 只需 `PREFILL_CHUNK_SIZE=128`（驱动预算，不用再禁 decode levels） |
 | **NPU decode 性能（4B）** | 🟡 **2.4 → ~6 t/s 稳态（2026-11-01 性能轮）**：根因是设备预算三图问题——prefill + legacy 全 ctx decode + level 图三张权重 bank 必爆（1.7B 装得下所以 LFM3 未暴露），level 图首个 execute 即 UNINITIALIZED 后永远降级。修复后 level 图真正生效（raw infer 436→~145 ms，已贴 2.3 GB 权重的带宽下限 ~7 t/s 的 85%）。剩余为 36 层标准注意力算子开销与上游依赖，见 HANDOFF 性能轮 |
 | **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
