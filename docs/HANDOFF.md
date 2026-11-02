@@ -23,6 +23,9 @@ warmup 3×prefill pass ~6 s（能否减批）与首请求 prefill 首 chunk 3 s�
 遥测补强：BUDGET-TRACE 全部行带 t=ms（GetTickCount64 惰性锚定；静态初始化期的
 ggml_time_us/GetTickCount64 都不可靠，别再往回改）。
 
+`-b 128`（试图把 warmup 减批）**反效应，勿用**：ready 40.3 s、首请求 20.3 s（调度切成更多批次，
+backend pass 从 4 次涨到 12 次）。生产 -b 不动（默认）。
+
 ## 2026-11-02（深夜）：srv 流缺陷定案 —— 真规则是 `prefill(chunk256)+decode(KV≥1024 行)` 装不下；bench 对照是假象
 
 上一段（未决）的"srv 流特异驻留"假设**已被 BUDGET-TRACE 证伪并替换**。遥测（env `GGML_OPENVINO_BUDGET_TRACE=1`，
