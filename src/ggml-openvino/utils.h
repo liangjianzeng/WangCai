@@ -2,11 +2,13 @@
 #include "ggml-impl.h"
 #include "ggml-openvino-extra.h"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <openvino/runtime/core.hpp>
 #include <openvino/runtime/infer_request.hpp>
 #include <string>
@@ -150,6 +152,20 @@ struct ov_runtime_context {
         std::vector<ggml_tensor *> nodes;
     };
     std::unordered_map<const ggml_cgraph *, compute_graph> compute_graphs;
+
+    // Background prebuild of the smallest decode-level graph (see ov_graph_compute_static's
+    // spawn site): levels-active builds skip the legacy decode pair, so the first real request
+    // would otherwise pay the full level-graph compile (8-20 s) inside the answer latency. The
+    // thread is spawned once per backend context right after the load-time prefill compile and
+    // overlaps the caller's warmup evaluation; free() MUST join it (join_prebuild) before the
+    // caller may free the ggml_cgraph the worker reads.
+    std::thread prebuild_thread;
+    std::atomic<bool> prebuild_started{false};
+    void join_prebuild() {
+        if (prebuild_thread.joinable()) {
+            prebuild_thread.join();
+        }
+    }
 
     ov_runtime_context() : device("CPU"), stateful(false), stateful_kv_size(0) {}
 

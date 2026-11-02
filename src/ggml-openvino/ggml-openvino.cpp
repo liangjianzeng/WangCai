@@ -852,6 +852,10 @@ static void ggml_backend_openvino_free(ggml_backend_t backend) {
     if (ctx->runtime_context) {
         auto r_ctx = std::static_pointer_cast<ov_runtime_context>(ctx->runtime_context);
         auto cache = r_ctx->compiled_cache;
+        // The decode prebuild worker reads the caller-owned ggml_cgraph: it must be fully joined
+        // before this function returns, or the caller could free the graph under the worker
+        // (llama-bench tears contexts down per test case).
+        r_ctx->join_prebuild();
         r_ctx->clear_caches();
         std::lock_guard<std::mutex> cache_lock(cache->mutex);
         if (--cache->backend_count == 0) {

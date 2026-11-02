@@ -2444,6 +2444,60 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
                 r_ctx->ov_output_names_cache_prefill[key] = ov_output_names_prefill_local;
             }
             entry->ptr_prefill = decoder_prefill;
+            // Background prebuild of the smallest decode level (GGML_OPENVINO_PREBUILD_DECODE,
+            // DEFAULT OFF). Measured 2026-11-02 on the 4B server (warm blob): the level-256
+            // foreground compile is only ~1.5 s, the worker's concurrent compile degrades to
+            // ~8 s (NPUW compile competes with the foreground), and shipping ready time grows
+            // +1.3 s -- net first-answer win ~0.5 s, not worth the concurrency surface until
+            // plugin-side concurrent compiles stop degrading. Left in place, env-gated: flip to
+            // 1 only after re-measuring with a newer plugin. Publication is guarded (entry still
+            // cached, level map still empty, no legacy graph, levels not kill-switched) so a
+            // foreground decode always wins.
+            if (decode_levels_active && !no_kv_cache && !cgraph_is_vision_encoder(cgraph) &&
+                m_params.ctx_per_seq >= 256 && !r_ctx->prebuild_started.exchange(true) &&
+                ggml_openvino_getenv_int("GGML_OPENVINO_PREBUILD_DECODE", 0) != 0) {
+                r_ctx->prebuild_thread = std::thread([r_ctx, entry, core, compile_config, cgraph, m_params,
+                                                      c_params, prefill_chunk_size, key]() mutable {
+                    try {
+                        const int level = decode_attention_level(256, m_params.ctx_per_seq);
+                        auto c_params_lvl = c_params;
+                        c_params_lvl.attention_size = level;
+                        auto model_weights = GgmlOvDecoder::create_weight_nodes(cgraph);
+                        auto decoder_level = std::make_shared<GgmlOvDecoder>(cgraph, m_params, c_params_lvl,
+                                                                             model_weights, is_static, stateful,
+                                                                             false, false, prefill_chunk_size);
+                        auto input_model = std::make_shared<ov::frontend::ggml::InputModel>(decoder_level);
+                        auto model_level = ov::frontend::ggml::FrontEnd::convert(input_model);
+                        decoder_level->clear_model_weights();
+                        auto compiled_model_level = core.compile_model(model_level, r_ctx->device, compile_config);
+                        auto ir = std::make_shared<ov::InferRequest>(compiled_model_level.create_infer_request());
+                        std::vector<std::string> in_names, out_names;
+                        for (const auto & ov_param : model_level->get_parameters()) {
+                            in_names.push_back(ov_param->get_friendly_name());
+                        }
+                        for (const auto & ov_output : model_level->get_results()) {
+                            out_names.push_back(ov_output->get_friendly_name());
+                        }
+                        std::lock_guard<std::mutex> entry_lock(*entry->mutex);
+                        std::lock_guard<std::mutex> map_lock(r_ctx->ctx_mutex);
+                        auto cached_it = r_ctx->decoder_cache.find(key);
+                        if (cached_it == r_ctx->decoder_cache.end() || cached_it->second != entry ||
+                            !r_ctx->infer_request_cache_decode_levels[key].empty() ||
+                            r_ctx->infer_request_cache.count(key) != 0 || g_decode_levels_disabled.load()) {
+                            return;  // a foreground pass owns this key now; drop the prebuild
+                        }
+                        r_ctx->infer_request_cache_decode_levels[key][level] = ir;
+                        entry->ptr_decode_levels[level] = decoder_level;
+                        r_ctx->ov_input_names_cache[key] = in_names;
+                        r_ctx->ov_output_names_cache[key] = out_names;
+                        ov_budget_trace("prebuild:decode-lv", ir.get());
+                    } catch (const std::exception & e) {
+                        fprintf(stderr, "ggml-openvino: decode prebuild skipped: %s\n", e.what());
+                    } catch (...) {
+                        fprintf(stderr, "ggml-openvino: decode prebuild skipped (unknown error)\n");
+                    }
+                });
+            }
         }
     }
 

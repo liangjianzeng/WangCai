@@ -6,11 +6,21 @@
 相对时间戳 + BUDGET-TRACE t=）：**0.2→3.4 s 权重装载**（2.4 GB mmap/requant）；**3.4→5.2 s prefill 图
 编译**（blob 命中，1.6 s）；**5.2→11.5 s = srv warmup eval**（sched_reserve 的 256-token **prefill**
 pass 真跑 ~6 s）。关键发现：**warmup 从不触发 decode 图编译**（整个启动只有 1 条 compile-local:prefill）
-——生产 server 的第一个真实请求才付 decode lv 图的编译（实测 8–20 s，随 level 与 blob 冷热）。
-`--no-warmup`：ready 8.4–8.8 s，首请求 12 s（lv256，blob 热后）/ 24 s（blob 冷）——省的是等待时间，
-把编译成本挪到首请求，总量不减。候选杠杆（未做）：启动期后台线程并行预编 decode lv256 图
-（ready 11.7 s 不变，首请求省 ~5–12 s）；权重装载 3.2 s 与 <5 s 目标受限于上游 #3（CM 缓存 × 权重
-bank 导入断言）。遥测补强：BUDGET-TRACE 全部行带 t=ms（GetTickCount64 惰性锚定；静态初始化期的
+——生产 server 的第一个真实请求才付 decode lv 图的编译。`--no-warmup`：ready 8.4–8.8 s，首请求 12 s
+（lv256，blob 热后）/ 24 s（blob 冷）——省的是等待时间，把编译成本挪到首请求，总量不减。
+
+**首请求 12 s 的真分解**（slot print_timing + trace，基线 warmup-on）：prefill ~5.9 s（**首请求的
+prefill 每 chunk ~3 s = 20 t/s，是 warmup 同图 85 t/s 的 1/4——首次带真实数据的执行开销**）+
+decode 3.3 s（含 lv256 编译 **仅 1.5 s**，blob 热）+ ~3 s tokenize/模板。客户端墙钟与服务端 total
+吻合（无测量假象）。
+
+**后台预编 decode lv256（GGML_OPENVINO_PREBUILD_DECODE）已实现但默认关**：worker 在 prefill 编译后
+孵化、与 warmup 重叠、发布带四重守卫（entry 在册/levels 空表/无 legacy/未 kill-switch），free() join
+保 cgraph 生命周期。实测：worker 并发编译劣化 **1.5 s → 8 s**（NPUW 编译与前台竞争），ready +1.3 s，
+首请求只省 1.5 s——净 ~0.5 s，不值得并发风险。除非插件侧并发编译不再劣化，保持 0。剩余杠杆：
+warmup 3×prefill pass ~6 s（能否减批）与首请求 prefill 首 chunk 3 s（attach 开销）。
+
+遥测补强：BUDGET-TRACE 全部行带 t=ms（GetTickCount64 惰性锚定；静态初始化期的
 ggml_time_us/GetTickCount64 都不可靠，别再往回改）。
 
 ## 2026-11-02（深夜）：srv 流缺陷定案 —— 真规则是 `prefill(chunk256)+decode(KV≥1024 行)` 装不下；bench 对照是假象

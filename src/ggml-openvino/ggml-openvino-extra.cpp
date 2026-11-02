@@ -126,6 +126,10 @@ void ggml_openvino_device_config::init() {
         // One line per InferRequest creation + budget failure: live IR count, graph output
         // bytes, process working set (see ov_budget_trace in utils.cpp).
         "GGML_OPENVINO_BUDGET_TRACE",
+        // 1 = background-compile the smallest decode-level graph right after the load-time
+        // prefill compile. DEFAULT OFF: measured net win ~0.5 s (concurrent compile degrades
+        // 1.5 s -> 8 s under the foreground; ready +1.3 s). See utils.cpp spawn-site comment.
+        "GGML_OPENVINO_PREBUILD_DECODE",
         "GGML_OPENVINO_STATEFUL_EXECUTION",
         "GGML_OPENVINO_PROFILING",
         "GGML_OPENVINO_DUMP_CGRAPH",
