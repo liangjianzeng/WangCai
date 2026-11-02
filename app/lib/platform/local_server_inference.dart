@@ -9,12 +9,14 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
+import '../engine/bindings_store.dart';
 import '../engine/engine_config.dart';
 import '../engine/engine_manifest.dart';
 import '../engine/engine_registry.dart';
 import '../engine/engine_status.dart' show EngineLogLine;
 import '../engine/llama_server_host.dart';
 import '../engine/process_ledger.dart';
+import '../engine/routing_policy.dart';
 import 'inference_backend.dart';
 import 'wangcai_paths.dart';
 
@@ -88,9 +90,11 @@ class ChatSseDecoder {
     final n = t['predicted_n'] ?? t['n_gen'];
     final gen = t['predicted_ms'] ?? t['t_gen_ms'];
     final pp = t['prompt_ms'] ?? t['t_prompt_ms'];
+    final pn = t['prompt_n'] ?? t['n_prompt'];
     if (n is num) out['n_gen'] = n.toInt();
     if (gen is num) out['t_gen_ms'] = gen.toInt();
     if (pp is num) out['t_prompt_ms'] = pp.toInt();
+    if (pn is num) out['n_prompt'] = pn.toInt();
     return out;
   }
 }
@@ -154,17 +158,121 @@ class LocalServerInference implements InferenceBackend {
     return _registry = reg;
   }
 
-  String? _pickInstance(EngineRegistry reg) {
-    for (final id in ['wangcai-npu']) {
-      final inst = reg.instance(id);
-      if (inst != null && inst.enabled && reg.manifestOf(id).kind != 'remote') {
-        return id;
+  // ── M2 路由与绑定表（设计 §7.2/§7.3）──────────────────────────────────
+
+  BindingsStore? _bindings;
+
+  Future<BindingsStore?> _ensureBindings() async {
+    final b = _bindings;
+    if (b != null) return b;
+    try {
+      return _bindings = await BindingsStore.open(WangCaiPaths.enginePaths());
+    } catch (e) {
+      _log('⚠️ 绑定表不可用（按无实测启发路由）：$e');
+      return null;
+    }
+  }
+
+  Future<List<Binding>> _bindingsFor(String modelId) async =>
+      (await _ensureBindings())?.forModel(modelId) ?? const [];
+
+  String? _tierName;
+
+  /// 档位持久化：dataDir/routing.json（UI 档位切换在 M2 设置页接线）。
+  Future<String> _tierSetting() async {
+    final cached = _tierName;
+    if (cached != null) return cached;
+    try {
+      final f = File('${WangCaiPaths.enginePaths().dataDir.path}'
+          '${Platform.pathSeparator}routing.json');
+      if (await f.exists()) {
+        final j = jsonDecode(await f.readAsString());
+        if (j is Map && j['tier'] is String) return _tierName = j['tier'] as String;
       }
-    }
+    } catch (_) {}
+    return _tierName = 'auto';
+  }
+
+  Future<void> setRoutingTier(String tier) async {
+    _tierName = routingTierFromName(tier) == RoutingTier.speedFirst
+        ? 'speed'
+        : routingTierFromName(tier) == RoutingTier.npuFirst
+            ? 'npu'
+            : 'auto';
+    try {
+      final paths = WangCaiPaths.enginePaths();
+      await paths.ensureDirs();
+      await File('${paths.dataDir.path}${Platform.pathSeparator}routing.json')
+          .writeAsString(jsonEncode({'tier': _tierName}), flush: true);
+    } catch (_) {}
+  }
+
+  /// 绑定表实测 t/s（诊断 UI 用）。
+  Future<List<Binding>> bindingsForModel(String modelPath) =>
+      _bindingsFor(_basename(modelPath));
+
+  /// 路由决策（§7.3）：候选=已启用本地实例；binary 缺失=未装不作候选；
+  /// admission 违例=blocked（带建议改道，不去拉必崩的 server）。
+  Future<RoutingDecision> _route({
+    required EngineRegistry reg,
+    required String path,
+    required int nCtx,
+  }) async {
+    final bindingsForModel = await _bindingsFor(_basename(path));
+    final cands = <EngineCandidate>[];
+    final blocked = <String, String>{};
     for (final inst in reg.instances) {
-      if (inst.enabled && reg.manifestOf(inst.id).kind != 'remote') return inst.id;
+      final m = reg.manifestOf(inst.id);
+      if (m.kind == 'remote') continue; // loadModel 是本地意图；远端走请求路由
+      final bin = inst.binaryPath ?? m.binary;
+      final installed = bin != null && bin.isNotEmpty && File(bin).existsSync();
+      cands.add(EngineCandidate(
+        instanceId: inst.id,
+        kind: m.kind,
+        devices: m.capabilities.devices,
+        enabled: inst.enabled,
+        installed: installed,
+      ));
+      final p = _matchPreset(m, path);
+      final requested = nCtx > 0 ? nCtx : (p?.ctx ?? 1024);
+      final ceil = p?.ctx;
+      final tentative = (ceil != null && requested > ceil) ? ceil : requested;
+      final v = m.checkAdmission(ctx: tentative, paramsB: p?.paramsB);
+      if (v.isNotEmpty) blocked[inst.id] = v.join('；');
     }
-    return null;
+    return chooseEngine(RoutingRequest(
+      tier: routingTierFromName(await _tierSetting()),
+      candidates: cands,
+      bindings: bindingsForModel,
+      blocked: blocked,
+    ));
+  }
+
+  /// 推理结束回写绑定表（§7.2「实测由每次会话后回写」）；失败静默。
+  void _recordTpsBestEffort() {
+    final h = _host;
+    final c = _cfg;
+    final s = _lastStats;
+    if (h == null || c == null || s.isEmpty) return;
+    final gen = s['n_gen'];
+    final tgen = s['t_gen_ms'];
+    final pn = s['n_prompt'];
+    final tp = s['t_prompt_ms'];
+    if (gen is! int || tgen is! int || gen <= 0 || tgen <= 0) return;
+    unawaited(() async {
+      try {
+        final b = await _ensureBindings();
+        await b?.recordRun(
+          engineId: h.instanceId,
+          modelId: _basename(c.modelPath),
+          device: c.device,
+          presetJson: c.presetName,
+          decodeTps: gen * 1000 / tgen,
+          prefillTps: (pn is int && tp is int && tp > 0) ? pn * 1000 / tp : null,
+          ctx: c.ctx,
+        );
+      } catch (_) {}
+    }());
   }
 
   Preset? _matchPreset(EngineManifest manifest, String modelPath) {
@@ -207,11 +315,15 @@ class LocalServerInference implements InferenceBackend {
     try {
       await stopGeneration(); // 换载前掐掉在飞生成
       final reg = await _ensureRegistry();
-      final instId = _pickInstance(reg);
+      final decision = await _route(reg: reg, path: path, nCtx: nCtx);
+      final instId = decision.instanceId;
       if (instId == null) {
-        _log('⛔ 没有可用引擎实例（%APPDATA%\\WangCai\\engines.json）');
+        _log('⛔ ${decision.reason}'
+            '${decision.suggestion != null ? '（${decision.suggestion}）' : ''}');
         return false;
       }
+      _log('🧭 ${decision.reason}'
+          '${decision.suggestion != null ? ' · ${decision.suggestion}' : ''}');
       final manifest = reg.manifestOf(instId);
       final host = reg.hostOf(instId) as LlamaServerHost;
       _host = host; // 失败也要可取证（debugHost / UI 读状态与日志）
@@ -623,6 +735,7 @@ class LocalServerInference implements InferenceBackend {
             't_gen_ms': DateTime.now().difference(t0).inMilliseconds,
             't_prompt_ms': 0,
           };
+      _recordTpsBestEffort(); // 实测 t/s 回写绑定表（路由真源）
       await ctl.close();
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) {
