@@ -130,6 +130,9 @@ void ggml_openvino_device_config::init() {
         // prefill compile. DEFAULT OFF: measured net win ~0.5 s (concurrent compile degrades
         // 1.5 s -> 8 s under the foreground; ready +1.3 s). See utils.cpp spawn-site comment.
         "GGML_OPENVINO_PREBUILD_DECODE",
+        // 1 = keep the embedding/lm_head table in Q8_0_C instead of F16 on the NPU (tied
+        // embeddings read it in full every decode step; re-test of a 2026-10-31 execute fail).
+        "GGML_OPENVINO_EMBD_Q8_0",
         "GGML_OPENVINO_STATEFUL_EXECUTION",
         "GGML_OPENVINO_PROFILING",
         "GGML_OPENVINO_DUMP_CGRAPH",
@@ -419,11 +422,17 @@ std::optional<ExtraQuantType> ggml_openvino_get_requant_type(const ggml_tensor *
             return ExtraQuantType::Q4_0_128;
         }
         // F16 on the NPU regardless of the source type: a Q8_0 checkpoint arrives with its
-        // embedding table already in Q8_0, and the Q8_0_C cluster layout there makes the NPUW
+        // embedding table already in Q8_0, and the Q8_0_C cluster layout there made the NPUW
         // graph fail at execute time (L0 pfnAppendGraphExecute, ZE_RESULT_ERROR_UNINITIALIZED)
-        // even though the same layout works for output.weight. The vocab table is read-once
-        // per token, so F16 costs ~2x the bytes of Q8_0_C on a 152k x 2048 table (~600 MB)
-        // -- acceptable, and it keeps every model family on one known-good path.
+        // even though the same layout works for output.weight (observed 2026-10-31, pre
+        // multi-level/eviction engine). GGML_OPENVINO_EMBD_Q8_0=1 re-selects Q8_0_C: on the
+        // 2026-11-03 engine the graph now RUNS but decode is strictly worse (4B bench chunk128:
+        // tg128 6.95 -> 4.21 t/s, pp1900 flat at ~41) -- the cluster dequant op costs far more
+        // than the halved lm_head traffic saves; same failure mode as the u4 embd
+        // falsification. F16 stays: fastest embedding layout measured.
+        if (ggml_openvino_getenv_int("GGML_OPENVINO_EMBD_Q8_0")) {
+            return ExtraQuantType::Q8_0_C;
+        }
         return ((ggml_openvino_is_npu() && (tensor->type == GGML_TYPE_Q6_K ||
                                             tensor->type == GGML_TYPE_Q8_0))
                     ? ExtraQuantType::F16
