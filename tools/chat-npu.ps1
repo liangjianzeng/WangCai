@@ -19,12 +19,13 @@
     Works from ANY current directory -- everything is located relative to this file and
     printed as an absolute path in the banner. Invoke it by absolute path:
         E:\DTXY\WangCai\tools\chat-npu.ps1 -Model Spark-X2.6-4B-Q4_K_M.gguf
-    Any model in the model dir works (LFM3-1.7B, Spark-X2.6-4B, Qwen3-4B, ...); the chunk=128
-    default is the proven 4B chat config. Budget rule (HANDOFF 2026-11-02 late night): the NPU
-    fits prefill(chunk) + the LARGEST decode level graph together -- on 4B that means chunk256
-    is fine for ctx<=512 (verified; prefill ~+55%) but chunk>=1024 contexts must stay at
-    chunk128, or the decode graph's first execute dies with a ZE append error. 1.7B runs
-    chunk256 at any ctx. Graph cache is per model under .cache\npu_chat\<model>.
+    Any model in the model dir works (LFM3-1.7B, Spark-X2.6-4B, Qwen3-4B, ...). -Chunk 0 (the
+    default) picks the chunk from the budget rule (HANDOFF 2026-11-02 late night): the NPU
+    co-resides prefill(chunk) + the LARGEST decode level graph -- small weights (<1.8 GB, the
+    1.7B class) get chunk256 at any ctx; the 4B class gets chunk256 only at ctx<=512 (verified;
+    prefill ~+55%) and chunk128 above that, where a chunk256 lv>=1024 decode graph would die on
+    its first execute (ZE append error). Pass -Chunk explicitly to override. Graph cache is per
+    model under .cache\npu_chat\<model>.
 
     Vision/audio scenarios: one-shot questions through llama-mtmd-cli (the pinned llama-cli
     has no --mmproj): -Image photo.png -Ask 'What is in this picture?' or -Audio clip.wav.
@@ -35,7 +36,7 @@ param(
     [string]$ModelDir = '',                     # extra directory to search by file name (or WANGCAI_MODEL_DIR)
     [int]$Ctx = 2048,                           # conversation window; 1.7B verified at c8192
     [int]$MaxTokens = 256,                      # per-reply cap
-    [int]$Chunk = 128,                          # prefill chunk of the proven text config
+    [int]$Chunk = 0,                            # prefill chunk; 0 = auto (see budget rule below)
     [string]$CacheDir = '',                     # persistent graph cache; default .cache\npu_chat\<model>
     [switch]$LevelsOff,                         # escape hatch if the device budget acts up
     [string]$Image = '',                        # one-shot vision question via llama-mtmd-cli
@@ -81,6 +82,14 @@ $env:PATH = "$bin" + $sep + $(if (Test-Path $ovlibs) { "$ovlibs$sep" } else { ''
 
 Get-ChildItem 'Env:GGML_OPENVINO_*' | ForEach-Object { Remove-Item "Env:$($_.Name)" }
 $env:GGML_OPENVINO_DEVICE = 'NPU'
+# Auto chunk (budget rule, HANDOFF 2026-11-02 late night): the NPU co-resides the prefill graph
+# with the LARGEST decode-level graph. Small weights (anything under ~1.8 GB on disk -- the 1.7B
+# class) fit chunk256 at any ctx (~+55% prefill). The 4B class only fits chunk256 while the
+# largest decode level stays <= 512, i.e. ctx <= 512; above that it must run chunk128.
+if (-not $Chunk) {
+    $small = (Get-Item $Model).Length -lt 1.8GB
+    $Chunk = if ($small -or $Ctx -le 512) { 256 } else { 128 }
+}
 $env:GGML_OPENVINO_PREFILL_CHUNK_SIZE = [string]$Chunk
 if ($LevelsOff) { $env:GGML_OPENVINO_DISABLE_DECODE_LEVELS = '1' }
 # Per-model cache subdirectory: different weights/architectures must never share one blob dir.
@@ -94,7 +103,7 @@ $env:GGML_OPENVINO_CACHE_DIR = (Resolve-Path $CacheDir).Path
 Write-Host ("chat [NPU] repo={0}" -f $repo)
 Write-Host ("chat [NPU] cli={0}" -f (Resolve-Path $cli).Path)
 Write-Host ("chat [NPU] model={0}" -f (Resolve-Path $Model).Path)
-Write-Host ("chat [NPU] cache={0} ctx={1}" -f $env:GGML_OPENVINO_CACHE_DIR, $Ctx)
+Write-Host ("chat [NPU] cache={0} ctx={1} chunk={2}" -f $env:GGML_OPENVINO_CACHE_DIR, $Ctx, $Chunk)
 
 # Vision/audio scenarios are one-shot questions through llama-mtmd-cli (the pinned llama-cli
 # has no --mmproj). Same NPU environment as the chat path above.
