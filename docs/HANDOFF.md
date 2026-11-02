@@ -26,6 +26,10 @@ ggml_time_us/GetTickCount64 都不可靠，别再往回改）。
 `-b 128`（试图把 warmup 减批）**反效应，勿用**：ready 40.3 s、首请求 20.3 s（调度切成更多批次，
 backend pass 从 4 次涨到 12 次）。生产 -b 不动（默认）。
 
+`chunk512`（c512 srv 流）**证伪**：每 chunk 执行 9.3 s vs chunk256 的 1.95 s / chunk128 的 1.51 s
+（span 翻倍执行超线性），pp 35.5 t/s 反而低于 chunk256 的 ~88；且 lv512 blob 命中后 IR 仍要 ~20 s。
+**chunk256 是 prefill 甜点**（短上下文已交付 +55–59%），别再往上加。
+
 ## 2026-11-02（深夜）：srv 流缺陷定案 —— 真规则是 `prefill(chunk256)+decode(KV≥1024 行)` 装不下；bench 对照是假象
 
 上一段（未决）的"srv 流特异驻留"假设**已被 BUDGET-TRACE 证伪并替换**。遥测（env `GGML_OPENVINO_BUDGET_TRACE=1`，
