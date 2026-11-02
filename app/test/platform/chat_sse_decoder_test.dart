@@ -124,4 +124,50 @@ void main() {
       expect(out.last, contains('{"ok":2}'));
     });
   });
+
+  group('上下文超裁自愈（M1-d 实案：ctx 调小后续跑历史超新 ctx → 400）', () {
+    test('溢出措辞识别', () {
+      expect(LocalServerInference.isContextOverflowText(
+              'Request processing failed: prompt (700 tokens) exceeds ctx (512)'),
+          isTrue);
+      expect(
+          LocalServerInference.isContextOverflowText('n_ctx too small'), isTrue);
+      expect(
+          LocalServerInference.isContextOverflowText('invalid argument: tools'),
+          isFalse);
+    });
+
+    test('有 system：保 system+末位，裁最旧中间轮', () {
+      final body = <String, dynamic>{
+        'messages': [
+          {'role': 'system', 'content': 'S'},
+          {'role': 'user', 'content': 'u1'},
+          {'role': 'assistant', 'content': 'a1'},
+          {'role': 'user', 'content': 'u2'},
+          {'role': 'assistant', 'content': 'a2'},
+          {'role': 'user', 'content': 'u3'},
+        ],
+      };
+      expect(LocalServerInference.trimOldestHistory(body), isTrue);
+      expect((body['messages'] as List)[1]['content'], 'a1'); // 裁掉了 u1
+      expect(LocalServerInference.trimOldestHistory(body), isTrue);
+      expect(LocalServerInference.trimOldestHistory(body), isTrue);
+      expect(LocalServerInference.trimOldestHistory(body), isFalse); // 下限
+      expect(body['messages'], hasLength(3));
+      expect((body['messages'] as List).last['content'], 'u3'); // 末位永不裁
+    });
+
+    test('无 system / 太短 / 坏形态不裁', () {
+      expect(
+          LocalServerInference.trimOldestHistory({
+            'messages': [
+              {'role': 'user', 'content': 'u1'},
+              {'role': 'user', 'content': 'u2'},
+            ]
+          }),
+          isFalse);
+      expect(LocalServerInference.trimOldestHistory({'messages': 'bad'}), isFalse);
+      expect(LocalServerInference.trimOldestHistory({}), isFalse);
+    });
+  });
 }

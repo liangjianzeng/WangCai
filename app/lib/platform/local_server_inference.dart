@@ -220,13 +220,24 @@ class LocalServerInference implements InferenceBackend {
       if (gpuBackend != 'auto' && gpuBackend.isNotEmpty) {
         _log('ℹ️ Windows 侧设备由引擎实例决定（M2 路由接管），忽略 gpuBackend=$gpuBackend');
       }
+      // 调用方 ctx（设置页 contextSize，出厂默认 4096）是显式意图，但 preset.ctx
+      // 是**实测安全上限**（status.md 缺陷5：4B@c>512 OUT_OF_HOST_MEMORY）：
+      // caller ≤ preset 尊重（用户显式调小）；caller > preset 收敛到 preset 并
+      // 留痕——不让设置页默认值把实测配置顶穿（顶穿=admission 硬拒或执行期崩）。
+      // 「强制大 ctx / 跟随设置」档位归 M2 路由三档。
+      final requestedCtx = nCtx > 0 ? nCtx : (preset?.ctx ?? 1024);
+      final ctxCeiling = preset?.ctx;
+      final ctx =
+          (ctxCeiling != null && requestedCtx > ctxCeiling) ? ctxCeiling : requestedCtx;
+      if (ctx != requestedCtx) {
+        _log('ℹ️ ctx $requestedCtx → 收敛到预设上限 $ctx（${preset!.name} 实测上限；'
+            '更大上下文请改用 CUDA/Vulkan 引擎）');
+      }
       final cfg = EngineConfig(
         engineId: instId,
         modelPath: path,
         mmprojPath: mmprojPath,
-        // 调用方（设置页 contextSize）是用户显式意图，优先；preset 只兜默认。
-        // （「自动」档位归 M1-b：设置里给「跟随预设」选项。）
-        ctx: nCtx > 0 ? nCtx : (preset?.ctx ?? 1024),
+        ctx: ctx,
         chunk: preset?.chunk,
         device: preset?.device ?? 'NPU',
         gpuLayers: preset?.gpuLayers,
@@ -559,27 +570,48 @@ class LocalServerInference implements InferenceBackend {
     _lastStats = const {}; // 上一请求的 timings 不得串台
     final dec = ChatSseDecoder(rawMode: rawMode);
     try {
-      final body = await buildBody();
-      final res = await _dio.post<ResponseBody>(
-        url,
-        data: body,
-        cancelToken: cancel,
-        options: Options(
-          responseType: ResponseType.stream,
-          headers: const {'Accept': 'text/event-stream'},
-        ),
-      );
-      await for (final data in sseDataLines(res.data!.stream)) {
-        if (data == '[DONE]') break;
-        Map<String, dynamic> chunk;
-        try {
-          chunk = jsonDecode(data) as Map<String, dynamic>;
-        } catch (_) {
-          continue; // 容忍半行/坏行：SSE 断线重连与分块边界的常态
+      var body = await buildBody();
+      for (var trimTry = 0;; trimTry++) {
+        final res = await _dio.post<ResponseBody>(
+          url,
+          data: body,
+          cancelToken: cancel,
+          options: Options(
+            responseType: ResponseType.stream,
+            headers: const {'Accept': 'text/event-stream'},
+            // stream 响应 dio 解析不了 body，4xx 正文只能自己抽干流取证
+            // （M1-d 实案：http=400 只剩 dio 模板文案，无从定位）。
+            validateStatus: (_) => true,
+          ),
+        );
+        final status = res.statusCode ?? 0;
+        if (status >= 400) {
+          final text = await _drainBody(res.data);
+          final short = text.length > 300 ? '${text.substring(0, 300)}…' : text;
+          if (_isContextOverflow(text) && trimTry < 3 && _trimOldestHistory(body)) {
+            // 真机实案：设置页把 ctx 调小后，续跑的会话历史超新 ctx → server 400。
+            // 丢最旧的非 system 轮重试，而不是把死局抛给用户。
+            _log('✂️ 上下文超限：丢弃最旧历史重试 ${trimTry + 1}/3');
+            continue;
+          }
+          ctl.addError(StateError('引擎请求失败(http=$status): '
+              '${short.isEmpty ? (res.statusMessage ?? '') : short}'));
+          await ctl.close();
+          return;
         }
-        for (final piece in dec.feedChunk(chunk)) {
-          ctl.add(piece);
+        await for (final data in sseDataLines(res.data!.stream)) {
+          if (data == '[DONE]') break;
+          Map<String, dynamic> chunk;
+          try {
+            chunk = jsonDecode(data) as Map<String, dynamic>;
+          } catch (_) {
+            continue; // 容忍半行/坏行：SSE 断线重连与分块边界的常态
+          }
+          for (final piece in dec.feedChunk(chunk)) {
+            ctl.add(piece);
+          }
         }
+        break;
       }
       for (final piece in dec.finish()) {
         ctl.add(piece);
@@ -618,11 +650,60 @@ class LocalServerInference implements InferenceBackend {
     }
   }
 
+  Future<String> _drainBody(ResponseBody? rb) async {
+    if (rb == null) return '';
+    try {
+      final bytes = <int>[];
+      await for (final c in rb.stream) {
+        bytes.addAll(c);
+        if (bytes.length > 8192) break; // 取证够用即止
+      }
+      return const Utf8Decoder(allowMalformed: true).convert(bytes);
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// server 因提示超出 n_ctx 报 400 的正文特征（llama-server 措辞族）。
+  static bool isContextOverflowText(String text) {
+    final t = text.toLowerCase();
+    return t.contains('exceed') ||
+        t.contains('n_ctx') ||
+        t.contains('context size') ||
+        t.contains('prompt is too long') ||
+        t.contains('too many tokens');
+  }
+
+  bool _isContextOverflow(String text) => isContextOverflowText(text);
+
+  /// 丢最旧的非 system 消息（保留 system 前缀与末位 user），原地改 body。
+  /// 可裁到只剩 system+末位 user 为止；再裁返回 false。公开静态便于单测。
+  static bool trimOldestHistory(Map<String, dynamic> body) {
+    final msgs = body['messages'];
+    if (msgs is! List || msgs.length < 3) return false;
+    var head = 0;
+    if (msgs.first is Map && msgs.first['role'] == 'system') head = 1;
+    if (msgs.length - head <= 2) return false; // 剩 system+user+1 以下不再裁
+    msgs.removeAt(head);
+    return true;
+  }
+
+  bool _trimOldestHistory(Map<String, dynamic> body) => trimOldestHistory(body);
+
   StateError _describeDio(DioException e) {
     final code = e.response?.statusCode;
-    final detail = e.response?.data is Map ? e.response!.data['error'] : null;
+    // SSE 流式请求里 dio 不会把 body 解析成 Map——400 的 server 报错 JSON
+    // 就是 String。取证必须带出正文，否则只有 http=400 无法定位（M1-d 实案）。
+    final raw = e.response?.data;
+    final detail = raw is Map
+        ? (raw['error'] ?? raw['message'])?.toString()
+        : raw is String
+            ? (raw.length > 300 ? '${raw.substring(0, 300)}…' : raw)
+            : raw is List<int>
+                ? String.fromCharCodes(raw.take(300))
+                : null;
     return StateError('引擎请求失败(${e.type.name}${code != null ? ' http=$code' : ''}): '
-        '${detail ?? e.message}');
+        '${(detail == null || detail.isEmpty) ? e.message : detail}');
   }
 }
 
