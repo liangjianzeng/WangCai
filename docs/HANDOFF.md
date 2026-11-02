@@ -18,12 +18,16 @@
   （intel_npu 内部类，L0 host memory）与 `ov::IRemoteTensor` vtable，但无对外创建属性名（无
   NPU_REMOTE_* 之类字符串）→ 用户侧零拷贝绑定不可达。即便可达也不改 LPDDR 物理带宽：decode 已贴
   P3 下限，prefill 每 chunk 输入仅 KB 级。两理由叠加，结案。
-- [ ] **P5 热跑基线表刷新**：chunk128/256 × c512/c2048 × 1.7B/4B 的 prefill/decode 热数字（auto-chunk
-  之后的真实生产口径）入 status 基线表，替换旧数字。
+- [x] **P5 热跑基线表刷新（2026-11-03，已入 status）**：4B c2048×ck128 pp **38.0**、4B c512×ck256
+  pp **55.5**（+46%）、1.7B c2048×ck256 pp **223.5**（t/s，暖 blob 第二遍口径；cli -st 的 Generation
+  计时被 CoT 打印摊薄，decode 用 bench 口径 6.9/14.9）。同轮证伪：chunk512（span 超线性，两模型）、
+  `-b 128`（ready 40.3 s）。注意：并行实验前先 `Get-Process llama*` 清残留——一轮被中断的基线跑
+  污染过 4B c2048 臂（12.9 t/s 假象），清干净复测才是 38.0。
 - [x] **P6 GPU 路径 stub 结案（2026-11-03）**：`ov_opencl_shim` 的 GPU/CL 路径保持 stub，理由：dGPU
   （5060 Ti）不在端侧 NPU 场景内；iGPU 共享同一 LPDDR5X（P3 带宽下限同样适用，CPU 参照 21.7–29.2 t/s
   即共享内存路径的实测上限量级），无吞吐红利且有维护成本。
-- [ ] **P7 每项独立 commit/push + 本清单勾选**，循环直到全勾；push 断网则积攒下次重试。
+- [x] **P7 每项独立 commit/push + 清单勾选**：P1–P6 全部完成（8577f20 + 本 commit），push 断网时
+  本地积攒、恢复后重推。
 
 ## 2026-11-02（深夜 2）：启动时间分解（4B 生产配置 server）——warmup 只预热 prefill，decode 图在首请求才编译
 

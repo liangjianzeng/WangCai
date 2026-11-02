@@ -306,3 +306,16 @@ ctx≤512 短对话可 chunk256；离线 bench chunk256 随便用。BUDGET-TRACE
 （`GGML_OPENVINO_BUDGET_TRACE=1`，HANDOFF 2026-11-02 深夜）。新独立缺陷：llama-completion（raw）
 4B 静态 decode 编译 0xC0000409 fastfail（非生产流，待查）。engine 修复：空批 decode（raw==0）
 直接短路返回成功（不再编图；此前的 clamp-to-1 方案撤销）。
+
+热跑基线表（2026-11-03，P5；cli -st、暖 blob + level 图已编、第二遍取数，脚本 ctrl/ck_hotbase.ps1
+与 ck_4b2048.ps1；Generation 列以 llama-bench 口径为准——cli -st 的 per-step 计时被 CoT 行打印摊薄）：
+
+| 组合（生产口径） | prefill 热 | decode（bench 口径） |
+|---|---:|---:|
+| 4B c2048 × chunk128（长上下文） | **38.0 t/s** | 6.9 t/s |
+| 4B c512 × chunk256（短上下文 auto） | **55.5 t/s**（+46%） | 6.9 t/s（span 512） |
+| 1.7B c2048 × chunk256（auto） | **223.5 t/s** | 14.9 t/s |
+
+chunk512 证伪（同轮）：4B 每 chunk 9.3 s vs chunk256 的 1.95 s（span 超线性）、1.7B 98 vs 116 t/s
+——**chunk256 全局甜点**；`-b 128` 亦证伪（ready 40.3 s）。`--no-warmup` server 净赢 2.7 s
+（P1，README 已写建议）。decode 天花板数学定案见上（P3：每步=权重全量读）。
