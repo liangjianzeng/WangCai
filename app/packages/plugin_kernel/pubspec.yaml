@@ -1,0 +1,17 @@
+name: plugin_kernel
+description: >-
+  TongYi-Lite 插件平台内核（纯 Dart，零 Flutter）：fiber 生命周期、能力注册表、槽账本宿主侧、
+  三级配置、方案档、加载器与编排。Flutter 只出现在宿主（app 的 lib/plugins/**）。
+  内核可离线 dart test —— 这是它单独成包的全部理由。
+version: 0.1.0
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+
+dependencies:
+  plugin_sdk:
+    path: ../plugin_sdk
+
+dev_dependencies:
+  test: ^1.25.0

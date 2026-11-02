@@ -1,0 +1,96 @@
+{
+  "tasks": [
+    {
+      "id": "plain-qa",
+      "name": "简单问答（不开工具）",
+      "prompt": "用一句话解释什么是闭包。",
+      "expectTools": [],
+      "maxSteps": 2,
+      "answerContains": []
+    },
+    {
+      "id": "calc-unit",
+      "name": "计算 + 单位换算组合",
+      "prompt": "3.5 公斤是多少盎司？另外帮我算 127 乘 46 等于多少，一起回答。",
+      "expectTools": ["calculator"],
+      "maxSteps": 6,
+      "answerContains": ["123", "盎司"]
+    },
+    {
+      "id": "single-search",
+      "name": "单主题搜索",
+      "prompt": "搜索一下Compose Multiplatform 1.9 有什么新特性，简要总结。",
+      "expectTools": ["web_search"],
+      "maxSteps": 10,
+      "maxDuplicateToolCalls": 1
+    },
+    {
+      "id": "multi-angle-search",
+      "name": "多角度搜索（并发/一次提交）",
+      "prompt": "我要买一台 3000 元以内的安卓平板，请从「性价比」「续航」「屏幕素质」三个角度分别搜索对比，汇总推荐。",
+      "expectTools": ["web_search"],
+      "maxSteps": 12,
+      "maxDuplicateToolCalls": 2
+    },
+    {
+      "id": "note-memory",
+      "name": "记忆写入",
+      "prompt": "记住：我的代码风格偏好是两空格缩进、单引号字符串。",
+      "expectTools": ["memory_set"],
+      "maxSteps": 4,
+      "answerContains": ["记"]
+    },
+    {
+      "id": "todo-plan",
+      "name": "任务拆解（todo）",
+      "prompt": "帮我把「搬家到新公寓」拆成待办清单（至少5项：打包、通知、水电、网络、清洁），写进 todo。",
+      "expectTools": ["todo_write"],
+      "maxSteps": 6
+    },
+    {
+      "id": "file-report",
+      "name": "文件整理 + 导出",
+      "prompt": "在工作区创建 notes/trip.md，内容为「周末出行清单：充电器、雨伞、身份证」，然后把它导出成 trip.md 交付。",
+      "expectTools": ["write_file"],
+      "maxSteps": 8
+    },
+    {
+      "id": "plan-mode",
+      "name": "计划模式（/plan → exit_plan）",
+      "prompt": "/plan 给我的博客项目加一个评论功能，先规划再执行。",
+      "expectTools": ["exit_plan"],
+      "expectEndReason": "completed",
+      "maxSteps": 14,
+      "forbidTools": ["shell_exec"]
+    },
+    {
+      "id": "goal-longtask",
+      "name": "目标续跑（goal_set）",
+      "prompt": "这是一个长任务示例：把以下三段文字分别改写成一句话摘要（内容见附件说明），使用 goal_set 建立目标逐段完成。",
+      "expectTools": ["goal_set"],
+      "expectEndReason": "completed",
+      "maxSteps": 16
+    },
+    {
+      "id": "skill-email",
+      "name": "技能触发（email-draft）",
+      "prompt": "帮我给合作方王总写一封感谢邮件，感谢他们上周的接待，约定下周视频会议跟进合同细节。",
+      "expectTools": ["load_skill"],
+      "maxSteps": 10
+    },
+    {
+      "id": "search-weather",
+      "name": "天气查询",
+      "prompt": "今天上海天气怎么样？适合跑步吗？",
+      "expectTools": ["get_weather"],
+      "maxSteps": 8
+    },
+    {
+      "id": "subagent-delegate",
+      "name": "子代理委派",
+      "prompt": "请派一个子代理独立完成：调研「Flutter 状态管理方案对比」（riverpod/bloc/provider），返回一份 300 字结论；你等结果后转述给我。",
+      "expectTools": ["subagent"],
+      "maxSteps": 16
+    }
+  ]
+}

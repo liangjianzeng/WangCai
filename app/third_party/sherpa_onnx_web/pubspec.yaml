@@ -1,0 +1,36 @@
+name: sherpa_onnx_web
+description: >
+  Web platform support for sherpa_onnx using WebAssembly.
+  [TongYi-Lite vendored stub] 上游 1.13.8 把 wasm/js（约 4.3MB 压缩）声明为
+  包 assets，Flutter 无差别打进 Android 包——Android/iOS 运行期从不加载
+  （native 走 sherpa_onnx_android_arm64）。本 stub 删除 assets 目录与声明以
+  瘦身；若要构建 web 目标，还原上游原包即可。
+
+version: 1.13.8
+
+repository: https://github.com/k2-fsa/sherpa-onnx/tree/master/flutter
+
+issue_tracker: https://github.com/k2-fsa/sherpa-onnx/issues
+documentation: https://k2-fsa.github.io/sherpa/onnx/
+
+homepage: https://github.com/k2-fsa/sherpa-onnx
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+  flutter: ">=2.8.1"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_web_plugins:
+    sdk: flutter
+  path: ^1.9.0
+  web: ^1.1.0
+
+flutter:
+  plugin:
+    platforms:
+      web:
+        pluginClass: SherpaOnnxWeb
+        fileName: sherpa_onnx_web.dart
+

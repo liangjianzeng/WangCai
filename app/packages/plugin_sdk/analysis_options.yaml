@@ -1,0 +1,10 @@
+# 纯 Dart 包：不开 Flutter 相关规则。strict-* 是为了让插件作者拿到的类型信息不打折。
+analyzer:
+  language:
+    strict-casts: true
+    strict-raw-types: true
+linter:
+  rules:
+    - prefer_final_locals
+    - unawaited_futures
+    - avoid_print

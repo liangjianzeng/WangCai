@@ -1,0 +1,914 @@
+{
+  "version": 1,
+  "description": "TongYi-Lite 端侧模型下载目录。新增/调整模型只需修改本文件，无需改动代码或重新编译。可选：把 ModelCatalog.remoteUrl 指向本 JSON 的自有 CDN 地址即可热更新。带 \"mtp\": true 的条目支持多 token 预测（Multi-Token Prediction），可由推理引擎启用投机解码加速。",
+  "models": [
+    {
+      "id": "bonsai-27b-q1_0",
+      "name": "Bonsai 27B (Q1_0 智能体 + dspark 加速)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/prism-ml/Bonsai-27B-gguf/resolve/master/Bonsai-27B-Q1_0.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/prism-ml/Bonsai-27B-gguf/resolve/main/Bonsai-27B-Q1_0.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/prism-ml/Bonsai-27B-gguf/resolve/main/Bonsai-27B-Q1_0.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 3.79,
+      "sizeMBDisplay": "3.8 GB",
+      "recommended": true,
+      "minRamMB": 6144,
+      "sha256Hash": null,
+      "tags": [
+        "推荐",
+        "智能体",
+        "dspark加速"
+      ],
+      "dspark": {
+        "sizeMB": 1700,
+        "sizeMBDisplay": "1.7 GB",
+        "mirrors": [
+          {
+            "url": "https://modelscope.cn/models/prism-ml/Bonsai-27B-gguf/resolve/master/Bonsai-27B-dspark-Q4_1.gguf",
+            "source": "modelscope"
+          },
+          {
+            "url": "https://hf-mirror.com/prism-ml/Bonsai-27B-gguf/resolve/main/Bonsai-27B-dspark-Q4_1.gguf",
+            "source": "hf-mirror"
+          },
+          {
+            "url": "https://huggingface.co/prism-ml/Bonsai-27B-gguf/resolve/main/Bonsai-27B-dspark-Q4_1.gguf",
+            "source": "huggingface"
+          }
+        ]
+      },
+      "agentCapabilities": {
+        "nativeToolCall": false,
+        "maxContextTokens": 128000,
+        "recommendedNctx": 32768,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 384,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "bonsai-27b-ternary-q2_0",
+      "name": "Bonsai 27B (Ternary 1.58-bit)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://hf-mirror.com/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-Q2_0.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-Q2_0.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 7.17,
+      "sizeMBDisplay": "7.2 GB",
+      "recommended": false,
+      "minRamMB": 10240,
+      "sha256Hash": null,
+      "tags": [
+        "不推荐",
+        "限高端旗舰"
+      ]
+    },
+    {
+      "id": "bonsai-2-27b-ternary-ptq1_0",
+      "name": "Bonsai 2 27B (PTQ1_0 1.58-bit 纯文本)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/master/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-PTQ1_0.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 5.95,
+      "sizeMBDisplay": "5.9 GB",
+      "recommended": false,
+      "minRamMB": 16384,
+      "sha256Hash": "53107f530aa52eb00912263ab1ee29bd199261c87cd7b4ad4ca1318c1fe33ee3",
+      "tags": [
+        "1.58-bit",
+        "纯文本",
+        "限高端旗舰",
+        "需新版引擎",
+        "需≥16GB内存（11GB 机型 GPU 加载会 OOM 死机）"
+      ]
+    },
+    {
+      "id": "gemma-3-4b-q4_k_m",
+      "name": "Gemma 3 4B (Q4_K_M)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://hf-mirror.com/unsloth/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://modelscope.cn/api/v1/models/unsloth/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf",
+          "source": "modelscope"
+        }
+      ],
+      "sizeGB": 2.6,
+      "sizeMBDisplay": "2.6 GB",
+      "recommended": true,
+      "minRamMB": 3072,
+      "sha256Hash": null,
+      "tags": [
+        "推荐"
+      ]
+    },
+    {
+      "id": "gemma-4-e2b-q4_k_m",
+      "name": "Gemma 4 E2B (Q4_K_M 视觉+语音)",
+      "type": "vision",
+      "mtp": true,
+      "mirrors": [
+        {
+          "url": "https://hf-mirror.com/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://modelscope.cn/api/v1/models/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf",
+          "source": "modelscope"
+        }
+      ],
+      "sizeGB": 3.11,
+      "sizeMBDisplay": "3.1 GB",
+      "recommended": true,
+      "minRamMB": 4096,
+      "sha256Hash": null,
+      "tags": [
+        "推荐",
+        "视觉+语音"
+      ],
+      "mmproj": {
+        "mirrors": [
+          {
+            "url": "https://hf-mirror.com/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf",
+            "source": "hf-mirror"
+          },
+          {
+            "url": "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf",
+            "source": "huggingface"
+          }
+        ],
+        "sizeMB": 531.6,
+        "sizeMBDisplay": "531 MB",
+        "sha256Hash": null
+      }
+    },
+    {
+      "id": "qwen3.5-0.8b-mtp-ud-q4_k_xl",
+      "name": "Qwen3.5-0.8B (MTP UD-Q4_K_XL)",
+      "type": "vision",
+      "mtp": true,
+      "mirrors": [
+        {
+          "url": "https://hf-mirror.com/unsloth/Qwen3.5-0.8B-MTP-GGUF/resolve/main/Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-0.8B-MTP-GGUF/resolve/main/Qwen3.5-0.8B-UD-Q4_K_XL.gguf",
+          "source": "modelscope"
+        }
+      ],
+      "sizeGB": 0.53,
+      "sizeMBDisplay": "543 MB",
+      "recommended": false,
+      "minRamMB": 1024,
+      "sha256Hash": null,
+      "mmproj": {
+        "mirrors": [
+          {
+            "url": "https://hf-mirror.com/unsloth/Qwen3.5-0.8B-MTP-GGUF/resolve/main/mmproj-F16.gguf",
+            "source": "hf-mirror"
+          },
+          {
+            "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-0.8B-MTP-GGUF/resolve/main/mmproj-F16.gguf",
+            "source": "modelscope"
+          }
+        ],
+        "sizeMB": 195.5,
+        "sizeMBDisplay": "195 MB",
+        "sha256Hash": null
+      }
+    },
+    {
+      "id": "qwen3.5-0.8b-mtp-q4_0",
+      "name": "Qwen3.5-0.8BN (Q4_0 MTP)",
+      "type": "text",
+      "mtp": true,
+      "mirrors": [
+        {
+          "url": "https://hf-mirror.com/unsloth/Qwen3.5-0.8B-MTP-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-0.8B-MTP-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf",
+          "source": "modelscope"
+        }
+      ],
+      "sizeGB": 0.49,
+      "sizeMBDisplay": "497 MB",
+      "recommended": false,
+      "minRamMB": 1024,
+      "sha256Hash": null,
+      "tags": [
+        "CPU 加速"
+      ]
+    },
+    {
+      "id": "qwen3.5-2b-mtp-ud-q4_k_xl",
+      "name": "Qwen3.5-2B (MTP UD-Q4_K_XL)",
+      "type": "vision",
+      "mtp": true,
+      "mirrors": [
+        {
+          "url": "https://hf-mirror.com/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/Qwen3.5-2B-UD-Q4_K_XL.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/Qwen3.5-2B-UD-Q4_K_XL.gguf",
+          "source": "modelscope"
+        }
+      ],
+      "sizeGB": 1.29,
+      "sizeMBDisplay": "1.29 GB",
+      "recommended": true,
+      "minRamMB": 2048,
+      "sha256Hash": null,
+      "tags": [
+        "推荐"
+      ],
+      "mmproj": {
+        "mirrors": [
+          {
+            "url": "https://hf-mirror.com/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/mmproj-F16.gguf",
+            "source": "hf-mirror"
+          },
+          {
+            "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/mmproj-F16.gguf",
+            "source": "modelscope"
+          }
+        ],
+        "sizeMB": 637.3,
+        "sizeMBDisplay": "637 MB",
+        "sha256Hash": null
+      }
+    },
+    {
+      "id": "qwen3.5-4b-q4_k_m",
+      "name": "Qwen3.5-4B (Q4_K_M MTP 视觉)",
+      "type": "vision",
+      "mirrors": [
+        {
+          "url": "https://hf-mirror.com/unsloth/Qwen3.5-4B-MTP-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-4B-MTP-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+          "source": "modelscope"
+        }
+      ],
+      "sizeGB": 2.83,
+      "sizeMBDisplay": "2.8 GB",
+      "recommended": true,
+      "minRamMB": 3500,
+      "sha256Hash": "3874209241c9a397e2f62cd3f70f80fd2dfbf0dfccb6838416bdb48a714e8630",
+      "mtp": true,
+      "tags": [
+        "推荐",
+        "视觉"
+      ],
+      "mmproj": {
+        "mirrors": [
+          {
+            "url": "https://hf-mirror.com/unsloth/Qwen3.5-4B-MTP-GGUF/resolve/main/mmproj-F16.gguf",
+            "source": "hf-mirror"
+          },
+          {
+            "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-4B-MTP-GGUF/resolve/main/mmproj-F16.gguf",
+            "source": "modelscope"
+          }
+        ],
+        "sizeMB": 641.3,
+        "sizeMBDisplay": "641 MB",
+        "sha256Hash": null
+      }
+    },
+    {
+      "id": "lfm3-vl-2b-qad-q4_0",
+      "name": "LFM3-VL 2B (QAD Q4_0 视觉)",
+      "type": "vision",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/LiquidAI/LFM3-VL-2B-GGUF/resolve/master/LFM3-VL-2B-QAD-Q4_0.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/LFM3-VL-2B-QAD-Q4_0.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/LFM3-VL-2B-QAD-Q4_0.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 0.98,
+      "sizeMBDisplay": "1.0 GB",
+      "recommended": false,
+      "minRamMB": 3072,
+      "sha256Hash": "621c455376cb96a20891697deb9975c6fb47dd5ea98ed3ad1f3b7e8f24f0b1e6",
+      "tags": [
+        "视觉",
+        "官方量化",
+        "QAD 抗量化",
+        "需新版引擎"
+      ],
+      "mmproj": {
+        "mirrors": [
+          {
+            "url": "https://modelscope.cn/models/LiquidAI/LFM3-VL-2B-GGUF/resolve/master/mmproj-LFM3-VL-2B-F16.gguf",
+            "source": "modelscope"
+          },
+          {
+            "url": "https://hf-mirror.com/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/mmproj-LFM3-VL-2B-F16.gguf",
+            "source": "hf-mirror"
+          },
+          {
+            "url": "https://huggingface.co/LiquidAI/LFM3-VL-2B-GGUF/resolve/main/mmproj-LFM3-VL-2B-F16.gguf",
+            "source": "huggingface"
+          }
+        ],
+        "sizeMB": 361.4,
+        "sizeMBDisplay": "361 MB",
+        "sha256Hash": "1d8e6e58eefc093e09d6332f081516e1ddbd5b35cfca7f35463fb270db230b1e"
+      },
+      "agentCapabilities": {
+        "nativeToolCall": false,
+        "maxContextTokens": 128000,
+        "recommendedNctx": 8192,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 512,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "lfm2.5-2.6b-q4_k_m",
+      "name": "LFM 2.5 2.6B (Q4_K_M)",
+      "type": "text",
+      "recommended": true,
+      "minRamMB": 2048,
+      "sha256Hash": null,
+      "tags": [
+        "推荐",
+        "速度快"
+      ],
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/api/v1/models/LiquidAI/LFM2.5-2.6B-GGUF/resolve/main/LFM2.5-2.6B-Q4_K_M.gguf",
+          "source": "modelscope"
+        }
+      ],
+      "sizeGB": 1.56,
+      "sizeMBDisplay": "1.6 GB",
+      "agentCapabilities": {
+        "nativeToolCall": false,
+        "maxContextTokens": 128000,
+        "recommendedNctx": 16384,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 384,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "spark-x2.6-4b-q4_k_m",
+      "name": "Spark-X2.6 4B (Q4_K_M 智能体)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/bartowski/Spark-X2.6-4B-GGUF/resolve/master/Spark-X2.6-4B-Q4_K_M.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/bartowski/Spark-X2.6-4B-GGUF/resolve/main/Spark-X2.6-4B-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/bartowski/Spark-X2.6-4B-GGUF/resolve/main/Spark-X2.6-4B-Q4_K_M.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 2.44,
+      "sizeMBDisplay": "2.44 GB",
+      "recommended": true,
+      "minRamMB": 6144,
+      "sha256Hash": "30b77e2ede85c37da7071048c91fcf47c3e8cbfad51971640530f8ba9753301a",
+      "tags": [
+        "推荐",
+        "智能体",
+        "百万上下文"
+      ],
+      "agentCapabilities": {
+        "nativeToolCall": true,
+        "maxContextTokens": 1000000,
+        "recommendedNctx": 32768,
+        "toolTemplate": "spark-native",
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 384,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "lfm2.5-8b-a1b-q4_k_m",
+      "name": "LFM 2.5 8B-A1B (Q4_K_M 智能体)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/api/v1/models/LiquidAI/LFM2.5-8B-A1B-GGUF/resolve/master/LFM2.5-8B-A1B-Q4_K_M.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/LiquidAI/LFM2.5-8B-A1B-GGUF/resolve/main/LFM2.5-8B-A1B-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        }
+      ],
+      "sizeGB": 4.8,
+      "sizeMBDisplay": "4.8 GB",
+      "recommended": true,
+      "minRamMB": 8192,
+      "sha256Hash": null,
+      "tags": [
+        "推荐",
+        "智能体",
+        "MoE 高效",
+        "官方量化"
+      ],
+      "agentCapabilities": {
+        "nativeToolCall": false,
+        "maxContextTokens": 128000,
+        "recommendedNctx": 32768,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 384,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "ling-3.0-tiny-q4_k_m",
+      "name": "Ling 3.0 Tiny (Q4_K_M)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/api/v1/models/inclusionAI/Ling-3.0-tiny-GGUF/resolve/master/Ling-3.0-tiny-Q4_K_M.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/inclusionAI/Ling-3.0-tiny-GGUF/resolve/main/Ling-3.0-tiny-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        }
+      ],
+      "sizeGB": 4.49,
+      "sizeMBDisplay": "4.5 GB",
+      "recommended": true,
+      "minRamMB": 8192,
+      "sha256Hash": null,
+      "tags": [
+        "推荐",
+        "MoE 高效",
+        "官方量化"
+      ]
+    },
+    {
+      "id": "ling-3.0-tiny-q4_0",
+      "name": "Ling 3.0 Tiny (Q4_0 GPU加速)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/api/v1/models/bartowski/Ling-3.0-tiny-GGUF/resolve/master/Ling-3.0-tiny-Q4_0.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/bartowski/Ling-3.0-tiny-GGUF/resolve/main/Ling-3.0-tiny-Q4_0.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/bartowski/Ling-3.0-tiny-GGUF/resolve/main/Ling-3.0-tiny-Q4_0.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 4.41,
+      "sizeMBDisplay": "4.4 GB",
+      "recommended": false,
+      "minRamMB": 8192,
+      "sha256Hash": null,
+      "tags": [
+        "GPU 加速",
+        "MoE 高效"
+      ]
+    },
+    {
+      "id": "lfm2.5-8b-a1b-q4_0",
+      "name": "LFM 2.5 8B-A1B (Q4_0 GPU加速)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/api/v1/models/LiquidAI/LFM2.5-8B-A1B-GGUF/resolve/master/LFM2.5-8B-A1B-Q4_0.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/LiquidAI/LFM2.5-8B-A1B-GGUF/resolve/main/LFM2.5-8B-A1B-Q4_0.gguf",
+          "source": "hf-mirror"
+        }
+      ],
+      "sizeGB": 4.62,
+      "sizeMBDisplay": "4.6 GB",
+      "recommended": false,
+      "minRamMB": 8192,
+      "sha256Hash": null,
+      "tags": [
+        "GPU 加速",
+        "MoE 高效",
+        "官方量化"
+      ]
+    },
+    {
+      "id": "bonsai-8b-q1_0",
+      "name": "Bonsai-8B (Q1_0 智能体)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/prism-ml/Bonsai-8B-gguf/resolve/master/Bonsai-8B-Q1_0.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/prism-ml/Bonsai-8B-gguf/resolve/main/Bonsai-8B-Q1_0.gguf",
+          "source": "hf-mirror"
+        }
+      ],
+      "sizeGB": 1.16,
+      "sizeMBDisplay": "1.2 GB",
+      "recommended": true,
+      "minRamMB": 2048,
+      "sha256Hash": null,
+      "tags": [
+        "推荐",
+        "智能体",
+        "轻量"
+      ],
+      "agentCapabilities": {
+        "nativeToolCall": false,
+        "maxContextTokens": 128000,
+        "recommendedNctx": 16384,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 384,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "neohorse-1-4b",
+      "name": "NeoHorse-1 4B (Q4_K_M 智能体)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://hf-mirror.com/TokenRhythm/NeoHorse-1-4B-GGUF/resolve/main/NeoHorse-1-4B-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/TokenRhythm/NeoHorse-1-4B-GGUF/resolve/main/NeoHorse-1-4B-Q4_K_M.gguf",
+          "source": "huggingface"
+        },
+        {
+          "url": "https://modelscope.cn/api/v1/models/TokenRhythm/NeoHorse-1-4B-GGUF/resolve/main/NeoHorse-1-4B-Q4_K_M.gguf",
+          "source": "modelscope"
+        }
+      ],
+      "sizeGB": 2.52,
+      "sizeMBDisplay": "2.5 GB",
+      "recommended": true,
+      "minRamMB": 4096,
+      "sha256Hash": "7da8ac6219b0aaa21b58cb26c1ec6826b478449215a3b0448742e1cda60fa2b4",
+      "tags": [
+        "推荐",
+        "智能体"
+      ],
+      "agentCapabilities": {
+        "nativeToolCall": true,
+        "maxContextTokens": 262144,
+        "recommendedNctx": 32768,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 512,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "minicpm5-2b-q4_k_m",
+      "name": "MiniCPM5 2B (Q4_K_M 智能体)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/OpenBMB/MiniCPM5-2B-GGUF/resolve/master/MiniCPM5-2B-Q4_K_M.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/OpenBMB/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/OpenBMB/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q4_K_M.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 1.45,
+      "sizeMBDisplay": "1.5 GB",
+      "recommended": true,
+      "minRamMB": 3072,
+      "sha256Hash": "ec2d5801640099e97d8d7e8003ad4d81f336e757811f03a26173dddf386602fd",
+      "tags": [
+        "推荐",
+        "智能体",
+        "速度快"
+      ],
+      "agentCapabilities": {
+        "nativeToolCall": true,
+        "maxContextTokens": 131072,
+        "recommendedNctx": 16384,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 512,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "minicpm5-2b-q8_0",
+      "name": "MiniCPM5 2B (Q8_0 智能体)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/OpenBMB/MiniCPM5-2B-GGUF/resolve/master/MiniCPM5-2B-Q8_0.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/OpenBMB/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q8_0.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/OpenBMB/MiniCPM5-2B-GGUF/resolve/main/MiniCPM5-2B-Q8_0.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 2.5,
+      "sizeMBDisplay": "2.5 GB",
+      "recommended": false,
+      "minRamMB": 4096,
+      "sha256Hash": "c5415f8989bf88a8288f1b55a3cc371af53c07b0faa220a63bd7a990cfaba078",
+      "tags": [
+        "智能体",
+        "精度更高"
+      ],
+      "agentCapabilities": {
+        "nativeToolCall": true,
+        "maxContextTokens": 131072,
+        "recommendedNctx": 16384,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 512,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "minicpm-v4.7-35b-a3b-les",
+      "name": "MiniCPM-V 4.7 35B-A3B (拆分 MoE 智能加载)",
+      "type": "vision",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/zerg13/MiniCPM-V-Apps-gguf/resolve/master/MiniCPM-V-4.7-35B-A3B/MiniCPM-V-4_7-35B-A3B-mix_q3gud_im-les.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/tc-mb/MiniCPM-V-Apps-gguf/resolve/main/MiniCPM-V-4.7-35B-A3B/MiniCPM-V-4_7-35B-A3B-mix_q3gud_im-les.gguf",
+          "source": "hf-mirror"
+        }
+      ],
+      "sizeGB": 1.66,
+      "sizeMBDisplay": "1.7 GB",
+      "recommended": false,
+      "minRamMB": 8192,
+      "sha256Hash": null,
+      "tags": [
+        "超大MoE",
+        "拆分流式",
+        "实验"
+      ],
+      "mmproj": {
+        "mirrors": [
+          {
+            "url": "https://modelscope.cn/models/OpenBMB/MiniCPM-V-4.7-35B-A3B-gguf/resolve/master/mmproj-model-f16-4x.gguf",
+            "source": "modelscope"
+          },
+          {
+            "url": "https://hf-mirror.com/OpenBMB/MiniCPM-V-4.7-35B-A3B-gguf/resolve/main/mmproj-model-f16-4x.gguf",
+            "source": "hf-mirror"
+          }
+        ],
+        "sizeMB": 868.3,
+        "sizeMBDisplay": "868 MB (f16-4x)",
+        "sha256Hash": "30f4daac0f61c2ca28d68b5f901c0501cb7a269a1357a9e380d2c376c6ed6518"
+      },
+      "dspark": {
+        "mirrors": [
+          {
+            "url": "https://modelscope.cn/models/OpenBMB/MiniCPM-V-4.7-35B-A3B-gguf/resolve/master/dspark-MiniCPM-V-4_7-35B-A3B-F16.gguf",
+            "source": "modelscope"
+          },
+          {
+            "url": "https://hf-mirror.com/OpenBMB/MiniCPM-V-4.7-35B-A3B-gguf/resolve/main/dspark-MiniCPM-V-4_7-35B-A3B-F16.gguf",
+            "source": "hf-mirror"
+          }
+        ],
+        "sizeMB": 752.9,
+        "sizeMBDisplay": "753 MB (dspark F16)"
+      },
+      "splitMoe": {
+        "manifestMirrors": [
+          {
+            "url": "https://modelscope.cn/models/zerg13/MiniCPM-V-Apps-gguf/resolve/master/MiniCPM-V-4.7-35B-A3B/experts/manifest.json",
+            "source": "modelscope"
+          },
+          {
+            "url": "https://hf-mirror.com/tc-mb/MiniCPM-V-Apps-gguf/resolve/main/MiniCPM-V-4.7-35B-A3B/experts/manifest.json",
+            "source": "hf-mirror"
+          }
+        ],
+        "manifestSizeMB": 0.04,
+        "expertsBaseMirrors": [
+          {
+            "url": "https://modelscope.cn/models/zerg13/MiniCPM-V-Apps-gguf/resolve/master/MiniCPM-V-4.7-35B-A3B/",
+            "source": "modelscope"
+          },
+          {
+            "url": "https://hf-mirror.com/tc-mb/MiniCPM-V-Apps-gguf/resolve/main/MiniCPM-V-4.7-35B-A3B/",
+            "source": "hf-mirror"
+          }
+        ],
+        "layerBinCount": 40,
+        "layerBinSizeMB": 330.0,
+        "layerBinPattern": "experts/layer_%03d.bin"
+      },
+      "agentCapabilities": {
+        "nativeToolCall": true,
+        "maxContextTokens": 262144,
+        "recommendedNctx": 16384,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 384,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "lfm2.5-24b-a2b-q4_0",
+      "name": "LFM 2.5 24B-A2B (Q4_0 智能MoE 整包原地读)",
+      "type": "text",
+      "recommended": false,
+      "minRamMB": 8192,
+      "sha256Hash": "d1c03f73ecaf61017d70419eec9e5dc0b05d50ae26c23d522829b934fbabf8a5",
+      "tags": [
+        "超大MoE",
+        "原地流式",
+        "官方整包"
+      ],
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/api/v1/models/LiquidAI/LFM2.5-24B-A2B-GGUF/resolve/master/LFM2.5-24B-A2B-QAD-Q4_0.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/LiquidAI/LFM2.5-24B-A2B-GGUF/resolve/main/LFM2.5-24B-A2B-QAD-Q4_0.gguf",
+          "source": "hf-mirror"
+        }
+      ],
+      "sizeGB": 12.65,
+      "sizeMBDisplay": "12.6 GB (官方整包，专家原地流式读，无额外包)",
+      "splitMoe": {
+        "inplaceFullGguf": true,
+        "slotBytesAllLayersMB": 192.375,
+        "expertsBytesMB": 12312.0
+      },
+      "agentCapabilities": {
+        "nativeToolCall": false,
+        "maxContextTokens": 131072,
+        "recommendedNctx": 8192,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 384,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
+      "id": "Clover-35B-A3B-Preview-Q3Kexp",
+      "name": "Clover 35B A3B (Q3_K experts 热专家 · 扩散实验)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/Rhinos/Clover-35B-A3B-Preview-GGUF-GPT-Judge/resolve/master/Clover-35B-A3B-Preview-Q3Kexp.gguf",
+          "source": "local-preplaced"
+        }
+      ],
+      "sizeGB": 14.44,
+      "sizeMBDisplay": "14.4 GB (Q3_K experts 整包，专家原地流式读，已本机预置)",
+      "recommended": false,
+      "minRamMB": 13312,
+      "sha256Hash": "339b6379b85952e9b0343c9df277b07480a711d4bf24dbb790ec7d5a53daaebc",
+      "tags": [
+        "超大MoE",
+        "热专家",
+        "扩散实验",
+        "256e-top8"
+      ],
+      "splitMoe": {
+        "inplaceFullGguf": true,
+        "slotBytesAllLayersMB": 51.6,
+        "expertsBytesMB": 13200.0
+      }
+    }
+  ]
+}

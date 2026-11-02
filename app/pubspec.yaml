@@ -1,0 +1,89 @@
+name: tongyi_lite
+description: 汪柴（WangCai）Windows 桌面端侧多模态 AI 助手 —— Dart 自 TongYi-Lite vendored 导入（见 UPSTREAM.md）
+# 版本策略（assistant-v0.0.2-design §1）：助手版本 = WangCai 仓库版本，单序列。
+# About 页版本号是 Dart 常量（settings_screen.dart 的 _appVersion），发版时同步。
+version: 0.0.2+1
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # ── 插件平台（P0–P2）：契约包 + 内核，纯 Dart（能离线 dart test）───────────────
+  # 方向纪律由 packages/plugin_kernel/test/architecture_test.dart 机器钉住：
+  # 内核不碰 Flutter / dart:io；app 侧 lib/plugins/** 才碰 Flutter；插件绝不反向 import 宿主内部。
+  plugin_sdk:
+    path: packages/plugin_sdk
+  plugin_kernel:
+    path: packages/plugin_kernel
+  # State management
+  flutter_riverpod: ^2.6.1
+  # Storage（Windows 运行期走 ffi 工厂；sqlite3.dll 由 sqlite3_flutter_libs 提供）
+  sqflite: ^2.4.1
+  sqflite_common_ffi: ^2.3.3
+  sqlite3_flutter_libs: ^0.5.0
+  path_provider: ^2.1.5
+  uuid: ^4.5.1
+  # HTTP (model download)
+  dio: ^5.7.0
+  # Permissions（Windows 下存储类直接放行、microphone 走系统弹窗；见 platform/ 适配）
+  permission_handler: ^11.3.1
+  # Image picker
+  image_picker: ^1.1.2
+  # Open external URLs (About GitHub link)
+  url_launcher: ^6.3.0
+  # 智能体文件上传（办公格式附件注入，≤5 个）
+  file_picker: ^8.1.2
+  # 附件解析：docx/xlsx/pptx 本质是 zip（纯 Dart 解包抽 XML 文本）。
+  # Windows：PDF 全文抽取改纯 Dart/外部工具（native_pdf_service 收编到 platform/，见设计 §2.2）。
+  archive: ^3.6.1
+  # 智能体回答 markdown 美化渲染
+  flutter_markdown: ^0.7.4+3
+  # Dev Agent：自动生成 ed25519 SSH 密钥对（TweetNaCl 移植，无外部依赖）
+  pinenacl: ^0.6.0
+  flutter_secure_storage: ^10.3.4
+  sherpa_onnx: 1.13.8
+  record: 6.2.1
+  # TODO(M2, 设计 §2.2)：background_downloader 仅 Android/iOS，ASR 模型下载器将换 dio 后移除
+  background_downloader: 8.9.5
+  lpinyin: 2.0.3
+  # Edge 在线 TTS（免费 neural 语音，Sec-MS-GEC 本地 token，纯 Dart WebSocket）
+  edge_tts: ^0.1.5
+  # TTS/语音消息播放（本地 mp3 文件）
+  audioplayers: ^6.4.0
+  # TTS 缓存 key（sha256，与 vendored edge_tts 同版本约束）
+  crypto: ^3.0.0
+  fast_gbk: ^1.0.0
+  # ── Windows 桌面专属（设计 §3）─────────────────────────────────────────────
+  window_manager: ^0.4.0
+  tray_manager: ^0.2.0
+
+
+dependency_overrides:
+  # Dev Agent SSH 开发环境：本地 vendored dartssh2 fork
+  # （含 zlib 压缩/批处理解密优化，源自 DSH-Phone 真机验证的 fork）。
+  dartssh2:
+    path: third_party/dartssh2
+  # Edge 在线 TTS：vendored edge_tts 0.1.5（上游要求 Dart ≥3.10.8，
+  # 本机 Flutter 3.27/Dart 3.6.0 装不上；代码本身无超纲 API，放宽 SDK 约束）。
+  edge_tts:
+    path: third_party/edge_tts
+  # 包体瘦身（2026-10-08）：sherpa_onnx_web 的 wasm/js assets（压缩 4.3MB）会被
+  # Flutter 无差别打进包但运行期零使用。vendored stub 去掉 assets 声明；仅影响 web 目标。
+  sherpa_onnx_web:
+    path: third_party/sherpa_onnx_web
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/models_catalog.json

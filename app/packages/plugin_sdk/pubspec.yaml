@@ -1,0 +1,13 @@
+name: plugin_sdk
+description: >-
+  TongYi-Lite 插件平台契约层（L1 声明面 / L3 能力契约 / L4 槽契约 / flow 契约）。
+  纯 Dart，零 Flutter 依赖：app 与插件**双向只依赖本包**，本包绝不 import `lib/**`。
+  方向约束由 app 侧 test/plugins/direction_rules_test.dart 机检。
+version: 0.1.0
+publish_to: 'none'
+
+environment:
+  sdk: '>=3.6.0 <4.0.0'
+
+dev_dependencies:
+  test: ^1.25.0

@@ -1,6 +1,7 @@
 # 汪柴助手 v0.0.2 设计方案 —— Windows 壳首版
 
-> 状态：设计稿（待评审）· 2026-11-02
+> 状态：**M0 Spike 已通过（2026-11-02，证据 [`app/M0-EVIDENCE.md`](../app/M0-EVIDENCE.md)）**，M1 可开工。
+> 命名与仓库归属已拍板：**汪柴（WangCai）**，全部代码入本仓库（§1 D1）。
 > 上游决策：本文承接 [README 三层结构](../README.md#wangcai-assistant) 与
 > [路线图](roadmap.md) Phase 2 的"App 在 Windows 跑通"，并落实
 > Windows 多引擎（NPU / llama.cpp / OpenAI 兼容）接入与调度策略的讨论结论。
@@ -17,7 +18,7 @@
 
 ### 目标（DoD 见 §9）
 
-1. 一键安装的 `WangCaiAssistant.exe`，可最小化到托盘驻留。
+1. 一键安装的 `WangCai.exe`（显示名：**汪柴**），可最小化到托盘驻留。
 2. 引擎驱动注册表：WangCai-NPU、llama.cpp-Vulkan、llama.cpp-CUDA、llama.cpp-CPU、自定义 OpenAI。
 3. 统一模型库（GGUF + mmproj 配对 + 三源下载器）与模型×引擎绑定表。
 4. 流式聊天 + 图片多模态（`--mmproj`）+ 微信式按住说话（sherpa ASR）+ TTS 播报。
@@ -36,7 +37,7 @@
 ## 1. 总体架构
 
 ```
-┌─ WangCaiAssistant.exe (Flutter Windows 桌面壳, 单实例, 托盘驻留) ─────┐
+┌─ WangCai.exe · 汪柴 (Flutter Windows 桌面壳, 单实例, 托盘驻留) ──────┐
 │  UI 层: 复用 TongYi-Lite screens/widgets (riverpod)                   │
 │  Agent 层: ReactLoopAgent + ToolRegistry + 双协议(原生优先)  ← 复用   │
 │  会话层: sqlite(ffi) + JSONL + settings JSON                  ← 复用  │
@@ -58,7 +59,7 @@
 
 | # | 决策 | 理由 |
 |---|---|---|
-| D1 | **壳 = TongYi-Lite 加 Windows 目标**（新增 `windows/` 目录，非新仓库），发版由本仓库组装壳+引擎打包 | Dart ~54k 行是既有资产；agent/UI/TTS/ASR 全纯 Dart；README 三层结构本就定位于此 |
+| D1 | **壳在 WangCai 仓库 `app/` 目录**（Flutter Windows 工程）；Dart 自 TongYi-Lite v0.3.7 **同路径 vendored 导入**，TongYi-Lite 保持 Android 版并作为 Dart 上游 | 助手与引擎同仓演进、发版原子化；agent/UI/TTS/ASR 全纯 Dart 可搬；Dart 改进经 UPSTREAM 账本双向回流 |
 | D2 | **引擎集成只认 OpenAI 兼容 HTTP**，一律子进程 + localhost | 三类引擎收敛到一个契约；`OpenAiService`/`OpenAiAdapter` 已实现且注释明示支持 llama.cpp server；C ABI 是二期替换项 |
 | D3 | **GPU/CPU 用官方 llama.cpp release 二进制，不改汪柴 fork** | fork 保持 NPU 单一战线（configure.ps1 刻意 OFF CUDA/VULKAN）；官方迭代快，免维护负担 |
 | D4 | **每引擎独立目录自带 runtime**，共享 GGUF 模型库 | 避免 DLL 地狱；模型是一份文件、多条绑定 |
@@ -66,11 +67,37 @@
 | D6 | **per-profile 独立编译缓存目录** | docs/env-vars.md 反复强调：旧编译图无声胜出是精度事故的温床 |
 | D7 | **路由不写死参数量阈值，按绑定表实测指标 + 用户策略档**（速度优先/NPU 优先/自动） | 前期讨论结论：4B@NPU 当前 6 t/s + c512 + 未赢 CPU 速度，默认 CUDA；达标即自动改道 |
 
+### 仓库内布局（D1 落地）与命名
+
+```
+WangCai/
+  app/                        # 汪柴桌面壳（Flutter Windows 工程）
+    pubspec.yaml
+    lib/                      # Dart 自 TongYi-Lite 同路径导入 + Windows 新增件
+      engine/                 # 新增: EngineHost / LlamaServerHost / RemoteOpenAiHost / EngineRegistry / 调度器
+      platform/               # 新增: 托盘·热键·通知·电源·port 账本·截图·权限 stub
+      (agent/ asr/ tts/ plugins/ providers/ models/ screens/ widgets/ services/)  # 与上游同路径, 便于 diff/回流
+    assets/models_catalog.json
+    windows/                  # flutter create --platforms=windows 生成的 runner（C++，保持薄）
+    UPSTREAM.md               # Dart 同步账本：TongYi-Lite 基线 commit + 本地分叉清单
+  tools/release/              # 新增：引擎包产出 + Inno Setup 打包 + 版本清单（§5.1 白名单）
+```
+
+| 项 | 值（拍板于 2026-11-02） |
+|---|---|
+| exe / 显示名 / 快捷方式 | `WangCai.exe` / 汪柴 / 「汪柴」 |
+| 安装目录（只读） | `%LOCALAPPDATA%\Programs\WangCai\` |
+| 数据目录（可写） | `%LOCALAPPDATA%\WangCai\`（模型库、引擎商店、编译缓存，§8） |
+| 设置镜像 / 注册表 | `%APPDATA%\WangCai\` / `HKCU\Software\WangCai` |
+| 安装包 | `WangCai-<ver>-win-x64-Setup.exe`（Inno Setup，AppName=汪柴） |
+| 版本策略 | **助手版本 = 仓库版本**，单序列 v0.0.2 起；CHANGELOG 增设 `Assistant` 小节与 `Engine` 并列 |
+
 ---
 
 ## 2. UI 复用策略（资产盘点 → 施工面）
 
 调研结论：**agent/UI/数据/语音层直接复用，移植主战场是"引擎耦合收编"**。
+下表路径为 TongYi-Lite 中的源路径；导入后即 `app/lib/` 下**同名路径**（基线 commit 与本地分叉记录在 `app/UPSTREAM.md`）。
 
 ### 2.1 直接复用（纯 Dart，零改动或近零改动）
 
@@ -95,7 +122,7 @@
 | 项 | Android 现状 | Windows 实现 |
 |---|---|---|
 | DB | sqflite `tongyilite.db` v6（schema：conversations + messages + 索引） | **`sqflite_common_ffi`**（已是 dev_dep，测试同款）——只改 `StorageService._init()` 工厂，schema/API 零改动 |
-| 模型目录 | `/sdcard/TongYiLite/models` | `%LOCALAPPDATA%\WangCaiAssistant\models`，首装可迁移/自选 |
+| 模型目录 | `/sdcard/TongYiLite/models` | `%LOCALAPPDATA%\WangCai\models`，首装可迁移/自选 |
 | ASR 模型下载 | background_downloader（仅 Android/iOS） | 换 dio 下载（复用 download_service 循环） |
 | 权限 | permission_handler（storage/media/manageExternalStorage） | stub 直接放行；microphone 走系统弹窗 |
 | GBK 解码 | fast_gbk（FFI 待验） | 纯 Dart GBK 表（仅 fetch_url_tool/stock_source 用） |
@@ -138,7 +165,7 @@ abstract class EngineHost {
 
 | 需求 | 实现 | 细节 |
 |---|---|---|
-| 托盘驻留 | `tray_manager` + `window_manager`（leanflutter 系，Windows 成熟） | 关窗行为可配置（最小化到托盘/退出，默认托盘）；托盘右键菜单：显示/隐藏、**当前引擎徽标**、暂停引擎、速度模式切换、模型快速切换、退出；双击恢复 |
+| 托盘驻留 | `tray_manager` + `window_manager`（leanflutter 系，Windows 成熟） | **关窗拦截必须 `setPreventClose(true)`，关窗 = `onWindowClose` 内直接 `hide()`；退出 = `_quitting + setPreventClose(false) + destroy()`（M0-2 实测：漏了会 Release 关窗即退/Debug 段错误；`exit(0)` 亦段错误）**。关窗行为可配置（最小化到托盘/退出，默认托盘）；托盘右键菜单：显示/隐藏、**当前引擎徽标**、暂停引擎、速度模式切换、模型快速切换、退出；双击恢复 |
 | 单实例 | 命名事件/互斥体（FFI `CreateEvent`）或 `flutter_single_instance` | 第二实例启动 → 唤起已有窗口后退出 |
 | 开机自启 | `launch_at_startup`（注册表 `HKCU\...\Run`） | 可选"启动后最小化到托盘"；开机常驻 = 后台通道（v0.0.3）的宿主 |
 | 全局热键 | `hotkey_manager` | `Ctrl+Alt+Space` 显隐窗口；`Ctrl+Alt+M` 按住说话（透传给 `hold_to_talk`） |
@@ -190,6 +217,9 @@ abstract class EngineHost {
 要点：
 - **硬约束 `-fa 1 -np 1 -st -dev OPENVINO3` 写死在模板**，不进用户可编辑区；`--jinja` 必开
   （没有原生 `tool_calls` 就退化到 prompt_json 协议，Agent 质量掉档）。
+- **M0-3 实测**：`-st` 是 llama-cli 专属，`llama-server` 传入即 `invalid argument`——
+  server manifest 的参数集为 `-fa 1 -np 1 -dev OPENVINO{n} --jinja`，**不得从 run-npu.ps1 照抄**。
+  thinking 模板模型（LFM3-Q4_K_M）需给足 `max_tokens` 才能吐出 tool_calls（64 不够、512 行）。
 - `profileId = hash(引擎, 模型, ctx, chunk, overrides...)` —— 任一参数变即换缓存目录（D6）。
 - env 注册表 30+ 项全量映射到"推理引擎" Tab 的**高级表单**（docs/env-vars.md 是表单 schema
   的真源；诊断类 DUMP_BIN/PROFILING 只在开发者 Tab 暴露）。
@@ -275,7 +305,7 @@ manifest 与 §4.1 同构（无硬约束 env；`argsTemplate` 含 `-ngl {gpuLaye
 
 - 复用 `download_service.dart`（dio、断点续传、`.tmp`+sha256、主+mmproj 多阶段、并发 2）
   与 `models_catalog.json` 三源目录（modelscope/hf-mirror/HF）+ 远程热更新。
-- 扫描 `%LOCALAPPDATA%\WangCaiAssistant\models\*.gguf` → 解析 GGUF 元数据
+- 扫描 `%LOCALAPPDATA%\WangCai\models\*.gguf` → 解析 GGUF 元数据
   （参数量/架构/上下文/是否带 mmproj）→ 入库；目录条目与本地文件做"建议下载"撮合。
 - mmproj 自动配对（同族前缀启发式 + 手动纠正入口）。
 - catalog 中 dspark/split-MoE 等 Android fork 特有字段在 Windows 驱动下标记"不生效"，UI 隐藏。
@@ -305,7 +335,7 @@ bindings( engineId, modelId, device, presetJson,
 ## 8. 数据与目录布局
 
 ```
-%LOCALAPPDATA%\WangCaiAssistant\
+%LOCALAPPDATA%\WangCai\
   models\                  GGUF + mmproj（模型库物理目录, 用户可迁移）
   data\                    tongyilite.db(v6+bindings/engines 迁移) · sessions\*.jsonl
                            inference_settings.json · cache\<profileId>\(OV 编译缓存)
@@ -314,10 +344,11 @@ bindings( engineId, modelId, device, presetJson,
     wangcai\               v0.0.x 引擎包: llama-server.exe + OV 运行时 DLL（随安装包）
     llamacpp-<ver>-vulkan\ 引擎商店安装（§5.1）
     llamacpp-<ver>-cuda\
-%APPDATA%\WangCaiAssistant\  用户设置备份位（settings JSON 镜像）
+%APPDATA%\WangCai\  用户设置备份位（settings JSON 镜像）
 ```
 
-安装包：Inno Setup；`flutter build windows --release` + 引擎包 + VC++/OV DLL 合包；
+安装包：Inno Setup（AppName=汪柴，产物 `WangCai-<ver>-win-x64-Setup.exe`，卸载清
+`HKCU\Software\WangCai`）；`flutter build windows --release` + 引擎包 + VC++/OV DLL 合包；
 无静默联网假设（模型与 llama.cpp 均为运行期按需下载）。
 
 ---
@@ -328,13 +359,14 @@ bindings( engineId, modelId, device, presetJson,
 
 | 里程碑 | 内容 | DoD |
 |---|---|---|
-| **M0 Spike** | `flutter create --platforms=windows` 入 TongYi-Lite；tray_manager/window_manager 冒烟；手工起 llama-server（NPU）手聊通；**sherpa_onnx Windows DLL 打包验证**；sqflite_common_ffi 跑通既有测试 | 五件事各有截图/日志证据 |
+| **M0 Spike** ✅ 2026-11-02 | `app/` 建 Flutter Windows 工程（`flutter create --platforms=windows`），Dart 自 TongYi-Lite v0.3.7 同路径导入并编译通过（`UPSTREAM.md` 立账）；tray_manager/window_manager 冒烟；手工起 llama-server（NPU）手聊通；**sherpa_onnx Windows DLL 打包验证**；sqflite_common_ffi 跑通既有测试 | 六件事全绿，证据 [`app/M0-EVIDENCE.md`](../app/M0-EVIDENCE.md)；系统前置补装（dev mode/NativeDesktop/ATL）与 4 个上游既有失败测试均已记录 |
 | **M1 壳+汪柴驱动** | EngineHost/LlamaServerHost + wangcai manifest + 状态机 + 4 处直调点收编；设置页"推理引擎"Tab（表单生成自 env-vars.md） | LFM3-1.7B NPU 三问 3/3（复用 `tools/accept-smoke.ps1` 口径）；改 chunk 触发重启且换缓存目录；杀进程→看门狗复活 |
 | **M2 三引擎齐** | 引擎商店（vulkan/cuda）+ 探测 + llamacpp manifest + openai-remote host + 模型库/绑定表 + 路由三档 | 本机四线通：NPU(1.7B) / CUDA(4B 5060Ti) / Vulkan(iGPU) / 远端 API；绑定表回写 t/s；单 active 互斥与空闲卸载生效 |
 | **M3 驻留+多模态** | 托盘/自启/热键/通知/崩溃清理/电源感知；图片→image_url→mmproj；按住说话（sherpa）+ TTS | 24h 托盘驻留（含一次夜间空闲卸载-复活循环）；截图→识图问答；语音输入出文字 |
 | **M4 Agent 回归+收尾** | `--jinja` 原生 tools 全链路回归（web_search/文件工具/todo/memory）；admission 规则表；安装包与升级通道 | `ReactLoopAgent` 既有测试全绿 + 新增 4 引擎×工具矩阵用例；安装包在干净机（无 VS/无 OV）装机成功 |
 
-版本出口：M1–M4 全绿 → tag `assistant-v0.0.2`；任何 DoD 缺失则按 README CHANGELOG 规则记 Unreleased。
+版本出口：M1–M4 全绿 → 仓库 tag `v0.0.2`（首个助手版本；CHANGELOG 增设 `Assistant` 小节，
+安装包 `WangCai-0.0.2-win-x64-Setup.exe`）；任何 DoD 缺失则按 README CHANGELOG 规则记 Unreleased。
 
 ---
 
@@ -355,7 +387,8 @@ bindings( engineId, modelId, device, presetJson,
 
 ## 11. 待定决策（评审时拍板）
 
-1. **应用命名**：壳叫 `WangCaiAssistant`（建议，与引擎区分）还是沿用 TongYiLite 名加 "Lite for Windows"？
-2. **仓库归属细化**：壳代码在 TongYi-Lite 主仓 `feature/windows` 直上 main，还是独立分支发版由 WangCai `tools/release/` 组装？
-3. **M2 是否含 Vulkan 核显线**：5060 Ti 在场时 Intel iGPU 的实际价值待实测，可先降级为"探测到才显示"。
-4. **音频理解**（mtmd audio on NPU）要不要挤进 v0.0.2 尾巴——取决于引擎侧端到端验收进度，建议不做。
+已定（2026-11-02）：命名 = **汪柴（WangCai）**；**全部代码入本仓库**——壳在 `app/`，
+Dart 自 TongYi-Lite 同路径 vendored 导入（§1 D1 与仓库内布局）。仍开放：
+
+1. **M2 是否含 Vulkan 核显线**：5060 Ti 在场时 Intel iGPU 的实际价值待实测，可先降级为"探测到才显示"。
+2. **音频理解**（mtmd audio on NPU）要不要挤进 v0.0.2 尾巴——取决于引擎侧端到端验收进度，建议不做。
