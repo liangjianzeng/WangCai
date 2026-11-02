@@ -10,6 +10,29 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 2026-11-01/02 在硬件上验证的四批改动。
 
+### 新增 —— Assistant v0.0.2（汪柴助手，2026-11-02/03 在开发机验证）
+
+- **M1 壳+汪柴驱动**：`app/` Flutter Windows 壳（TongYi-Lite Dart 同路径 vendored，
+  分叉清单 `app/UPSTREAM.md`）+ 引擎核心（manifest/状态机/进程账本/env 纪律）+
+  llama-server 子进程网关（平台分支唯一化）+ 设置页引擎管理面板（状态 chip/
+  停止/按上次配置重启/日志 tail/启动命令取证）。NPU 三问 3/3、改 ctx 重启换缓存
+  目录（D6）、杀进程看门狗复活，全部真机回归（`app/test/platform/`）。
+- **M2 三引擎齐**：绑定表（sqlite，实测 t/s 每回合回写）+ 路由三档（速度优先/
+  NPU 优先/自动·后台·拔电 NPU 加权；无写死参数量阈值）+ 引擎商店（官方
+  llama.cpp release 下载/sha256 白名单/解包/设备探测，钉 b12034：vulkan+cuda）
+  + 单 active 互斥 + 空闲超时卸载 + OpenAI 远端（key 迁 secure_storage/DPAPI、
+  /v1/models 发现）。**DoD 四线真机 5/5**：NPU 1.7B ✓ / CUDA 4B（117.6 tok/s
+  回写）✓ / Vulkan 双卡（Intel iGPU + RTX 5060 Ti）✓ / 远端协议 ✓
+  （`app/test/platform/m2_dod_test.dart`）。
+- **M3 驻留**：托盘（关窗=隐藏，M0-2 模式）、电源感知（FFI GetSystemPowerStatus
+  → 拔电 NPU 加权）、HKCU 自启；多模态链路（mmproj 渲染/image_url 组包）管线
+  验证 + **NPU 视觉编码缺陷归档**（`docs/defect-npu-mtmd.md`：OV 后端
+  graph_compute -1，识图 DoD 归官方引擎线）。
+- **M4 Agent 回归 + 安装包**：LFM3 --jinja 工具链全链路真机复归（tools/
+  tool_calls/tool 结果 200；此前 agent 400 定案为 ctx 超限非协议缺陷，agent
+  c4096 正常回合）；Inno Setup 安装脚本（每用户安装 + 引擎合包 + 引擎二级
+  解析 `engines/wangcai`）。⬜ 干净机装机验证待人工（`packaging/README.md`）。
+
 ### 新增 —— 跨模型验证（副靶 Spark-X2.6-4B + Qwen3-4B 复测）
 
 - **副靶立项并通过**：讯飞 Spark-X2.6-4B（标准稠密 Transformer，与 LFM3 混合架构不同系）端到端跑通
