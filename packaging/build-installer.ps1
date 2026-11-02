@@ -23,9 +23,17 @@ if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
 New-Item -ItemType Directory -Path $stage | Out-Null
 # 壳：Release 全量 → stage\App
 Copy-Item $release "$stage\App" -Recurse
-# 引擎包：llama-server.exe + OV 运行时 → stage\Engines\wangcai\
+# 引擎包：llama-server 全家（exe + impl.dll + manifest）+ ggml/llama DLL
+# + OV 运行时 → stage\Engines\wangcai\（缺 llama-server-impl.dll 会
+# error while loading shared libraries —— 2026-11-03 便携包自测实案）
 New-Item -ItemType Directory -Path "$stage\Engines\wangcai\ovlibs" -Force | Out-Null
-Copy-Item "$root\src\llama\build\bin\llama-server.exe" "$stage\Engines\wangcai\"
+# 全部运行期 dll/manifest（ggml*/llama/mtmd/llama-server-impl——漏 mtmd.dll
+# 同样 0xC0000135）+ 仅 llama-server 可执行（其他工具 exe 不打包）
+Get-ChildItem "$root\src\llama\build\bin" | Where-Object {
+    $_.Name -match '\.(dll|manifest)$'
+} | ForEach-Object { Copy-Item $_.FullName "$stage\Engines\wangcai\" }
+Get-ChildItem "$root\src\llama\build\bin" -Filter "llama-server*.exe" |
+    ForEach-Object { Copy-Item $_.FullName "$stage\Engines\wangcai\" }
 Copy-Item "$root\ov\openvino\libs\*" "$stage\Engines\wangcai\ovlibs\" -Recurse -Force
 # 便携包说明
 @'

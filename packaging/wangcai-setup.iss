@@ -37,8 +37,11 @@ Name: "autostart"; Description: "开机自动启动汪柴"; GroupDescription: "�
 [Files]
 ; 1) Flutter Windows 壳（app/build/windows/x64/runner/Release 全量）
 Source: "..\app\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
-; 2) 汪柴引擎包：llama-server.exe → {userappdata}\WangCai\engines\wangcai\
-Source: "..\src\llama\build\bin\llama-server.exe"; DestDir: "{userappdata}\WangCai\engines\wangcai"; Flags: ignoreversion
+; 2) 汪柴引擎包：全部运行期 dll/manifest（ggml*/llama/mtmd/impl——漏哪个
+;    都 0xC0000135）+ llama-server 可执行 → {userappdata}\WangCai\engines\wangcai\
+Source: "..\src\llama\build\bin\*.dll"; DestDir: "{userappdata}\WangCai\engines\wangcai"; Flags: ignoreversion
+Source: "..\src\llama\build\bin\*.manifest"; DestDir: "{userappdata}\WangCai\engines\wangcai"; Flags: ignoreversion
+Source: "..\src\llama\build\bin\llama-server*.exe"; DestDir: "{userappdata}\WangCai\engines\wangcai"; Flags: ignoreversion
 ; 3) OpenVINO 运行时 DLL → {userappdata}\WangCai\engines\wangcai\ovlibs\
 Source: "..\ov\openvino\libs\*"; DestDir: "{userappdata}\WangCai\engines\wangcai\ovlibs"; Flags: recursesubdirs ignoreversion
 
