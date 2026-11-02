@@ -1,5 +1,36 @@
 # 会话交接（上下文耗尽时读我）
 
+## 2026-11-02：视觉性能轮收官后——decode "512 断崖"证伪（非缺陷）+ profiling×blob-cache 崩溃定案
+
+视觉吞吐修复（warm encode 542 ms）已 commit `af30ad4` push。续跑性能轮，测文本热启动/decode t/s，两条结论：
+
+### 一、decode "随上下文断崖"= 正常注意力成本，非 NPU 缺陷（前提证伪，勿再追）
+- tgs sweep（Omni-2B，chunk128，`-dev OPENVINO3 -st`，warm cache）：prompt 词数 n 递增，Generation t/s：
+  levels-on `14.5 / 14.1 / 8.3 / 7.7 / 5.2`；levels-off（全 ctx 单图）**恒定 8.0-8.3**。native `-dev none`
+  **恒定 48-56 t/s**（与长度无关）。
+- **误判纠正**：初判"level-512 图 20× 断崖"是错的——verbose 显示 n=470（prompt ~700 token，越过 512 填充）
+  选的是 **level-1024 图**（`[1024,256]`），attends 大跨度，自然慢。级别机制本身上轮已 bit-exact 验证
+  （1.7B 15 t/s 与 -c 无关、逐位一致）。NPU decode 比 native 慢（短 3.6×、长 ~10×）与随填充变慢，
+  **正是上一轮已定案的注意力/状态 I/O 残差**（`状态输入 DMA 全量搬运` + `attention 对静态跨度`；
+  stateful 与 lm_head u4 杠杆均已证伪）——不是新缺陷。levels 关反而更慢（8 vs 14 短 ctx），印证多级图有效。
+- **别在这上面耗**：真要显著提速需 NPU remote tensor / 状态 I/O 布局重型改造，超出性能主攻的性价比；
+  视觉编码（542 ms）才是本轮真实吞吐战果。
+
+### 二、新缺陷（真 bug，值得记录/上报）：`ov::enable_profiling` × 插件 blob 缓存 → NPU 崩溃
+- 复现：`GGML_OPENVINO_PROFILING=2`（会 insert `ov::enable_profiling(true)`）+ 复用同一 `CACHE_DIR` 二次运行
+  → `ZE_RESULT_ERROR_INVALID_NULL_HANDLE (0x78000005)` @ `zero_wrappers.cpp:208 pfnAppendGraphExecute`，
+  `graph_compute` 返回 -1，Prompt/Gen 全 0.0 t/s。首次编译（空缓存）正常出 CSV，命中 blob 再导入即崩。
+- 定性：profiling 编出的 blob 不带 profiling 句柄，插件缓存导入后 AppendGraphExecute 拿空句柄——profiling
+  配置未纳入插件 blob 缓存键。**规避**：profiling 探针每次用一次性空 `CACHE_DIR`（脚本 `ctrl/npu_proflevel.ps1`
+  已改为每 run 新目录）；生产路径 `PROFILING<2` 不触发，无影响。
+- 上游候选：`enable_profiling` 应参与 NPU 插件 blob 缓存键（与"bank-aware blob import"同族——缓存键覆盖不全）。
+
+### 工具/测量（本轮新增，ctrl/）
+- `npu_start.ps1`（-v 逐相位时间戳）、`npu_tgsweep.ps1`（Levels on/off × 尺寸，报 Generation t/s）、
+  `nat_tgsweep.ps1`（native `-dev none` 基线，`-dev CPU` 无效）、`npu_pp2b.ps1`、`npu_proflevel.ps1`
+  （256/512 图逐节点 CSV，一次性 cache）、`npu_prof470.ps1`。IR 备份 `ctrl/ir/model_prefill_28645898.*`。
+- 教训重申：**跨配置复用同一 CACHE_DIR 会串味**（profiling/非 profiling blob 混用即崩）；探针隔离缓存目录。
+
 ## 2026-11-01 深夜：视觉精度两根因连定案，NPU 视觉端到端收官 ✅
 
 **结果**：NPU 视觉端到端描述与 native 一致（"black field + red circle + green band"），文本三问
