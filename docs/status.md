@@ -280,10 +280,13 @@ NPU 4B 预算：默认配置执行期 `OUT_OF_HOST_MEMORY`（驱动侧）；chun
 权重带宽下限 ~7 t/s 的 85%）。数字口径：热缓存 + n≥128（n=64 的 headline 被 level 编译停顿
 摊薄）。排查链与剩余杠杆见 HANDOFF 2026-11-01 性能轮及补记。
 
-4B prefill（2026-11-02 晚）：**"chunk256 撞驱动预算"在三图修复后不成立**——llama-bench 流
-冷缓存实测 chunk256 全绿：pp512 84.6→**131.5**（+55%）、pp1900 41.3→**65.9**（+59%）、c8192
-pp8064 42.8 可跑，decode 不变（带宽地板）。但 **llama-cli -st / llama-server 流 chunk256+c2048
-仍执行期 `UNINITIALIZED`**（levels-on/off 都崩、--no-warmup 崩、c512 与 1.7B 不崩；bench 同形状
-幸存——已排除 n_batch/warmup/level 数/编图顺序/僵尸进程，新缺陷未决，控制矩阵与下一步遥测方案
-见 HANDOFF 2026-11-02 晚）。生产配置：srv 系流 chunk128，离线 bench 长 prompt 用 chunk256。
-engine 侧顺带修复：空批次 decode（raw==0）不再编译第三张全 ctx 图，clamp 到最小 level。
+4B prefill（2026-11-02 深夜定案）：**预算规则 = prefill 图(chunk) + 最大 decode 图（级别 = KV
+行跨度）联合驻留**。chunk256 时 lv≤512 可容（ctx≤512 的 cli -st 实测出 token，pp512 84.6→**131.5**
++55%、pp1900→65.9 +59%）；lv≥1024（即 ctx≥1024 的 srv 流 decode）超预算，首 execute ZE append 失败
+（levels-off 报 OUT_OF_HOST_MEMORY 是同族；崩溃时系统仍余 21 GB 物理——驱动内部 per-process 配额）。
+**"bench 同形状幸存"是假象**：decode-pass trace 显示 llama-bench tg 的 mask 恒 ≤256，从没编译过
+lv>256 的图（其 pp 增益仍真）。1.7B chunk256 lv2048 ✅。生产配置：4B srv/chat chunk128 全 ctx；
+ctx≤512 短对话可 chunk256；离线 bench chunk256 随便用。BUDGET-TRACE 遥测保留
+（`GGML_OPENVINO_BUDGET_TRACE=1`，HANDOFF 2026-11-02 深夜）。新独立缺陷：llama-completion（raw）
+4B 静态 decode 编译 0xC0000409 fastfail（非生产流，待查）。engine 修复：空批 decode（raw==0）
+直接短路返回成功（不再编图；此前的 clamp-to-1 方案撤销）。

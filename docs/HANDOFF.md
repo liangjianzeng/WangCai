@@ -1,5 +1,47 @@
 # 会话交接（上下文耗尽时读我）
 
+## 2026-11-02（深夜）：srv 流缺陷定案 —— 真规则是 `prefill(chunk256)+decode(KV≥1024 行)` 装不下；bench 对照是假象
+
+上一段（未决）的"srv 流特异驻留"假设**已被 BUDGET-TRACE 证伪并替换**。遥测（env `GGML_OPENVINO_BUDGET_TRACE=1`，
+utils.cpp `ov_budget_trace`，fprintf stderr——llama 默认日志回调会把后端 GGML_LOG_* 全吞，必须绕开；
+env 名已加进 extra.cpp 白名单）给出的完整时间线：
+
+### 一、定案
+- **失败签名**：4B chunk256 + decode KV 行跨度 ≥1024（即 ctx≥1024 的 srv 流 decode）→ 新 decode 图首
+  execute `pfnAppendGraphExecute` 失败（`ZE_RESULT_ERROR_UNINITIALIZED`，levels-off 时 `..._OUT_OF_HOST_MEMORY`）。
+  kill-switch 后 fallback 编 full-ctx（=同跨度，lv==ctx）**必然同尺寸再爆**——fallback 在此场景天然无效。
+- **边界（同机复测，新二进制，干净进程）**：chunk256 + lv512 ✅（c512 cli -st 出 token）；lv1024 ❌（c1024）；
+  lv2048 ❌（c2048）。chunk128 + lv2048 ✅（生产，回归出 token）。1.7B chunk256 lv2048 ✅（三图共存，ws 7 GB）。
+  `MEMORY_OPTIMIZE=1` 无效；崩溃时 avail 物理 21 GB+、commit 41 GB+——"OUT_OF_HOST_MEMORY" 是驱动内部 per-process
+  配额错误，不是系统缺内存。
+- **规则**：预算 ≈ prefill 图(chunk) + **最大** decode 图(lv) 联合驻留。chunk128 换 decode 图放大空间（生产配置），
+  chunk256 只容 lv≤512。与上游 issue #3（权重 bank 不跨 CompiledModel 去重）同根。
+
+### 二、上一轮"bench 对照"为何是假象（勿再用它当 lv>256 的证据）
+decode-pass 级 trace：`llama-bench -p 2500 -n 128` 的 tg 全部 128 步都是 **filled=256 ctx=256 level=256**——
+bench 的 decode mask 从不覆盖全部历史，**bench 从没编译/执行过 lv>256 的图**。"bench 同形状 ✅"因此从未对照过
+真正的失败形状。bench 的 pp 增益（chunk256 +55–59%）仍然为真（prefill 图与 mask 无关）。
+同理被证伪：levels-off"两图也爆"（legacy lv=0 就是 full-ctx 2048 同尺寸，超预算是平凡的）；"srv 多驻留 4 GB"
+（失败时刻 cli 与 bench 的 IR 驻留数一致：prefill+一张 decode）。
+
+### 三、代码改动（两树同步，编译绿）
+1. **空批 decode 短路**（utils.cpp `ov_graph_compute_static` 头部）：`is_static && !no_kv_cache && !is_prefill &&
+   attention_size_raw<=0` → 直接 `GGML_STATUS_SUCCESS`。0 token 无 KV 行无 logits 行可写，编图执行都是白做。
+   （上一段的 clamp-to-1 方案撤销——它让空批真编一张 lv256 图，纯属多养一张图；clamp 表达式随之删除，
+   注释记录历史。）生产回归：chunk128 c2048 cli -st 长 prompt 出 token、lv2048 命中、无 ZE。
+2. **BUDGET-TRACE 遥测保留**（默认关）：compile 现场（tag+lv+lastpass）、decode-pass（filled/ctx/level/hit）、
+   BUDGET-FAIL、ws/avail/commit。下次预算类问题直接开它，别再人肉猜。
+
+### 四、新独立缺陷（低优先，非生产流）：llama-completion 静态 decode 编译 fastfail
+`llama-completion`（raw，无 -st）4B chunk256：编 decode 图时 **0xC0000409（heap fastfail）**，c2048/c1024 均确定
+复现（trace 停在 compile-local 之前）；同形状 cli -st 是 ZE append 失败而非 fastfail → raw 的堆破坏是独立问题。
+raw completion 不在生产路径（chat/server/bench 都健康），记录待查，别和预算规则混在一起。
+
+### 五、生产配置（最终）
+- 4B srv/chat：**chunk128 全 ctx 不变**；**chunk256 在 ctx≤512 已验证可用**（pp +55%，短对话场景可考虑），
+  ctx≥1024 禁止 chunk256（本报告规则）。1.7B：chunk256 任意 ctx。离线批量 prefill（bench 式）：chunk256 随便用。
+- `chat-npu.ps1` 头注释同步了该规则。
+
 ## 2026-11-02（晚）：4B chunk256 预算封锁证伪（bench 流 pp +55–59%）+ srv 流超预算缺陷（新，未决）
 
 回应 NPUW 权重 bank 线索的实测轮。插件 DLL 字符串扫描证实 `NPUW_WEIGHTS_BANK`（string，"非空名共享权重"）

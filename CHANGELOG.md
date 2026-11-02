@@ -145,12 +145,17 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 - **旧论断过时**："4B 默认 chunk 256 撞驱动主机内存预算"是三图驱逐修复前的测量。llama-bench 流
   冷缓存实测 chunk256 全绿（Spark-X2.6-4B，新缓存目录，r≥2）：pp512 84.6→**131.5**（+55%）、
   pp1900 41.3→**65.9**（+59%）、c8192 pp8064 42.8 可跑；decode 不变（带宽地板）。
-- **新缺陷（未决）**：同形状在 **llama-cli -st / llama-server 流** chunk256+c2048 执行期
-  `UNINITIALIZED`（levels-on/off 都崩、--no-warmup 崩；c512、1.7B、chunk128 全不崩）。已排除
-  n_batch sched 驻留（-ub 128 照崩）、warmup/jinja、level 图数、编图顺序、僵尸进程。生产配置：
-  srv 系流 chunk128，离线 bench 长 prompt chunk256。控制矩阵与遥测方案见 HANDOFF 2026-11-02 晚。
-- **引擎顺带修复**：空批次 decode（sched_reserve warmup，`attention_size_raw==0`）不再落进
-  level-0 全 ctx 图（第三张权重 bank），clamp 到最小 level；chunk128 生产路径回归通过。
+- **缺陷定案（BUDGET-TRACE 遥测）**："srv 流特异缺陷"不存在——真规则是 **prefill 图(chunk) + 最大
+  decode 图（级别 = KV 行跨度）联合驻留**：4B chunk256 只容 lv≤512（ctx≤512 实测 ✅，pp +55–59%），
+  lv≥1024（ctx≥1024 的 srv decode）超预算，首 execute ZE append 失败（levels-off 报 OUT_OF_HOST_MEMORY
+  同族；崩溃时系统余 21 GB+，是驱动 per-process 配额）。**"bench 同形状幸存"是假象**：bench tg 的
+  decode mask 恒 ≤256，从没建过 lv>256 的图。1.7B chunk256 lv2048 ✅。生产配置不变：4B srv/chat
+  chunk128；ctx≤512 可 chunk256；离线 bench chunk256 随便用。遥测保留（`GGML_OPENVINO_BUDGET_TRACE=1`）。
+- **新独立缺陷（低优先）**：`llama-completion`（raw）4B 静态 decode 编译 0xC0000409 heap fastfail，
+  c1024/c2048 确定性复现——与预算规则无关（cli -st 同形状是 ZE append 失败而非 fastfail），非生产流，待查。
+- **引擎修复**：空批次 decode（sched_reserve warmup，`attention_size_raw==0`）**直接短路返回成功**
+  （0 token 无 KV/logits 行可写，编图执行都是白做；此前 clamp-to-1 方案撤销——它让空批真编一张 lv256 图）。
+  chunk128 生产路径回归通过（cli -st 长 prompt 出 token、lv2048 命中、无 ZE）。
 - NPUW 权重 bank 复核：`NPUW_WEIGHTS_BANK="shared"` 早已在 compile_config——插件共享不跨
   CompiledModel 去重（与上游 issue #3 一致），无白捡的预算。
 

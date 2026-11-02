@@ -123,6 +123,9 @@ void ggml_openvino_device_config::init() {
         // mask (see get_ov_input_tensor_static_prefill).
         "GGML_OPENVINO_MASK_MODE",
         // Boolean toggles (treated as int flags via ggml_openvino_getenv_int)
+        // One line per InferRequest creation + budget failure: live IR count, graph output
+        // bytes, process working set (see ov_budget_trace in utils.cpp).
+        "GGML_OPENVINO_BUDGET_TRACE",
         "GGML_OPENVINO_STATEFUL_EXECUTION",
         "GGML_OPENVINO_PROFILING",
         "GGML_OPENVINO_DUMP_CGRAPH",

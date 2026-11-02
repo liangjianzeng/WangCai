@@ -20,9 +20,11 @@
     printed as an absolute path in the banner. Invoke it by absolute path:
         E:\DTXY\WangCai\tools\chat-npu.ps1 -Model Spark-X2.6-4B-Q4_K_M.gguf
     Any model in the model dir works (LFM3-1.7B, Spark-X2.6-4B, Qwen3-4B, ...); the chunk=128
-    default is the proven 4B chat config -- do NOT raise it to 256 for chat/server flows on 4B:
-    the driver host budget only fits chunk256 in the llama-bench flow (HANDOFF 2026-11-02
-    evening). Graph cache is per model under .cache\npu_chat\<model>.
+    default is the proven 4B chat config. Budget rule (HANDOFF 2026-11-02 late night): the NPU
+    fits prefill(chunk) + the LARGEST decode level graph together -- on 4B that means chunk256
+    is fine for ctx<=512 (verified; prefill ~+55%) but chunk>=1024 contexts must stay at
+    chunk128, or the decode graph's first execute dies with a ZE append error. 1.7B runs
+    chunk256 at any ctx. Graph cache is per model under .cache\npu_chat\<model>.
 
     Vision/audio scenarios: one-shot questions through llama-mtmd-cli (the pinned llama-cli
     has no --mmproj): -Image photo.png -Ask 'What is in this picture?' or -Audio clip.wav.

@@ -24,6 +24,13 @@
 #include <iostream>
 #include <memory>
 #include <atomic>
+#include <mutex>
+#ifdef _WIN32
+#    define WIN32_LEAN_AND_MEAN
+#    define NOMINMAX  // windows.h's min/max macros would break std::numeric_limits<T>::max() below
+#    include <windows.h>
+#    include <psapi.h>
+#endif
 #include <openvino/core/any.hpp>
 #include <openvino/core/graph_util.hpp>
 #include <openvino/core/shape.hpp>
@@ -49,6 +56,68 @@ namespace {
 // is retried once on the full-ctx decode graph; same effect as
 // GGML_OPENVINO_DISABLE_DECODE_LEVELS=1, discovered without the env.
 static std::atomic<bool> g_decode_levels_disabled{false};
+// Budget telemetry (GGML_OPENVINO_BUDGET_TRACE=1): one line per compile/InferRequest creation
+// and at the device-budget failure point -- live InferRequest count, that graph's static output
+// bytes, and process working set. Purpose (2026-11-02): the srv-family flows (llama-cli -st,
+// llama-server) blow the 4B chunk256 budget with the SAME two graphs llama-bench runs fine --
+// diff the resident inventory (extra InferRequests each carry their own device output buffers)
+// between the two flows instead of theorizing. Log-only: never changes graphs or configs.
+static std::atomic<unsigned> g_budget_trace_irs{0};
+// Last decode-pass context (filled cells / ctx / level) at the moment of a compile, so the
+// compile-local line says WHICH pass asked for the graph (load-time pair vs lazy level build).
+static int g_budget_trace_pass = -1;
+static int g_budget_trace_ctx = -1;
+static int g_budget_trace_level = -1;
+static void ov_budget_trace(const char * tag, ov::InferRequest * ir) {
+    if (!ggml_openvino_getenv_int("GGML_OPENVINO_BUDGET_TRACE")) {
+        return;
+    }
+    static std::mutex trace_mutex;
+    std::lock_guard<std::mutex> lk(trace_mutex);
+    if (ir) {
+        g_budget_trace_irs.fetch_add(1);
+    }
+    size_t nres = 0;
+    unsigned long long outs = 0;
+    if (ir) {
+        try {
+            const auto model = ir->get_compiled_model().get_runtime_model();
+            for (const auto & r : model->get_results()) {
+                const auto ps = r->get_output_partial_shape(0);
+                if (ps.is_static()) {
+                    unsigned long long e = 1;
+                    for (const auto & d : ps.to_shape()) {
+                        e *= (unsigned long long)(d > 0 ? d : 0);
+                    }
+                    outs += e * r->get_output_element_type(0).size();
+                    ++nres;
+                }
+            }
+        } catch (...) {}
+    }
+    unsigned long long ws_mb = 0;
+    unsigned long long avail_mb = 0, pagefile_mb = 0;
+#ifdef _WIN32
+    PROCESS_MEMORY_COUNTERS pmc;
+    if (GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc))) {
+        ws_mb = (unsigned long long) pmc.WorkingSetSize / (1024 * 1024);
+    }
+    // The NPU driver's appendGraphExecute allocations are host-side (ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY
+    // observed on the srv flow, 2026-11-02): free physical + commit headroom are the actual budget.
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        avail_mb = ms.ullAvailPhys / (1024 * 1024);
+        pagefile_mb = ms.ullAvailPageFile / (1024 * 1024);
+    }
+#endif
+    // fprintf(stderr) on purpose: llama.cpp's default log callback drops backend GGML_LOG_*
+    // lines unless llama runs with -v, and this diagnostic must be visible in the plain logs
+    // the defect-7 control matrix is built from (observed 2026-11-02: zero INFO/WARN lines).
+    fprintf(stderr, "ggml-openvino: BUDGET-TRACE %-24s irs=%u results=%zu outputs=%llu MB ws=%llu MB avail=%llu MB commit=%llu MB\n",
+            tag, g_budget_trace_irs.load(), nres, outs / (1024 * 1024), ws_mb, avail_mb, pagefile_mb);
+    fflush(stderr);
+}
 // For a KV cache input, return an ov::Tensor sized to n_kv (== attention_size
 // for that layer) instead of the fully-allocated ctx_per_seq. Pre-conditions:
 //   * non-static (CPU/GPU) backend, single sequence, seq_active_start == 0
@@ -1006,6 +1075,7 @@ enum ggml_status naive_compute(ggml_cgraph * cgraph,
         infer_request = std::make_shared<ov::InferRequest>(
             core.compile_model(model, device, compile_config).create_infer_request());
     }
+    ov_budget_trace("compile", infer_request.get());
     std::vector<std::string> input_names;
     std::vector<std::string> output_names;
     for (const auto & param : model->get_parameters()) {
@@ -1307,6 +1377,7 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, const std::share
                                                                shared_it->second.output_names, *ggml_decoder))) {
                 shared_model = shared_it->second.decode;
                 infer_request = std::make_shared<ov::InferRequest>(shared_model.create_infer_request());
+                ov_budget_trace("shared-hit-dyn", infer_request.get());
                 ov_input_names = shared_it->second.input_names;
                 ov_output_names = shared_it->second.output_names;
                 imported = true;
@@ -1317,6 +1388,7 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, const std::share
                 if (shared_it != shared_cache->graphs.end()) {
                     shared_model = shared_it->second.decode;
                     infer_request = std::make_shared<ov::InferRequest>(shared_model.create_infer_request());
+                    ov_budget_trace("shared-hit-dyn2", infer_request.get());
                     ov_input_names = shared_it->second.input_names;
                     ov_output_names = shared_it->second.output_names;
                     imported = true;
@@ -1384,6 +1456,7 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, const std::share
                             continue;
                         }
                         infer_request = std::make_shared<ov::InferRequest>(cm.create_infer_request());
+                        ov_budget_trace("cm-import-legacy", infer_request.get());
                         shared_model = cm;
                         entry->ptr = ggml_decoder;
                         imported = true;
@@ -1507,6 +1580,7 @@ enum ggml_status ov_graph_compute_dynamic(ggml_cgraph * cgraph, const std::share
                 }
 
                 infer_request = std::make_shared<ov::InferRequest>(compiled_model.create_infer_request());
+                ov_budget_trace("compile-dyn", infer_request.get());
                 shared_model = compiled_model;
                 entry->ptr = ggml_decoder;
 
@@ -1713,6 +1787,19 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         }
         return cfg;
     }();
+    // Empty-batch decode short-circuit (2026-11-02, BUDGET-TRACE forensics): llama-cli -st /
+    // llama-server run a sched_reserve decode pass with ZERO filled cells right after load
+    // (llama-bench never does -- measured: bench holds one IR during pp, cli/srv built a
+    // second decode graph at load and that graph's first execute poisoned the L0 driver
+    // append path: ZE_RESULT_ERROR_UNINITIALIZED on srv, and a hard 0xC0000409 heap fastfail
+    // inside the same compile under llama-completion). A zero-token decode writes no KV rows
+    // and no logits rows: there is nothing to compute, so return without compiling or
+    // executing anything. This keeps the resident inventory identical to the bench flow
+    // (prefill + one lazily compiled decode-level graph), which is what fits the 4B budget
+    // at chunk256.
+    if (is_static && !no_kv_cache && !is_prefill && c_params.attention_size_raw <= 0) {
+        return GGML_STATUS_SUCCESS;
+    }
     if (m_params.n_heads_kv == -1) {
         prefill_chunk_size = inp_pos->ne[0];
         // Multi-plane position tables (mtmd vision encoder, IMROPE/VISION/MROPE) pack the 4
@@ -1777,18 +1864,25 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     // why this never showed on LFM3).
     const bool decode_levels_active =
             !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_DECODE_LEVELS") && !g_decode_levels_disabled.load();
-    // Note there is deliberately NO attention_size_raw > 0 precondition: a decode pass with zero
-    // filled cells (llama-cli's sched_reserve/empty-batch warmup, seen after a jinja-empty
-    // conversation) previously fell through to decode_level == 0 -- the full-context baked graph.
-    // With levels on, that third graph (prefill + level-256 + full-ctx) is exactly what blew the
-    // 4B device budget on the first execute (ZE_RESULT_ERROR_UNINITIALIZED, chunk256 c2048,
-    // 2026-11-02). decode_attention_level(0, ctx) clamps to the SMALLEST level (256), which is
-    // functionally correct for an empty batch (no KV rows are written) and costs no extra bank.
-    // (decode_attention_level itself early-returns 0 for n_kv <= 0, hence the explicit clamp.)
+    // The empty-batch case (attention_size_raw == 0, llama-cli -st/llama-server sched_reserve
+    // warmup) never reaches here: it short-circuits above with GGML_STATUS_SUCCESS (see the
+    // empty-batch comment near the top of this function). History: an earlier clamp-to-1 here
+    // (2026-11-02, first attempt) kept the pass compiling a real level-256 graph at load --
+    // which turned out NOT to be the srv-flow budget poison (the BUDGET-TRACE forensics showed
+    // the real rule is prefill(chunk256) + decode(lv>=1024) not fitting for 4B), but compiling
+    // any graph for a 0-token pass is pointless work, so the skip lives upstream.
     if (is_static && !no_kv_cache && !is_prefill && decode_levels_active) {
-        decode_level = decode_attention_level(c_params.attention_size_raw > 0 ? c_params.attention_size_raw : 1,
-                                              m_params.ctx_per_seq);
+        decode_level = decode_attention_level(c_params.attention_size_raw, m_params.ctx_per_seq);
         c_params.attention_size = decode_level;
+    }
+    if (ggml_openvino_getenv_int("GGML_OPENVINO_BUDGET_TRACE")) {
+        g_budget_trace_pass = c_params.attention_size_raw;
+        g_budget_trace_ctx = m_params.ctx_per_seq;
+        g_budget_trace_level = decode_level;
+        fprintf(stderr, "ggml-openvino: BUDGET-TRACE decode-pass filled=%d ctx=%d level=%d levels=%d hit=%d\n",
+                c_params.attention_size_raw, m_params.ctx_per_seq, decode_level, (int) decode_levels_active,
+                (int) cache_hit);
+        fflush(stderr);
     }
 
     bool reuse_ok = true;
@@ -1922,6 +2016,7 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         }();
 
         const auto build_static_model = [&core, &compile_config, &cm_compile_config, &model_cache_dir, &cgraph,
+                                         decode_level,
                                          dump_ir_enabled = ggml_openvino_getenv_int(
                                              "GGML_OPENVINO_DUMP_IR")](
                                             const std::shared_ptr<GgmlOvDecoder> & decoder, const char * tag,
@@ -1962,6 +2057,7 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
                         } else {
                             compiled_model = std::move(cm);
                             infer_request = std::make_shared<ov::InferRequest>(compiled_model.create_infer_request());
+                            ov_budget_trace("cm-import", infer_request.get());
                             if (cached_in_names != nullptr) {
                                 *cached_in_names = std::move(in_names);
                             }
@@ -1992,6 +2088,12 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
 
             compiled_model = core.compile_model(model, device, cache_fp != 0 ? cm_compile_config : compile_config);
             infer_request = std::make_shared<ov::InferRequest>(compiled_model.create_infer_request());
+            {
+                char btag[160];
+                snprintf(btag, sizeof(btag), "compile-local:%s lv=%d lastpass=%d/%d lastlvl=%d",
+                         tag, decode_level, g_budget_trace_pass, g_budget_trace_ctx, g_budget_trace_level);
+                ov_budget_trace(btag, infer_request.get());
+            }
             local_compile_end_time = ggml_time_us();
             if (cache_fp != 0 && !model_cache_dir.empty()) {
                 // Publish blob first, then manifest, so a cache hit only sees complete artifacts.
@@ -2045,9 +2147,13 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         if (!shared_key.empty() && shared_it != shared_cache->graphs.end()) {
             auto & compiled = shared_it->second;
             auto prefill_request = std::make_shared<ov::InferRequest>(compiled.prefill.create_infer_request());
+            ov_budget_trace("pair:prefill", prefill_request.get());
             auto decode_request = no_kv_cache ?
                                       prefill_request :
                                       std::make_shared<ov::InferRequest>(compiled.decode.create_infer_request());
+            if (!no_kv_cache) {
+                ov_budget_trace("pair:decode", decode_request.get());
+            }
             ggml_decoder = local_decoder;
             entry->ptr_prefill = local_decoder_prefill;
             entry->ptr = local_decoder_decode;
@@ -2404,6 +2510,7 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             // every level graph, flip the process-wide kill-switch and retry this step on the
             // full-ctx decode graph. One-shot: the retry re-enters with decode_level == 0.
             if (decode_level > 0 && strstr(e.what(), "UNINITIALIZED") != nullptr) {
+                ov_budget_trace("BUDGET-FAIL", infer_request.get());
                 GGML_LOG_WARN("ggml-openvino: decode level %d graph hit the device budget "
                               "(ZE_RESULT_ERROR_UNINITIALIZED); disabling decode levels and retrying "
                               "this step on the full-ctx decode graph\n", decode_level);
