@@ -47,6 +47,7 @@ import '../agent/dev/dev.dart'
         sshUsesPasswordAuth,
         taskBelongsToWorkspace;
 import '../services/app_bridge.dart' show AppBridge;
+import 'engine_manager_section.dart' show EngineManagerSection; // WangCai 分叉 #8
 import '../agent/adb/adb_client.dart';
 import '../agent/adb/adb_targets.dart';
 import '../agent/mcp/mcp_client.dart' show McpServerConfig;
@@ -1163,6 +1164,8 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // ---- Windows 引擎管理（WangCai 分叉 #8，见 UPSTREAM.md）----
+          if (Platform.isWindows) const EngineManagerSection(),
           // ---- GPU 加速设置卡片 ----
           Card(
             child: Padding(

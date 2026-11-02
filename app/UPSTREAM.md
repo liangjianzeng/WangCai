@@ -35,6 +35,7 @@
 | 5 | `lib/tray_smoke.dart`、`tool/sherpa_check.dart` | M0 Spike 冒烟/验证工具，上游无对应物 | 设计 §9 M0 |
 | 6 | `eval/`（scoring/score_traces/tasks.json） | 导入范围补漏：上游顶层目录，`test/agent/eval_scoring_test.dart` 直接引用 | M1-a 全量测试暴露 |
 | 7 | `test/plugins/plugin_host_dispose_test.dart` tearDown | 临时目录递归删除加 20×50ms 重试 | Windows 迟写文件与删除竞争（errno 145），上游 Android 无此现象 |
+| 8 | `lib/screens/settings_screen.dart` 推理引擎 Tab 顶部 | 仅插 2 行：import + `if (Platform.isWindows) const EngineManagerSection()`；新 UI 全部在新增文件 `lib/screens/engine_manager_section.dart` | 设计 §2.3 M1-b，最小化与上游 diff |
 
 ## M0 实测记入的上游债务（非移植回归，上游同跑同挂）
 
