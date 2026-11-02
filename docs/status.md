@@ -303,9 +303,13 @@ NPU 4B 预算：默认配置执行期 `OUT_OF_HOST_MEMORY`（驱动侧）；chun
 **"bench 同形状幸存"是假象**：decode-pass trace 显示 llama-bench tg 的 mask 恒 ≤256，从没编译过
 lv>256 的图（其 pp 增益仍真）。1.7B chunk256 lv2048 ✅。生产配置：4B srv/chat chunk128 全 ctx；
 ctx≤512 短对话可 chunk256；离线 bench chunk256 随便用。BUDGET-TRACE 遥测保留
-（`GGML_OPENVINO_BUDGET_TRACE=1`，HANDOFF 2026-11-02 深夜）。新独立缺陷：llama-completion（raw）
-4B 静态 decode 编译 0xC0000409 fastfail（非生产流，待查）。engine 修复：空批 decode（raw==0）
-直接短路返回成功（不再编图；此前的 clamp-to-1 方案撤销）。
+（`GGML_OPENVINO_BUDGET_TRACE=1`，HANDOFF 2026-11-02 深夜）。**"llama-completion fastfail" 已结案
+（2026-11-03，P8）——与 NPU 无关**：raw 流崩溃是 llama.cpp 非 jinja 模板路径对 Spark 聊天模板抛
+"this custom template is not supported"（两处：启动 example 渲染 + 真实 prompt 应用，均未捕获 →
+terminate 0xC0000409）；`--jinja`/`-no-cnv` 均绕过，且 raw 流下 backend 全程健康（lv512 编译+执行
+成功），此前"raw 流独立缺陷"证伪。fork 修复（#9）：example 渲染包 try/catch + 工具自动 fallback
+到 --jinja。engine 修复：空批 decode（raw==0）直接短路返回成功（不再编图；此前的 clamp-to-1
+方案撤销）。
 
 热跑基线表（2026-11-03，P5；cli -st、暖 blob + level 图已编、第二遍取数，脚本 ctrl/ck_hotbase.ps1
 与 ck_4b2048.ps1；Generation 列以 llama-bench 口径为准——cli -st 的 per-step 计时被 CoT 行打印摊薄）：

@@ -29,6 +29,26 @@
 - [x] **P7 每项独立 commit/push + 清单勾选**：P1–P6 全部完成（8577f20 + 本 commit），push 断网时
   本地积攒、恢复后重推。
 
+## 2026-11-03：P8 结案——llama-completion fastfail 与 NPU 无关（jinja 模板 unsupported 未捕获异常）；"raw 流独立缺陷"证伪
+
+`llama-completion`（raw）4B 必崩 0xC0000409（1.7B 不崩、chunk/ctx 无关、REQUANT 无关、ASAN 构建同样崩且
+无 ASAN 报告）→ 定位过程：Event Log 崩在 ucrtbase（terminate fastfail）；ASAN 版 0.29 s 早崩暴露真实
+崩点 = `common_chat_format_example`（启动期的模板示例渲染），Event Log 与生产版同偏移 → **两次"decode
+编译时崩"的旧读法全部推翻，崩点始终在 template**。根因链：Spark-X2.6-4B 的聊天模板不在 llama.cpp 内置
+matcher 清单 → 非 jinja 路径抛 `"this custom template is not supported, try using --jinja"` → completion
+工具两处调用（example + 真实 prompt 的 `common_chat_templates_apply`/`common_chat_format_single`）都无
+捕获 → terminate。1.7B（LMF3）模板在内置清单内所以幸存。
+
+- **绕过**：`--jinja` 或 `-no-cnv`（两者均实测 rc=0，且 raw 流下 NPU backend 全程健康——lv512 编译+
+  执行成功，此前"raw 流有独立堆破坏缺陷"证伪，当时把 jinja 异常误归因到 decode 编译）。
+- **fork 修复（vendored diff #9，两文件）**：`common/chat.cpp` example 渲染包 try/catch（空示例 +
+  stderr 日志）；`tools/completion/completion.cpp` 检测 example 渲染失败 → 警告并自动 fallback 到
+  jinja（`--jinja` 行为），真实 prompt 不再二次崩。裸参数 raw 4B 实测：警告打出、rc=0。
+- **上游 issue 素材**（等用户贴，docs/upstream-issues/）：非 jinja matcher 未覆盖的模板应报错而非
+  terminate；example 渲染属装饰性不应致命；两个公开函数（format_example/format_single）缺异常边界。
+- ASAN 树（D:\llm\npu\asan，`bld_asan.bat`，LLAMA/GGML_SANITIZE_ADDRESS=ON）留作后续排查工具——
+  本案无堆破坏，ASAN 无报告恰好佐证是 terminate 而非越界。
+
 ## 2026-11-02（深夜 2）：启动时间分解（4B 生产配置 server）——warmup 只预热 prefill，decode 图在首请求才编译
 
 `ctrl/ck_startup.ps1`（4B chunk128 c2048，warm 缓存）：热启动 **11.7 s** 到 /health ok，分解（llama
