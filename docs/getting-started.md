@@ -136,7 +136,9 @@ tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
 
 启动后进入对话循环，在 `>` 后输入回车即得回答；`/exit`（或 Ctrl+C）退出、`/clear` 清空历史、
 `/regen` 重生成上一答、`/read <文件>` 与 `/glob <模式>` 把文件喂进上下文。多轮记忆走 KV 缓存，
-实测跨轮recall与跨 256-token 级别切换正常。参数：`-Ctx`（对话窗口，默认 2048，1.7B 验证过 8192）、
+实测跨轮recall与跨 256-token 级别切换正常。`-Model` 可以传路径，也可以只传文件名——脚本会依次在
+`-ModelDir`、环境变量 `WANGCAI_MODEL_DIR`、仓库 `models\` 里按名查找（`models/` 是 gitignored 的，
+权重放别处时用这两个入口即可；找不到时报错会列出所有搜索过的目录）。其余参数：`-Ctx`（对话窗口，默认 2048，1.7B 验证过 8192）、
 `-MaxTokens`（单答上限）、`-CacheDir`（图缓存，默认 `.cache\npu_chat`，**跨次持久**所以暖启动 ~9 s）、
 `-LevelsOff`（设备预算闹脾气时的逃生门）。首次空缓存会编译一次图（几十秒）；对话第一次跨过
 256-token 档也会停下来编一张 decode 图（一次性）。中文输入建议 Windows Terminal（或 `chcp 65001`）。

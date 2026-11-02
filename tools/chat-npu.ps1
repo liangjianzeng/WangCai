@@ -17,7 +17,8 @@
     Terminal (or chcp 65001) so the "> " line reads UTF-8.
 #>
 param(
-    [string]$Model = '',                        # default: models\LFM3-1.7B-Q4_K_M.gguf under the repo
+    [string]$Model = '',                        # path or bare gguf name; searched under models/ and -ModelDir
+    [string]$ModelDir = '',                     # extra directory to search by file name (or WANGCAI_MODEL_DIR)
     [int]$Ctx = 2048,                           # conversation window; 1.7B verified at c8192
     [int]$MaxTokens = 256,                      # per-reply cap
     [int]$Chunk = 128,                          # prefill chunk of the proven text config
@@ -33,8 +34,27 @@ $bin  = Join-Path (Join-Path (Join-Path (Join-Path $repo 'src') 'llama') 'build'
 $exe  = if ($env:OS -eq 'Windows_NT') { 'llama-cli.exe' } else { 'llama-cli' }
 $cli  = Join-Path $bin $exe
 if (-not (Test-Path $cli)) { throw "not built yet - run tools\build.ps1 (looked for $cli)" }
-if (-not $Model) { $Model = Join-Path (Join-Path $repo 'models') 'LFM3-1.7B-Q4_K_M.gguf' }
-if (-not (Test-Path $Model)) { throw "no such model: $Model -- pass -Model <path.gguf> (models/ is gitignored)" }
+# Model resolution: accept a path that exists (absolute or cwd-relative), otherwise look the
+# file name up under -ModelDir / $env:WANGCAI_MODEL_DIR / repo\models. models/ is gitignored,
+# so on a dev box the weights usually live elsewhere; the searched dirs are listed on failure.
+if (-not $Model) { $Model = 'LFM3-1.7B-Q4_K_M.gguf' }
+if (-not (Test-Path $Model)) {
+    $name  = Split-Path -Leaf $Model
+    $tries = @()
+    if ($ModelDir)                  { $tries += $ModelDir }
+    if ($env:WANGCAI_MODEL_DIR)     { $tries += $env:WANGCAI_MODEL_DIR }
+    $tries += (Join-Path $repo 'models')
+    $hit = $null
+    foreach ($d in $tries) {
+        $cand = Join-Path $d $name
+        if (Test-Path $cand) { $hit = $cand; break }
+    }
+    if (-not $hit) {
+        throw ("no such model: '{0}' (searched: {1}) -- pass a path, a bare file name found in " +
+               'one of those directories, or -ModelDir <dir> (models/ is gitignored)' -f $Model, ($tries -join ', '))
+    }
+    $Model = $hit
+}
 
 # OpenVINO runtime DLLs/SOs must be reachable; the ov/ drop is the conventional location in this repo.
 $ovlibs = Join-Path (Join-Path (Join-Path $repo 'ov') 'openvino') 'libs'
