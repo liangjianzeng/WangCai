@@ -180,6 +180,9 @@ static const char * cache_settings[] = {
     "GGML_OPENVINO_REDUCE_COMPILE_MEM",
     "GGML_OPENVINO_MEMORY_OPTIMIZE",
     "GGML_OPENVINO_PROFILING",
+    // Changes elementwise lowering (translate_session.cpp rank align) on any device -- a
+    // toggled value must not resurrect blobs compiled with the other lowering.
+    "GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN",
 };
 
 void ggml_openvino_model_cache_init() {

@@ -99,7 +99,7 @@ tools\compare-tensors.ps1 -A tmp\dumps\cpu -B tmp\dumps\npu
 lm_head 11 ms（根因③）。~~第三轮（stateful 化）~~：**已证伪（2026-11-01 探针）**——NPU 支持
 VariableState（状态跨 infer 设备侧累积），但每步成本 ≈5-6 ms/MB（0.18 GB/s），比参数绑定
 （8.4 MB 全步骤 6 ms，≈1.4 GB/s）慢 7 倍，路线反模式；参数绑定 + 级别裁剪即当前最优架构。
-lm_head 杠杆亦已探察并证伪（2026-11-01）：NPU 上 lm_head（与 token_embd 共享，Q6_K）为 F16 常量 524 MB（历史规避 Q8_0_C 编译失败），13.7 ms/步近带宽界；改走与其余层同款的 u4（GGML_OPENVINO_REQUANT_EMBD_Q4，默认关）实测 13.0 → 2.5 t/s 慢 5×，精度无损但反模式。decode 性能攻坚收官，转里程碑 2.2 热启动。探针存档 tools/npu-probes/，细节见 HANDOFF 2026-11-01 第三轮节。
+lm_head 杠杆亦已探察并证伪（2026-11-01）：NPU 上 lm_head（与 token_embd 共享，Q6_K）为 F16 常量 524 MB（历史规避 Q8_0_C 编译失败），13.7 ms/步近带宽界；改走与其余层同款的 u4（GGML_OPENVINO_REQUANT_EMBD_Q4，默认关）实测 13.0 → 2.5 t/s 慢 5×，精度无损但反模式；4B 复测（2026-11-02，Spark c512 n128 热跑）同判——u4 on 1.7 vs off 5.1 t/s（~3× 慢），且 tied embedding 连 prefill 一起拖累（19.0→14.8），反模式与模型规模无关。decode 性能攻坚收官，转里程碑 2.2 热启动。探针存档 tools/npu-probes/，细节见 HANDOFF 2026-11-01 第三轮节。
 
 <details><summary>第一轮解剖（2026-11-01，存档）</summary>
 

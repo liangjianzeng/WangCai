@@ -75,9 +75,10 @@
 ### 下一轮候选（按优先级，2026-11-02 更新）
 1. **性能主攻继续**：视觉吞吐已修复（542 ms）；回 4B decode / prefill 剩余杠杆
    （HANDOFF 性能轮清单）；LLM 图启动/导入时间也在此列（与上游 bank-aware import 同族）。
-2. 上游：**四条 NPUW/插件缺陷已写成可直接提交的报告草稿 `docs/upstream-npuw-report.md`**
-   （①FOLD×FUNCALL 精度损坏；②NPUW 缓存不覆盖 baked-Constants 图；③blob import 不感知
-   weights bank——热启动 <5 s 的拦路虎；④enable_profiling×blob 缓存崩溃）。待提交 GitHub。
+2. 上游：四条 NPUW/插件缺陷 = 汇总 `docs/upstream-npuw-report.md` + **逐条可直接粘贴的
+   `docs/upstream-issues/01..04-*.md`**（①FOLD×FUNCALL 精度损坏；②NPUW 缓存不覆盖
+   baked-Constants 图；③blob import 不感知 weights bank——热启动 <5 s 的拦路虎；
+   ④enable_profiling×blob 缓存崩溃）。本机无 gh CLI——在 GitHub 网页逐条粘贴提交（等用户）。
 3. 音频 top-1 级 f16 分歧（非阻塞，复利行为同类）。
 
 ### 视觉吞吐基线 → **已定案并修复**（2026-11-02，性能轮收官）
@@ -747,6 +748,12 @@ level 基数 256 vs 128 实测持平（4.7 vs 4.5），保持 256（少一次 le
 2. host ~50 ms/步（150 参数逐个 set_input_tensor）——静态参数预绑定。
 3. 4B 权重字节：token_embd F16（~795 MB）+ output Q8_0_C（~400 MB）占一半；EMBD_Q4 在
    1.7B 上证伪过，4B 上权重占比更大，值得复测。
+   **复测结论（2026-11-02，证伪）**：Spark c512 chunk128+levels、n=128、每臂双跑取热跑——
+   u4 **on：decode 1.7 t/s、prefill 14.8**；**off：decode 5.1、prefill 19.0**（~3× 慢，
+   tied embedding 连 prefill 的 GatherMatmul 一起拖累）。NPUW 压缩 MatMul 反模式与模型规模
+   无关，F16 常量维持默认。**顺带修复**：`REQUANT_EMBD_Q4` 改变图内权重常量却漏入 extra_cfg
+   缓存键（A/B 会串味），已混入（utils.cpp）；`DISABLE_ELTWISE_RANK_ALIGN` 漏入 CM 盘缓存
+   `cache_settings[]`，一并补上（model-cache.cpp）。A/B 脚本 `ctrl/spark_ab_u4.ps1`。
 
 ### 性能轮补记（同日）：稳态真实数字与算子开销定案
 

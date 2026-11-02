@@ -129,6 +129,10 @@ static uint64_t ggml_openvino_model_cache_extra_cfg(bool stateful, bool recurren
     extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_KV_SLICE") ? 1u : 0u);
     extra_cfg = extra_cfg * 131 + (manual_gqa_enabled ? 1u : 0u);
     extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_PROFILING") >= 2 ? 1u : 0u);
+    // Tied lm_head/embedding layout is selected from this env at requant-type time (extra.cpp:
+    // F16 constant vs grouped u4) -- it changes graph weight constants, so stale blobs compiled
+    // with the other layout must never match (4B lm_head u4 retest, 2026-11-02).
+    extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_REQUANT_EMBD_Q4") ? 1u : 0u);
     // Multi-level static decode graphs (see decode_attention_level): the decode half's baked
     // attention span changed from the whole context to a per-level constant, so older
     // disk-cache blobs must not match. The 4 also covers the vision-encoder fix below
