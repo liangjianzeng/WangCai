@@ -19,6 +19,7 @@ import '../engine/llama_server_host.dart';
 import '../engine/process_ledger.dart';
 import '../engine/routing_policy.dart';
 import 'inference_backend.dart';
+import 'power_monitor.dart';
 import 'wangcai_paths.dart';
 
 /// llama-server SSE chunk → UI 可见 token 流的纯逻辑状态机（可单测）。
@@ -251,6 +252,15 @@ class LocalServerInference implements InferenceBackend {
   Future<List<Binding>> bindingsForModel(String modelPath) =>
       _bindingsFor(_basename(modelPath));
 
+  /// §7.3「电池机型拔电 → NPU 加权」的输入（M3-b 电源感知）。
+  bool _onBattery() {
+    try {
+      return readPowerState().onBattery;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// 路由决策（§7.3）：候选=已启用本地实例；binary 缺失=未装不作候选；
   /// admission 违例=blocked（带建议改道，不去拉必崩的 server）。
   Future<RoutingDecision> _route({
@@ -285,6 +295,7 @@ class LocalServerInference implements InferenceBackend {
       candidates: cands,
       bindings: bindingsForModel,
       blocked: blocked,
+      onBattery: _onBattery(),
     ));
   }
 
