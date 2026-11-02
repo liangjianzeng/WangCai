@@ -6,8 +6,13 @@ import 'dart:io';
 import '../engine/engine_paths.dart';
 
 class WangCaiPaths {
+  /// 测试注入点（非 null 时 dataRoot 返回它，隔离真实 %APPDATA%）。
+  static Directory Function()? dataRootOverrideForTest;
+
   /// %APPDATA%\WangCai（engines.json / per-profile 编译缓存 / 进程账本落这里）。
   static Directory dataRoot() {
+    final o = dataRootOverrideForTest;
+    if (o != null) return o();
     final appData = Platform.environment['APPDATA'];
     final root = (appData != null && appData.isNotEmpty)
         ? appData
@@ -57,10 +62,20 @@ class WangCaiPaths {
     return null;
   }
 
-  /// 汪柴 llama-server.exe：WANGCAI_SERVER_EXE > 开发机构建产物。
+  /// 安装器形态的引擎目录：{userappdata}\WangCai\engines\wangcai\（Inno
+  /// Setup 打包位，M4）。装机用户没有 repo —— 二级解析靠这里。
+  static Directory bundledEngineDir() => Directory(
+      '${dataRoot().path}${Platform.pathSeparator}engines'
+      '${Platform.pathSeparator}wangcai');
+
+  /// 汪柴 llama-server.exe：WANGCAI_SERVER_EXE > 安装器引擎目录 >
+  /// 开发机构建产物（repo）。
   static String? wangcaiServerExe() {
     final env = Platform.environment['WANGCAI_SERVER_EXE']?.trim();
     if (env != null && env.isNotEmpty && File(env).existsSync()) return env;
+    final bundled = '${bundledEngineDir().path}${Platform.pathSeparator}'
+        'llama-server.exe';
+    if (File(bundled).existsSync()) return bundled;
     final repo = repoRoot();
     if (repo != null) {
       final cand = '${repo.path}${Platform.pathSeparator}src'
@@ -71,7 +86,8 @@ class WangCaiPaths {
     return null;
   }
 
-  /// OpenVINO 运行时 DLL 目录（PATH 前置）：WANGCAI_OV_LIBS（`;` 分隔）> 仓库 ov/。
+  /// OpenVINO 运行时 DLL 目录（PATH 前置）：WANGCAI_OV_LIBS（`;` 分隔）>
+  /// 安装器引擎目录 ovlibs\ > 仓库 ov/openvino/libs。
   static List<String> ovLibsDirs() {
     final env = Platform.environment['WANGCAI_OV_LIBS']?.trim();
     if (env != null && env.isNotEmpty) {
@@ -81,6 +97,9 @@ class WangCaiPaths {
           .where((e) => e.isNotEmpty && Directory(e).existsSync())
           .toList();
     }
+    final bundled =
+        '${bundledEngineDir().path}${Platform.pathSeparator}ovlibs';
+    if (Directory(bundled).existsSync()) return [bundled];
     final repo = repoRoot();
     if (repo != null) {
       final cand = '${repo.path}${Platform.pathSeparator}ov'
