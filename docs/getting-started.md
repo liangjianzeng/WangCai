@@ -125,6 +125,22 @@ common_perf_print:        load time = 36374 ms        ← cold NPU graph compila
 
 使用同一个 `GGML_OPENVINO_CACHE_DIR` 的第二次运行，会跳过 36 s 编译中的大部分工作。
 
+## 交互式终端聊天（怎么用）
+
+上面的一次性 `-st -p` 是测量用的。日常使用走 `tools\chat-npu.ps1`——它就是 0.0.1 那种终端交互，
+只是跑在 NPU 上：
+
+```powershell
+tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
+```
+
+启动后进入对话循环，在 `>` 后输入回车即得回答；`/exit`（或 Ctrl+C）退出、`/clear` 清空历史、
+`/regen` 重生成上一答、`/read <文件>` 与 `/glob <模式>` 把文件喂进上下文。多轮记忆走 KV 缓存，
+实测跨轮recall与跨 256-token 级别切换正常。参数：`-Ctx`（对话窗口，默认 2048，1.7B 验证过 8192）、
+`-MaxTokens`（单答上限）、`-CacheDir`（图缓存，默认 `.cache\npu_chat`，**跨次持久**所以暖启动 ~9 s）、
+`-LevelsOff`（设备预算闹脾气时的逃生门）。首次空缓存会编译一次图（几十秒）；对话第一次跨过
+256-token 档也会停下来编一张 decode 图（一次性）。中文输入建议 Windows Terminal（或 `chcp 65001`）。
+
 ## 三个容易踩的坑
 
 **1. 用对话模式，不要用裸续写。** LFM3 经过指令微调。让 `llama-completion` 对一段裸提示词做续写，会让它

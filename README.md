@@ -124,10 +124,14 @@ tools\build.ps1
 # 4. 取模型权重（不随 git 分发，直接用官方 GGUF，详见 docs/getting-started.md）
 hf download LiquidAI/LFM3-1.7B-GGUF --local-dir models   # 或 modelscope download
 
-# 5. 在 NPU 上跑
+# 5. 在 NPU 上跑（一次性提问，用于验证）
 $env:GGML_OPENVINO_DEVICE = 'NPU'
 $env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'
 src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 -dev OPENVINO3 -st -p '用一句话介绍长城。'
+
+# 6. 交互式终端聊天（0.0.1 式文本交互，日常使用走这个）
+tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
+#   进入 > 对话循环；/exit 退出、/clear 清空、/regen 重生成、/read 文件入上下文
 ```
 
 动手前先确认 NPU 在位：`Get-PnpDevice -Class ComputeAccelerator` 应列出

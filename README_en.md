@@ -198,10 +198,14 @@ tools\build.ps1
 # 4. get model weights (not shipped with git — use the official GGUF, see docs/getting-started.md)
 hf download LiquidAI/LFM3-1.7B-GGUF --local-dir models   # or modelscope download
 
-# 5. run on the NPU
+# 5. run on the NPU (one-shot, for verification)
 $env:GGML_OPENVINO_DEVICE = 'NPU'
 $env:GGML_OPENVINO_CACHE_DIR = 'D:\npu_cache'
 src\llama\build\bin\llama-cli.exe -m models\LFM3-1.7B-Q4_K_M.gguf -c 1024 -fa 1 -dev OPENVINO3 -st -p 'Introduce the Great Wall in one sentence.'
+
+# 6. interactive terminal chat (the 0.0.1-style text UI, this is what you use day to day)
+tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
+#   > prompt loop; /exit quits, /clear resets, /regen repeats, /read feeds a file into context
 ```
 
 Before starting, confirm the NPU is present: `Get-PnpDevice -Class ComputeAccelerator` should list
