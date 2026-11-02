@@ -2,12 +2,14 @@
 // provider / agent adapter / plugin host 一律只见 InferenceBackend。
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../services/inference_service.dart';
 import 'inference_backend.dart';
 import 'local_server_inference.dart';
+import 'tray_service.dart';
 
 /// Provider 层工厂：Windows → llama-server 子进程网关；其余 → JNI InferenceService。
 InferenceBackend createInferenceBackend() =>
@@ -23,6 +25,13 @@ Future<void> initInferenceEngine() async {
   }
   if (Platform.isWindows) {
     await LocalServerInference.instance.initialize();
+    // M3-a：托盘驻留（关窗=隐藏；main.dart 零 vendored diff —— 分支收敛在此）。
+    // 失败（如测试环境无插件）不阻断主流程。
+    try {
+      await TrayService.instance.init();
+    } catch (e) {
+      debugPrint('[TrayService] init skipped: $e');
+    }
   } else {
     await InferenceService().initialize();
   }
