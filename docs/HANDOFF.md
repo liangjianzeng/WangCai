@@ -87,8 +87,8 @@
 |---|---|---|
 | clip 图 NPU **纯推理**（python，warm） | 147–191 ms | 同（本来就不慢） |
 | clip 图**每进程编译**（engine 行级） | **~12.2 s**（每次都重编译） | ~0.4 s（blob 缓存命中） |
-| `mtmd batch encoding`（warm，engine） | 12.6 s | **542 ms** |
-| 冷启动首跑（一次性） | 16.9 s | 16.9 s（编译一次，之后全命中） |
+| `mtmd batch encoding`（warm，engine） | 12.6 s | **542 ms**（blob 已进 FS 缓存稳态）/ **896 ms**（blob 刚写回、FS 冷）|
+| 冷启动首跑（一次性） | 16.9 s | 16.5 s（编译一次，之后全命中）|
 | native ggml CPU / OV-CPU 动态（参照） | 435 ms / 956 ms | 不变 |
 
 **根因**：NPU 编译配置只设了 `NPUW_CACHE_DIR`（NPUW 自己的 funcall/子图分解缓存），没设
@@ -98,9 +98,12 @@
 后同一 IR 命中 0.41–0.74 s；视觉 IR 跨进程逐位稳定（md5 相同，可安全命中）。
 **修复**：`ggml-openvino-extra.cpp` NPU 分支在 `NPUW_CACHE_DIR` 旁补插
 `compile_config.insert(ov::cache_dir(cache_dir))`（without_npuw 路径剥 CACHE_MODE 但保留
-CACHE_DIR，非 NPUW 路线接受该键）。验收：最终二进制 warm encode 542 ms、描述正确、文本 3/3、
+CACHE_DIR，非 NPUW 路线接受该键）。验收：最终二进制 warm encode 亚秒级、描述正确、文本 3/3、
 音频 EXITCODE=0。工具：ctrl/vis-npu-cdir.ps1（PERFW 行级计时）、vis_time.py（IR 直测）、
-vis_cfg.py（配置键二分）；缓存 cache_cdir。
+vis_cfg.py（配置键二分）、vis-regress.ps1（全新缓存冷/热回归守卫）；缓存 cache_cdir。
+**回归守卫（2026-11-02 最终二进制，全新 cache_regress 两次连跑）**：冷 16.5 s / warm 896 ms、
+描述逐字正确。warm 值依赖 FS 缓存：blob 刚落盘再读 ≈900 ms，反复命中稳态 542 ms——对外口径
+用"亚秒级（0.5–0.9 s）"，别只报 542。
 **上游可报**：NPUW_CACHE_DIR 对权重烤成 Constants 的图永不命中——要么文档化，要么让 NPUW
 缓存层也覆盖 baked-Constants 图（与 bank-aware blob import 是同一家族问题）。
 

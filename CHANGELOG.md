@@ -128,7 +128,8 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   跨进程逐位稳定（md5 相同，可安全命中）。
 - **修复**：`ggml-openvino-extra.cpp` NPU 分支补插 `compile_config.insert(ov::cache_dir(cache_dir))`
   （`without_npuw` 路径剥 CACHE_MODE 但保留 CACHE_DIR，非 NPUW 路线接受该键）。修复后
-  **warm encode 542 ms**（vs native 435 ms、OV-CPU 动态 956 ms），冷启动一次性 16.9 s；
+  **warm encode 亚秒级**：542 ms（blob 已进 FS 缓存稳态）～896 ms（blob 刚写回、FS 冷）
+  （vs native 435 ms、OV-CPU 动态 956 ms），冷启动一次性 16.5 s；
   最终二进制验收：视觉描述正确、文本三问 3/3、音频 EXITCODE=0。
 - **上游可报**：NPUW_CACHE_DIR 不覆盖权重烤成 Constants 的图——与 bank-aware blob import 同族。
 
