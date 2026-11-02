@@ -13,6 +13,7 @@ import 'package:flutter/foundation.dart'
 import '../engine/bindings_store.dart';
 import '../engine/engine_config.dart';
 import '../engine/engine_manifest.dart';
+import '../engine/engine_paths.dart';
 import '../engine/engine_registry.dart';
 import '../engine/engine_status.dart' show EngineLogLine;
 import '../engine/llama_server_host.dart';
@@ -111,6 +112,11 @@ class LocalServerInference implements InferenceBackend {
   bool _loaded = false;
   bool _swept = false;
 
+  /// 数据目录（可注入隔离：测试注入临时目录，避免被真实
+  /// %APPDATA% 的 routing.json/bindings.db 污染路由决策）。
+  EnginePaths? _pathsOverride;
+  EnginePaths _enginePaths() => _pathsOverride ?? WangCaiPaths.enginePaths();
+
   // set* 推送值：server 是独立进程，能落 env/参数的在 loadModel 用，其余随请求体。
   bool _enableThinking = false;
   String _kvType = 'q4_0';
@@ -139,7 +145,7 @@ class LocalServerInference implements InferenceBackend {
   Future<EngineRegistry> _ensureRegistry() async {
     final existing = _registry;
     if (existing != null) return existing;
-    final paths = WangCaiPaths.enginePaths();
+    final paths = _enginePaths();
     final reg = EngineRegistry.dev(
       paths: paths,
       wangcaiServerExe: WangCaiPaths.wangcaiServerExe() ?? 'llama-server.exe',
@@ -168,7 +174,7 @@ class LocalServerInference implements InferenceBackend {
     final b = _bindings;
     if (b != null) return b;
     try {
-      return _bindings = await BindingsStore.open(WangCaiPaths.enginePaths());
+      return _bindings = await BindingsStore.open(_enginePaths());
     } catch (e) {
       _log('⚠️ 绑定表不可用（按无实测启发路由）：$e');
       return null;
@@ -185,7 +191,7 @@ class LocalServerInference implements InferenceBackend {
     final cached = _tierName;
     if (cached != null) return cached;
     try {
-      final f = File('${WangCaiPaths.enginePaths().dataDir.path}'
+      final f = File('${_enginePaths().dataDir.path}'
           '${Platform.pathSeparator}routing.json');
       if (await f.exists()) {
         final j = jsonDecode(await f.readAsString());
@@ -231,7 +237,7 @@ class LocalServerInference implements InferenceBackend {
 
   Future<Map<String, dynamic>> _readRoutingJson() async {
     try {
-      final f = File('${WangCaiPaths.enginePaths().dataDir.path}'
+      final f = File('${_enginePaths().dataDir.path}'
           '${Platform.pathSeparator}routing.json');
       if (await f.exists()) {
         final d = jsonDecode(await f.readAsString());
@@ -242,7 +248,7 @@ class LocalServerInference implements InferenceBackend {
   }
 
   Future<void> _writeRoutingJson(Map<String, dynamic> j) async {
-    final paths = WangCaiPaths.enginePaths();
+    final paths = _enginePaths();
     await paths.ensureDirs();
     await File('${paths.dataDir.path}${Platform.pathSeparator}routing.json')
         .writeAsString(jsonEncode(j), flush: true);
@@ -494,7 +500,7 @@ class LocalServerInference implements InferenceBackend {
     unawaited(() async {
       var minutes = 0;
       try {
-        final f = File('${WangCaiPaths.enginePaths().dataDir.path}'
+        final f = File('${_enginePaths().dataDir.path}'
             '${Platform.pathSeparator}routing.json');
         if (await f.exists()) {
           final j = jsonDecode(await f.readAsString());
@@ -529,8 +535,9 @@ class LocalServerInference implements InferenceBackend {
 
   /// 测试注入 registry（绕过 dev 工厂；注入方须自配 fake runner/probe）。
   @visibleForTesting
-  void attachRegistryForTest(EngineRegistry reg) {
+  void attachRegistryForTest(EngineRegistry reg, {EnginePaths? paths}) {
     _registry = reg;
+    _pathsOverride = paths;
     _swept = true;
   }
 

@@ -75,7 +75,8 @@ void main() {
       sleeper: (d) async {},
       parentEnv: const {'PATH': r'C:\Windows', 'SystemRoot': r'C:\Windows'},
     );
-    LocalServerInference.instance.attachRegistryForTest(reg);
+    LocalServerInference.instance
+        .attachRegistryForTest(reg, paths: EnginePaths.root(tmp));
   });
 
   tearDown(() async {
