@@ -1,5 +1,30 @@
 # 会话交接（上下文耗尽时读我）
 
+## 性能攻坚计划（2026-11-03 立项，自主循环逐项做，做完即勾）
+
+背景：decode 已贴权重带宽地板（见 P3 论证）、prefill chunk256 甜点已交付、预算规则已定案。
+剩余性能空间按性价比排序，逐项执行、证伪也记录、每项独立 commit：
+
+- [x] **P1 `--no-warmup` 净赢验证（2026-11-03 定案：赢 2.7 s）**：同暖缓存 A/B × 2 轮（`ctrl/ck_wu_ab.ps1`），
+  总到首答 warmup-on 25.3 s vs `--no-warmup` 22.6 s（ready −3 s，首请求 +0.5 s 噪声内）。**生产建议：
+  llama-server 加 `--no-warmup`**（warmup 的 6 s prefill eval 不预热 decode 图，纯亏）；llama-cli 交互式
+  不加（warmup 藏在用户打字时间里，且让首答更快）。
+- [ ] **P2 push 积压**（网络恢复后）：6619d0d 之后 3 个本地 commit。
+- [x] **P3 decode 天花板定案（2026-11-03，已入 status）**：每生成 1 token 必全量读一遍权重 → 步时下限 =
+  权重字节 ÷ 带宽。两模型独立吻合：1.7B ≈1.0 GB/15.7 GB/s = 64 ms ≈ 实测 67 ms（14.9 t/s）；4B ≈2.3 GB
+  → 145 ms ≈ 实测 145 ms（6.9 t/s）。KV/attention/状态 I/O 全在余量内（级别图组裁剪），decode **纯权重
+  带宽受限**，软件侧关死（u4 证伪、零拷贝不改 LPDDR 带宽），除非换硬件。
+- [x] **P4 remote tensor/USM 探针（2026-11-03 结案，不立项）**：插件 dll 含 `ZeroRemoteTensor`
+  （intel_npu 内部类，L0 host memory）与 `ov::IRemoteTensor` vtable，但无对外创建属性名（无
+  NPU_REMOTE_* 之类字符串）→ 用户侧零拷贝绑定不可达。即便可达也不改 LPDDR 物理带宽：decode 已贴
+  P3 下限，prefill 每 chunk 输入仅 KB 级。两理由叠加，结案。
+- [ ] **P5 热跑基线表刷新**：chunk128/256 × c512/c2048 × 1.7B/4B 的 prefill/decode 热数字（auto-chunk
+  之后的真实生产口径）入 status 基线表，替换旧数字。
+- [x] **P6 GPU 路径 stub 结案（2026-11-03）**：`ov_opencl_shim` 的 GPU/CL 路径保持 stub，理由：dGPU
+  （5060 Ti）不在端侧 NPU 场景内；iGPU 共享同一 LPDDR5X（P3 带宽下限同样适用，CPU 参照 21.7–29.2 t/s
+  即共享内存路径的实测上限量级），无吞吐红利且有维护成本。
+- [ ] **P7 每项独立 commit/push + 本清单勾选**，循环直到全勾；push 断网则积攒下次重试。
+
 ## 2026-11-02（深夜 2）：启动时间分解（4B 生产配置 server）——warmup 只预热 prefill，decode 图在首请求才编译
 
 `ctrl/ck_startup.ps1`（4B chunk128 c2048，warm 缓存）：热启动 **11.7 s** 到 /health ok，分解（llama

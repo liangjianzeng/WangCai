@@ -101,6 +101,14 @@ VariableState（状态跨 infer 设备侧累积），但每步成本 ≈5-6 ms/M
 （8.4 MB 全步骤 6 ms，≈1.4 GB/s）慢 7 倍，路线反模式；参数绑定 + 级别裁剪即当前最优架构。
 lm_head 杠杆亦已探察并证伪（2026-11-01）：NPU 上 lm_head（与 token_embd 共享，Q6_K）为 F16 常量 524 MB（历史规避 Q8_0_C 编译失败），13.7 ms/步近带宽界；改走与其余层同款的 u4（GGML_OPENVINO_REQUANT_EMBD_Q4，默认关）实测 13.0 → 2.5 t/s 慢 5×，精度无损但反模式；4B 复测（2026-11-02，Spark c512 n128 热跑）同判——u4 on 1.7 vs off 5.1 t/s（~3× 慢），且 tied embedding 连 prefill 一起拖累（19.0→14.8），反模式与模型规模无关。decode 性能攻坚收官，转里程碑 2.2 热启动。探针存档 tools/npu-probes/，细节见 HANDOFF 2026-11-01 第三轮节。
 
+**decode 天花板的数学定案（2026-11-03，P3）**：transformer 每生成一个 token 必须把全部权重读一遍
+（逐层一次），所以 decode 步时的下限 = **权重字节 ÷ 可实现带宽**。实测恰好在下限上：
+LFM3-1.7B 驻留权重 ≈1.0 GB，15.7 GB/s → **64 ms/步**，实测 67 ms/步（14.9 t/s）；Spark-4B requant
+后 ≈2.3 GB → **145 ms/步**，实测 145 ms/步（6.9 t/s）。两模型独立吻合到 3% 以内——KV/attention/
+状态 I/O 全部压在余量里（级别图组已把 KV 读取裁到填充跨度），decode 是**纯权重带宽受限**，软件侧
+无空间：更小权重 = u4 证伪（算子变慢吞掉收益）；remote tensor/零拷贝不改变 LPDDR 物理带宽；
+15.7–15.9 GB/s 就是该 NPU DMA 路径的实测上限。decode 线正式关死，除非换硬件。
+
 <details><summary>第一轮解剖（2026-11-01，存档）</summary>
 
 同一模型同一台机器上：8.3–12.6 t/s，对比原生 54.1 t/s、OpenVINO-CPU 21.7–29.2 t/s。逐节点剖析

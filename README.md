@@ -151,6 +151,9 @@ tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
 | 4B 模型（NPU）：`GGML_OPENVINO_PREFILL_CHUNK_SIZE=64`（短 prompt）/ `128`（长 prompt） | 4B 预算规则（BUDGET-TRACE 定案，HANDOFF 2026-11-02 深夜）：**prefill 图(chunk) + 最大 decode 图（级别 = KV 行跨度）联合驻留**。chunk256 只容 decode 级别 ≤512（**ctx≤512 实测可用，pp +55–59%**）；ctx≥1024 时 decode 需级别 ≥1024 → 超预算（首 execute ZE append 失败），chat/server 用 64/128。llama-bench 离线流 decode mask 从不超 256，chunk256 随便用；1.7B 任意 ctx 可 chunk256。短 prompt 首 token 延迟 chunk64 比 128 好 ~17%，32 以下固定开销反噬 |
 
 `llama-server.exe` 也一并构建，可用同样的环境变量提供 OpenAI 兼容 HTTP 服务；`-c`/-fa/-np 约束相同。
+**建议加 `--no-warmup`**：启动期的 warmup eval（~6 s prefill 空跑）并不预热 decode 图，纯增加就绪
+时间；A/B 实测总到首答 25.3 s → 22.6 s（HANDOFF 2026-11-03 P1）。llama-cli 交互式**不要**加
+（warmup 藏在用户打字时间里，且让首个回答更快）。
 完整参数说明、首次运行的预期日志与三个最容易踩的坑见
 [docs/getting-started.md](docs/getting-started.md)，全部环境变量见 [docs/env-vars.md](docs/env-vars.md)。
 
