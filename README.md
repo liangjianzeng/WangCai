@@ -153,7 +153,10 @@ tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
 `llama-server.exe` 也一并构建，可用同样的环境变量提供 OpenAI 兼容 HTTP 服务；`-c`/-fa/-np 约束相同。
 **建议加 `--no-warmup`**：启动期的 warmup eval（~6 s prefill 空跑）并不预热 decode 图，纯增加就绪
 时间；A/B 实测总到首答 25.3 s → 22.6 s（HANDOFF 2026-11-03 P1）。llama-cli 交互式**不要**加
-（warmup 藏在用户打字时间里，且让首个回答更快）。
+（warmup 藏在用户打字时间里，且让首个回答更快）。**网关/应用侧再加一发预热请求**：服务就绪后立刻
+发一个 `max_tokens=1` 的 chat completion（自带上下文任意短句），把首执行 + decode 图编译 + 模板路径
+焐热（~5 s，一次性）——此后用户的第一个真实问题直接落到 ~4 s 的热路径（否则首问 ~13 s，其中 ~6 s
+为 llama/driver 层固有成本，HANDOFF 2026-11-03 P9）。
 完整参数说明、首次运行的预期日志与三个最容易踩的坑见
 [docs/getting-started.md](docs/getting-started.md)，全部环境变量见 [docs/env-vars.md](docs/env-vars.md)。
 

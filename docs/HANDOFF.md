@@ -49,6 +49,21 @@ matcher 清单 → 非 jinja 路径抛 `"this custom template is not supported, 
 - ASAN 树（D:\llm\npu\asan，`bld_asan.bat`，LLAMA/GGML_SANITIZE_ADDRESS=ON）留作后续排查工具——
   本案无堆破坏，ASAN 无报告恰好佐证是 terminate 而非越界。
 
+## 2026-11-03：P9 定案——首请求 ~13 s 是 llama/driver 层固有成本；应用层预热请求是最后杠杆
+
+同 server 连发两请求（`ctrl/ck_2req.ps1`，4B chunk128 c2048 `--no-warmup`）：**req1 12.9 s / req2 4.2 s**
+——一次性成本 ~8.7 s。分解（slot timing + 对照实验）：
+- prompt eval：req1 8.9 s vs req2 3.1 s。**无批拆分**（早前"61/17 两批"是 progress 报点误读；单批）。
+  chunk 执行本身 ~3 s/批（5 tokens 也要 3.1 s——span 图全量算，正常）；多出的 ~5.8 s = 首请求固有
+  （jinja 渲染 + tokenize + 首次真实数据执行路径），warmup 开关不影响它（warmup-on 的 req1 同为 12.9）。
+- eval：req1 4.0 s（lv256 blob 热编译 1.5 s + 首采样路径）vs req2 1.06 s（151 ms/tok = 纯带宽地板）。
+- `--no-jinja` 500（Spark 必须走 jinja，srv 有捕获不崩）；raw /v1/completions 单批但首请求同样多付
+  （attach 类一次性成本，driver 层）。
+- **结论**：server 侧无更多杠杆；`--no-warmup`（P1，已交付 -2.7 s）之后，剩余 ~6 s 固有成本只能靠
+  **应用层预热**：网关就绪后立刻发一个 max_tokens=1 的预热请求，把首执行/lv 编译/模板路径全部焐热
+  （~5 s），用户首次真实提问即走 req2 路径（~4.2 s）。M2 网关加这一行即拿到；CLI/chat-npu 不需要
+  （交互式用户打字时间天然焐热）。
+
 ## 2026-11-02（深夜 2）：启动时间分解（4B 生产配置 server）——warmup 只预热 prefill，decode 图在首请求才编译
 
 `ctrl/ck_startup.ps1`（4B chunk128 c2048，warm 缓存）：热启动 **11.7 s** 到 /health ok，分解（llama
