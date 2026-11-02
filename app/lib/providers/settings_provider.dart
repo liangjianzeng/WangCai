@@ -9,6 +9,8 @@ import '../agent/dev/ssh/ssh_credentials.dart' show SshConfig;
 import '../agent/web_search/web_search_provider.dart';
 import '../models/agent_persona.dart';
 import '../models/api_model.dart';
+import '../services/api_key_store.dart' // WangCai 分叉 #9：API key 安全存储
+    show migrateApiKeysToSecure, overlayApiKeys, redactApiKeys;
 import '../services/settings_service.dart';
 
 /// 持有推理引擎设置（GPU 开??/ 卸载层数），并在变更时持久化到本地文件??
@@ -29,6 +31,12 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
       if (migrated != null) {
         finalSettings = loaded.copyWith(sshConfigs: migrated);
       }
+    } on Exception catch (_) {}
+    // WangCai 分叉 #9（设计 §6.1）：API key 迁安全存储（JSON 明文一次性搬走，
+    // 幂等）；随后内存态叠加真钥供请求使用。安全存储不可用 fail-open。
+    try {
+      finalSettings = await migrateApiKeysToSecure(finalSettings);
+      finalSettings = await overlayApiKeys(finalSettings);
     } on Exception catch (_) {}
     if (mounted) state = finalSettings;
   }
@@ -917,7 +925,8 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
 
   Future<void> _persist() async {
     try {
-      await _service.save(state);
+      // 分叉 #9：落盘前清洗 API key（内存态保留真钥，JSON 只存空串）。
+      await _service.save(redactApiKeys(state));
     } catch (e) {
       // 持久化失败不应阻??UI 交互；内存状态已更新??
       // 记录日志便于定位（此前完全静默，失败时用户无感知）??
