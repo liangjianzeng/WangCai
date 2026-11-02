@@ -179,7 +179,43 @@ class EngineStore {
         }
       }
       if (!downloaded) return InstallResult(serverExe: null, dir: dir.path, error: '所有镜像下载失败');
+      return _verifyAndExtract(release, tmpZip);
+    } catch (e) {
+      try {
+        if (await tmpZip.exists()) await tmpZip.delete();
+      } catch (_) {}
+      return InstallResult(serverExe: null, dir: dir.path, error: '$e');
+    }
+  }
 
+  /// 离线安装：用户/脚本已下好的 zip（校验+解包与在线共用一套）。
+  Future<InstallResult> installFromLocal(
+      StoreRelease release, String zipPath) async {
+    final zip = File(zipPath);
+    if (!await zip.exists()) {
+      return InstallResult(
+          serverExe: null, dir: dirFor(release).path, error: '安装包不存在：$zipPath');
+    }
+    final tmp = File('${dirFor(release).path}.zip.tmp');
+    try {
+      await tmp.parent.create(recursive: true);
+      if (await tmp.exists()) await tmp.delete();
+      await zip.copy(tmp.path);
+      return await _verifyAndExtract(release, tmp);
+    } catch (e) {
+      return InstallResult(serverExe: null, dir: dirFor(release).path, error: '$e');
+    } finally {
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {}
+    }
+  }
+
+  /// sha256 校验 + 解包 + 定位 llama-server.exe（在线/离线安装共用）。
+  Future<InstallResult> _verifyAndExtract(
+      StoreRelease release, File tmpZip) async {
+    final dir = dirFor(release);
+    try {
       final actual = await sha256File(tmpZip);
       if (actual != release.sha256.toLowerCase()) {
         await tmpZip.delete();
