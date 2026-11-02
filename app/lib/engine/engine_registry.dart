@@ -166,6 +166,9 @@ class EngineRegistry {
         flush: true);
   }
 
+  /// 已存在的宿主（不惰性创建；单 active 互斥扫描用）。
+  EngineHost? existingHostOf(String instanceId) => _hosts[instanceId];
+
   /// 同 id 单例宿主（聊天与设置页共享同一进程视图）。
   EngineHost hostOf(String instanceId) {
     final existing = _hosts[instanceId];

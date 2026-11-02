@@ -7,7 +7,8 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart'
+    show debugPrint, visibleForTesting;
 
 import '../engine/bindings_store.dart';
 import '../engine/engine_config.dart';
@@ -325,6 +326,7 @@ class LocalServerInference implements InferenceBackend {
       _log('🧭 ${decision.reason}'
           '${decision.suggestion != null ? ' · ${decision.suggestion}' : ''}');
       final manifest = reg.manifestOf(instId);
+      await _stopOtherHosts(reg, instId); // §7.3 单 active 互斥
       final host = reg.hostOf(instId) as LlamaServerHost;
       _host = host; // 失败也要可取证（debugHost / UI 读状态与日志）
 
@@ -384,6 +386,7 @@ class LocalServerInference implements InferenceBackend {
       reg.instance(instId)!.lastConfig = cfg;
       unawaited(reg.save().catchError((Object _) {}));
       _log('✅ 引擎就绪: ${host.baseUrl}');
+      _touchIdle(); // §7.3 空闲卸载计时启动
       return true;
     } catch (e) {
       _log('❌ 模型加载异常: $e');
@@ -394,12 +397,87 @@ class LocalServerInference implements InferenceBackend {
 
   @override
   Future<void> unloadModel() async {
+    _idleTimer?.cancel();
+    _idleTimer = null;
     await stopGeneration();
     await _logSub?.cancel();
     _logSub = null;
     await _host?.stop();
     _loaded = false;
   }
+
+  // ── M2-e 调度护栏（设计 §7.3）：单 active 互斥 + 空闲超时卸载 ──────────
+
+  /// 空闲卸载时长（routing.json `idleUnloadMinutes`，0=关闭）；≤0 视为关闭。
+  Timer? _idleTimer;
+
+  /// 测试注入的空闲时长（非 null 时优先于配置文件）。
+  Duration? _idleUnloadForTest;
+
+  void _armIdleTimer(Duration d) {
+    _idleTimer?.cancel();
+    if (!_loaded || d <= Duration.zero) return;
+    _idleTimer = Timer(d, () {
+      if (!_loaded) return;
+      _log('💤 空闲超时，卸载模型释放显存/NPU 预算（§7.3 调度护栏）');
+      unawaited(unloadModel());
+    });
+  }
+
+  void _touchIdle() {
+    if (!_loaded) return;
+    final d = _idleUnloadForTest;
+    if (d != null) {
+      _armIdleTimer(d);
+      return;
+    }
+    // 配置文件值重读成本可忽略（几百字节），直接同步到下次触发。
+    unawaited(() async {
+      var minutes = 0;
+      try {
+        final f = File('${WangCaiPaths.enginePaths().dataDir.path}'
+            '${Platform.pathSeparator}routing.json');
+        if (await f.exists()) {
+          final j = jsonDecode(await f.readAsString());
+          if (j is Map && j['idleUnloadMinutes'] is num) {
+            minutes = (j['idleUnloadMinutes'] as num).toInt();
+          }
+        }
+      } catch (_) {}
+      if (minutes > 0) {
+        _armIdleTimer(Duration(minutes: minutes));
+      } else {
+        _idleTimer?.cancel();
+        _idleTimer = null;
+      }
+    }());
+  }
+
+  /// 单 active 互斥：除 [keepId] 外，把处于启动/就绪态的本地 host 全部停掉。
+  /// （显存与 NPU 共享内存预算表：同一时刻至多一个 loaded 引擎。）
+  Future<void> _stopOtherHosts(EngineRegistry reg, String keepId) async {
+    for (final inst in reg.instances) {
+      if (inst.id == keepId) continue;
+      if (reg.manifestOf(inst.id).kind == 'remote') continue;
+      if (reg.existingHostOf(inst.id) == null) continue; // 未拉起过的不碰
+      final h = reg.hostOf(inst.id);
+      if (h.baseUrl != null || h.status.isStarting || h.status.isUsable) {
+        _log('🛑 单 active 互斥：停止 ${inst.id}');
+        await h.stop();
+      }
+    }
+  }
+
+  /// 测试注入 registry（绕过 dev 工厂；注入方须自配 fake runner/probe）。
+  @visibleForTesting
+  void attachRegistryForTest(EngineRegistry reg) {
+    _registry = reg;
+    _swept = true;
+  }
+
+  /// 测试注入空闲卸载时长（非 null 时优先于 routing.json）。
+  @visibleForTesting
+  set idleUnloadForTest(Duration? d) => _idleUnloadForTest = d;
 
   // ── 设置推送（server 侧语义：加载参数在 start 落，请求参数随 body）────
   @override
@@ -736,6 +814,7 @@ class LocalServerInference implements InferenceBackend {
             't_prompt_ms': 0,
           };
       _recordTpsBestEffort(); // 实测 t/s 回写绑定表（路由真源）
+      _touchIdle(); // §7.3 空闲卸载计时重置
       await ctl.close();
     } on DioException catch (e) {
       if (CancelToken.isCancel(e)) {
