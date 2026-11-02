@@ -1,4 +1,4 @@
-/// 本地引擎 adapter —— 包裹 [InferenceService]（llama.cpp）。
+/// 本地引擎 adapter —— 包裹 [InferenceBackend]（Android JNI / Windows llama-server）。
 ///
 /// 路由：仅 local。工具调用走文本协议（由 [ToolProtocol] 注入 +
 /// [AgentStreamProcessor] 从 response 文本解析）。
@@ -13,14 +13,14 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 
 import '../../providers/agent_stream_processor.dart';
-import '../../services/inference_service.dart';
+import '../../platform/inference_backend.dart';
 import 'adapter.dart';
 import 'base_engine_adapter.dart';
 import '../capability.dart';
 import '../protocol/tool_protocol.dart';
 
 class LocalEngineAdapter extends BaseEngineAdapter {
-  final InferenceService _inference;
+  final InferenceBackend _inference;
 
   /// 思考失控守卫阈值（设置可调；默认 [kMaxThinkingChars]）。
   final int _maxThinkingChars;
@@ -32,7 +32,7 @@ class LocalEngineAdapter extends BaseEngineAdapter {
   final bool _thinkingEnabled;
 
   LocalEngineAdapter({
-    required InferenceService inference,
+    required InferenceBackend inference,
     required ToolProtocol protocol,
     EngineCapabilities? capabilities,
     int maxThinkingChars = kMaxThinkingChars,

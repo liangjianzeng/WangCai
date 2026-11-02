@@ -13,6 +13,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import '../models/model_info.dart';
+import '../platform/wangcai_paths.dart';
 
 /// 模型存储服务 — 统一管理模型文件的存储位置
 class ModelStorageService {
@@ -75,6 +76,9 @@ class ModelStorageService {
   /// `app_flutter/models`，而 app docs 目标也是 `app_flutter/models` ——
   /// 三者常是同一个物理目录，去重后通常只剩 1 个。这是正确结果，不是漏扫。
   Future<List<Directory>> candidateModelDirs() async {
+    if (Platform.isWindows) {
+      return _dedupeDirs(WangCaiPaths.modelSearchDirs().map((d) => d.path).toList());
+    }
     final paths = <String>[];
     try {
       paths.add((await getModelsRootDir()).path);
@@ -91,6 +95,8 @@ class ModelStorageService {
   /// 卷根（如 /storage/emulated/0），回退到传统的 /sdcard 软链，避免硬编码路径在
   /// 部分机型/Android 版本上失效。
   Future<String> _resolveExternalModelsDir() async {
+    // Windows（设计 §8）：模型库 = WANGCAI_MODEL_DIR 或 %APPDATA%\WangCai\models。
+    if (Platform.isWindows) return WangCaiPaths.modelsRoot().path;
     try {
       final ext = await getExternalStorageDirectory();
       if (ext != null) {
@@ -458,6 +464,11 @@ class ModelStorageService {
   Future<List<Directory>> _allCandidateDirs() async {
     final paths = <String>[];
 
+    if (Platform.isWindows) {
+      // Windows：主库 + exe 侧便携 models + 开发机构建仓库 models（存在才收）。
+      return _dedupeDirs(WangCaiPaths.modelSearchDirs().map((d) => d.path).toList());
+    }
+
     paths.add(await _resolveExternalModelsDir());
 
     // 内部存储（app_flutter/models）
@@ -522,6 +533,14 @@ class ModelStorageService {
     Future<void> scanAt(String path, {bool recursive = true}) async {
       if (!seenDirs.add(await _dedupeKeyFor(path))) return;
       await _scanDirectory(Directory(path), cachedIds, recursive: recursive);
+    }
+
+    if (Platform.isWindows) {
+      for (final d in WangCaiPaths.modelSearchDirs()) {
+        await scanAt(d.path);
+      }
+      debugPrint('[ModelStorage] Found ${cachedIds.length} cached models: $cachedIds');
+      return cachedIds.toList();
     }
 
     // 1. 扫描外部存储主目录（递归，模型通常直接放这里）

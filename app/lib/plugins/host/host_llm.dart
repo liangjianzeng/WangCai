@@ -23,7 +23,7 @@ import '../../providers/chat_provider.dart' show isGeneratingProvider, planGener
 import '../../providers/model_provider.dart' show modelManagerProvider;
 import '../../providers/settings_provider.dart';
 import '../../providers/shared_providers.dart';
-import '../../services/inference_service.dart';
+import '../../platform/inference_backend.dart';
 import '../../services/openai_service.dart';
 
 /// 聊天正在生成（本地引擎只能有一个生成流）。
@@ -108,13 +108,13 @@ abstract interface class LlmTextPort {
 /// 真机端口：路由规则与聊天/智能体**同源**（`planGenerationRoute`），不另立一套。
 final class AppLlmPort implements LlmTextPort {
   AppLlmPort(this._ref,
-      {InferenceService? inference, OpenAiService? openAi, LocalModelGate? modelGate})
+      {InferenceBackend? inference, OpenAiService? openAi, LocalModelGate? modelGate})
       : _inference = inference,
         _openAi = openAi,
         _modelGate = modelGate;
 
   final Ref _ref;
-  final InferenceService? _inference;
+  final InferenceBackend? _inference;
   final OpenAiService? _openAi;
   final LocalModelGate? _modelGate;
 
@@ -124,7 +124,7 @@ final class AppLlmPort implements LlmTextPort {
         load: (id) => _ref.read(modelManagerProvider.notifier).loadModel(id),
       );
 
-  InferenceService get _inf => _inference ?? _ref.read(inferenceServiceProvider);
+  InferenceBackend get _inf => _inference ?? _ref.read(inferenceServiceProvider);
   OpenAiService get _api => _openAi ?? _ref.read(openAiServiceProvider);
 
   @override

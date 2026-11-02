@@ -72,6 +72,10 @@ class LlamaServerHost implements EngineHost {
 
   EngineConfig? get lastConfig => _cfg;
 
+  /// 最近一次 spawn 的 args/env（诊断/M1-b「查看启动命令」）。
+  List<String>? lastSpawnArgs;
+  Map<String, String>? lastSpawnEnv;
+
   @override
   EngineStatus get status => _machine.state;
   @override
@@ -181,6 +185,8 @@ class LlamaServerHost implements EngineHost {
         engineEnv: engineEnv,
       );
 
+      lastSpawnArgs = args;
+      lastSpawnEnv = env;
       final proc = await _runner(binaryPath, args, env);
       _proc = proc;
       await _ledger.write(LedgerEntry(

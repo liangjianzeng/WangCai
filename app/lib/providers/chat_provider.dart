@@ -61,7 +61,7 @@ import '../agent/metrics/turn_metrics.dart'
     show TurnMetrics, TurnMetricsStore;
 import '../agent/session/trace_export.dart' as trace_export;
 import '../models/api_model.dart';
-import '../services/inference_service.dart';
+import '../platform/inference_backend.dart';
 import '../services/long_image_service.dart';
 import '../services/attachment_service.dart'
     show
@@ -331,7 +331,7 @@ class _ActiveTurn {
 const bool kLocalVisionSupported = true;
 
 class ChatNotifier extends StateNotifier<bool> {
-  final InferenceService _inference;
+  final InferenceBackend _inference;
   final StorageService _storage;
   final Ref _ref;
   final JsonlSessionStore _sessionStore = JsonlSessionStore();

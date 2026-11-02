@@ -6,7 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/model_info.dart';
 import '../models/model_catalog.dart';
-import '../services/inference_service.dart';
+import '../platform/inference_backend.dart';
 import '../services/model_storage_service.dart';
 import 'settings_provider.dart';
 import 'shared_providers.dart' show inferenceServiceProvider;
@@ -112,7 +112,7 @@ class ModelState {
 }
 
 class ModelManagerNotifier extends StateNotifier<ModelState> {
-  final InferenceService _inference;
+  final InferenceBackend _inference;
   final Ref _ref;
   bool _isBusy = false;
 

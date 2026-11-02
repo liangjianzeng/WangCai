@@ -3,7 +3,10 @@ import 'dart:convert';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 
-class InferenceService {
+import '../platform/inference_backend.dart';
+
+/// Android JNI 后端；Windows 用 LocalServerInference（同 [InferenceBackend] 契约）。
+class InferenceService implements InferenceBackend {
   static const _channel = MethodChannel('com.dgxspark.tongyilite/inference');
   static const _tokenChannel = EventChannel('com.dgxspark.tongyilite/tokens');
   static const _loadingLogChannel = EventChannel('com.dgxspark.tongyilite/loading_logs');

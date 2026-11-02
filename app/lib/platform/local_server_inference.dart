@@ -1,0 +1,641 @@
+// Windows 推理后端（设计 §2.3/§4）：不链 llama.cpp，进程与 token 两条路——
+// 引擎生命周期归 EngineRegistry/LlamaServerHost（manifest 驱动），token 走
+// llama-server 的 OpenAI 兼容 SSE。provider/agent/plugin 只见 InferenceBackend，
+// 与 Android JNI 实现语义对齐（见 inference_backend.dart 顶部约定）。
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
+
+import '../engine/engine_config.dart';
+import '../engine/engine_manifest.dart';
+import '../engine/engine_registry.dart';
+import '../engine/engine_status.dart' show EngineLogLine;
+import '../engine/llama_server_host.dart';
+import '../engine/process_ledger.dart';
+import 'inference_backend.dart';
+import 'wangcai_paths.dart';
+
+/// llama-server SSE chunk → UI 可见 token 流的纯逻辑状态机（可单测）。
+/// - chat 模式：content 原样透传；reasoning_content 包 think 开/闭标签，让上层
+///   既有的 think 过滤器（chat_provider / AgentStreamProcessor）无感复用；
+/// - raw 模式（/completion）：只取顶层 content；
+/// - 若 content 流自带 think 标签（模板把思考内联进 content），不再包裹，
+///   标签职责交还模型。
+class ChatSseDecoder {
+  ChatSseDecoder({this.rawMode = false});
+  final bool rawMode;
+
+  // think 标签用相邻字面量拼接构造（与 chat_provider/AgentStreamProcessor
+  // 的过滤词逐字节一致）；整体标签写进源码易被工具链当标记吞掉。
+  static const String openTag = '<' 'think' '>';
+  static const String closeTag = '<' '/think' '>';
+
+  bool _inReasoning = false;
+  bool _sawInlineTag = false;
+  Map<String, dynamic>? timings;
+  int tokens = 0;
+
+  List<String> feedChunk(Map<String, dynamic> chunk) {
+    final t = chunk['timings'];
+    if (t is Map) timings = mapTimings(Map<String, dynamic>.from(t));
+    final out = <String>[];
+    if (rawMode) {
+      final c = chunk['content'];
+      if (c is String && c.isNotEmpty) {
+        tokens++;
+        out.add(c);
+      }
+      return out;
+    }
+    final choices = chunk['choices'];
+    if (choices is! List || choices.isEmpty) return out;
+    final delta = (choices.first as Map)['delta'];
+    if (delta is! Map) return out;
+    final rc = delta['reasoning_content'];
+    if (rc is String && rc.isNotEmpty) {
+      if (!_sawInlineTag) {
+        if (!_inReasoning) out.add(openTag);
+        _inReasoning = true;
+      }
+      tokens++;
+      out.add(rc);
+    }
+    final c = delta['content'];
+    if (c is String && c.isNotEmpty) {
+      if (_inReasoning) {
+        out.add(closeTag);
+        _inReasoning = false;
+      }
+      if (!_sawInlineTag && (c.contains(openTag) || c.contains(closeTag))) {
+        _sawInlineTag = true;
+      }
+      tokens++;
+      out.add(c);
+    }
+    return out;
+  }
+
+  /// 流结束：未闭合的思考补闭标签，消费端不留悬挂 opener。
+  List<String> finish() =>
+      (_inReasoning && !_sawInlineTag) ? const [closeTag] : const [];
+
+  static Map<String, dynamic> mapTimings(Map<String, dynamic> t) {
+    // llama-server timings → {n_gen, t_gen_ms, t_prompt_ms}（native 对齐口径）。
+    final out = <String, dynamic>{};
+    final n = t['predicted_n'] ?? t['n_gen'];
+    final gen = t['predicted_ms'] ?? t['t_gen_ms'];
+    final pp = t['prompt_ms'] ?? t['t_prompt_ms'];
+    if (n is num) out['n_gen'] = n.toInt();
+    if (gen is num) out['t_gen_ms'] = gen.toInt();
+    if (pp is num) out['t_prompt_ms'] = pp.toInt();
+    return out;
+  }
+}
+
+class LocalServerInference implements InferenceBackend {
+  LocalServerInference._();
+  static final LocalServerInference instance = LocalServerInference._();
+
+  EngineRegistry? _registry;
+  LlamaServerHost? _host;
+  EngineConfig? _cfg;
+  bool _loaded = false;
+  bool _swept = false;
+
+  // set* 推送值：server 是独立进程，能落 env/参数的在 loadModel 用，其余随请求体。
+  bool _enableThinking = false;
+  String _kvType = 'q4_0';
+  bool _flashAttn = true;
+
+  StreamSubscription<EngineLogLine>? _logSub;
+  CancelToken? _cancel;
+  Map<String, dynamic> _lastStats = const {};
+
+  @override
+  void Function(String? message)? onLoadingLog;
+
+  final _dio = Dio(BaseOptions(
+    connectTimeout: const Duration(seconds: 5),
+    receiveTimeout: const Duration(minutes: 10), // 冷编/慢生成期不断流
+  ));
+
+  void _log(String? m) {
+    try {
+      onLoadingLog?.call(m);
+    } catch (_) {}
+  }
+
+  // ── 引擎装配 ──────────────────────────────────────────────────────────
+
+  Future<EngineRegistry> _ensureRegistry() async {
+    final existing = _registry;
+    if (existing != null) return existing;
+    final paths = WangCaiPaths.enginePaths();
+    final reg = EngineRegistry.dev(
+      paths: paths,
+      wangcaiServerExe: WangCaiPaths.wangcaiServerExe() ?? 'llama-server.exe',
+      ovLibsDirs: WangCaiPaths.ovLibsDirs(),
+    );
+    await reg.load();
+    if (!_swept) {
+      _swept = true;
+      try {
+        // 账本扫孤儿（M0-3 附 实测：杀外壳必留孤儿 llama-server 占端口/内存）。
+        for (final o in await ProcessLedger(paths).sweep(killOrphans: true)) {
+          debugPrint('[LocalServer] 清理上次崩溃遗留进程 pid=${o.pid} port=${o.port}');
+        }
+      } catch (e) {
+        debugPrint('[LocalServer] ledger sweep failed: $e');
+      }
+    }
+    return _registry = reg;
+  }
+
+  String? _pickInstance(EngineRegistry reg) {
+    for (final id in ['wangcai-npu']) {
+      final inst = reg.instance(id);
+      if (inst != null && inst.enabled && reg.manifestOf(id).kind != 'remote') {
+        return id;
+      }
+    }
+    for (final inst in reg.instances) {
+      if (inst.enabled && reg.manifestOf(inst.id).kind != 'remote') return inst.id;
+    }
+    return null;
+  }
+
+  Preset? _matchPreset(EngineManifest manifest, String modelPath) {
+    final base = _basename(modelPath);
+    for (final p in manifest.presets) {
+      final glob = p.modelGlob;
+      if (glob == null) continue;
+      final pattern = glob
+          .split('')
+          .map((c) => c == '*' ? '.*' : (c == '?' ? '.' : RegExp.escape(c)))
+          .join();
+      if (RegExp('^$pattern\$', caseSensitive: false).hasMatch(base)) return p;
+    }
+    return null;
+  }
+
+  @override
+  Future<void> initialize() async {
+    await _ensureRegistry(); // 幂等；仅装配 registry + 清孤儿，不拉进程
+  }
+
+  @override
+  Future<bool> loadModel(
+    String path, {
+    int nCtx = 4096,
+    bool enableGpu = true,
+    int gpuLayers = 20,
+    String gpuBackend = 'auto',
+    bool enableMtp = false,
+    String? mmprojPath,
+    String? draftPath,
+    int nUbatch = 0,
+    bool vkNoSubgroup = false,
+    String? moeManifest,
+    int moeBank = 0,
+    int moeSlotBytes = 0,
+    int moeExpertsBytes = 0,
+    int moeResidentBytes = 0,
+  }) async {
+    try {
+      await stopGeneration(); // 换载前掐掉在飞生成
+      final reg = await _ensureRegistry();
+      final instId = _pickInstance(reg);
+      if (instId == null) {
+        _log('⛔ 没有可用引擎实例（%APPDATA%\\WangCai\\engines.json）');
+        return false;
+      }
+      final manifest = reg.manifestOf(instId);
+      final host = reg.hostOf(instId) as LlamaServerHost;
+      _host = host; // 失败也要可取证（debugHost / UI 读状态与日志）
+
+      final preset = _matchPreset(manifest, path);
+      if (gpuBackend != 'auto' && gpuBackend.isNotEmpty) {
+        _log('ℹ️ Windows 侧设备由引擎实例决定（M2 路由接管），忽略 gpuBackend=$gpuBackend');
+      }
+      final cfg = EngineConfig(
+        engineId: instId,
+        modelPath: path,
+        mmprojPath: mmprojPath,
+        // 调用方（设置页 contextSize）是用户显式意图，优先；preset 只兜默认。
+        // （「自动」档位归 M1-b：设置里给「跟随预设」选项。）
+        ctx: nCtx > 0 ? nCtx : (preset?.ctx ?? 1024),
+        chunk: preset?.chunk,
+        device: preset?.device ?? 'NPU',
+        gpuLayers: preset?.gpuLayers,
+        presetName: preset?.name,
+        paramsB: preset?.paramsB,
+      );
+      final violations = manifest.checkAdmission(ctx: cfg.ctx, paramsB: cfg.paramsB);
+      if (violations.isNotEmpty) {
+        for (final v in violations) {
+          _log('⛔ $v');
+        }
+        return false; // 前置拦截（设计 §4.1），不等 server 崩
+      }
+
+      _log('引擎: ${manifest.display} · ${_basename(path)} · '
+          'ctx=${cfg.ctx} chunk=${cfg.chunk ?? '默认'} device=${cfg.device} '
+          'cache=${reg.paths.cacheDirFor(cfg.profileId).path}');
+      await _logSub?.cancel();
+      _logSub = host.logs.listen((l) => _log(l.text), onError: (_) {});
+
+      await host.start(cfg);
+      final ok = await host.waitReady(Duration(
+          milliseconds: manifest.timingHints.coldCompileMs + 120000));
+      if (!ok) {
+        _loaded = false;
+        _log('❌ 引擎未就绪: ${host.status.error ?? host.status.phase.name}');
+        unawaited(host.stop());
+        return false;
+      }
+      _cfg = cfg;
+      _loaded = true;
+      reg.instance(instId)!.lastConfig = cfg;
+      unawaited(reg.save().catchError((Object _) {}));
+      _log('✅ 引擎就绪: ${host.baseUrl}');
+      return true;
+    } catch (e) {
+      _log('❌ 模型加载异常: $e');
+      _loaded = false;
+      return false;
+    }
+  }
+
+  @override
+  Future<void> unloadModel() async {
+    await stopGeneration();
+    await _logSub?.cancel();
+    _logSub = null;
+    await _host?.stop();
+    _loaded = false;
+  }
+
+  // ── 设置推送（server 侧语义：加载参数在 start 落，请求参数随 body）────
+  @override
+  Future<void> setOomGuard({
+    required bool enabled,
+    int preHeadroomMb = 768,
+    int postHeadroomMb = 1536,
+  }) async {
+    // Windows 对应物 = manifest admission（loadModel 前置拦截），此处仅记录。
+    debugPrint('[LocalServer] oomGuard=$enabled (admission 承担守卫职责)');
+  }
+
+  @override
+  Future<void> setKvCacheType(String type) async {
+    _kvType = type; // llamacpp 驱动（M2）渲染 -ctk 时用；NPU 后端由 OV 管理
+  }
+
+  @override
+  Future<void> setFlashAttn(bool enabled) async {
+    _flashAttn = enabled;
+    if (!enabled) {
+      debugPrint('[LocalServer] 汪柴 NPU 硬约束 -fa 1，FA 开关忽略');
+    }
+  }
+
+  @override
+  Future<void> setEnableThinking(bool enable) async => _enableThinking = enable;
+
+  @override
+  Future<void> resetContext() async {
+    // llama-server 每次请求重建上下文（无追加式 KV 复用），无需清缓存。
+  }
+
+  @override
+  Future<bool> isLoaded() async => _loaded && _isReady();
+
+  @override
+  Future<bool> isModelLoaded() async => _loaded && _isReady();
+
+  bool _isReady() {
+    final h = _host;
+    return h != null && h.baseUrl != null;
+  }
+
+  /// 诊断与 M1-b UI：当前绑定的引擎宿主（未加载/失败后仍可读状态、日志、spawn 现场）。
+  LlamaServerHost? debugHost() => _host;
+
+  /// 诊断：引擎注册表（M1-b 引擎管理页用）。
+  Future<EngineRegistry> registry() => _ensureRegistry();
+
+  @override
+  Future<Map<String, dynamic>> getModelInfo() async => {
+        'path': _cfg?.modelPath ?? '',
+        'n_ctx': _cfg?.ctx ?? 0,
+        'engine': _cfg?.engineId ?? '',
+        'device': _cfg?.device ?? '',
+      };
+
+  @override
+  Future<Map<String, int>> getMemoryInfo() async {
+    // M1 暂缺 Windows 内存快照（面板对空 Map 容错）；M2 用 GlobalMemoryStatusEx FFI。
+    return const {};
+  }
+
+  @override
+  Future<Map<String, dynamic>> getInferenceStats() async => _lastStats;
+
+  @override
+  Future<Map<String, String>> getDeviceInfo() async => const {
+        'board': 'pc', 'hardware': '', 'socManufacturer': '', 'socModel': '',
+        'manufacturer': '', 'model': '',
+      };
+
+  // ── 生成 ──────────────────────────────────────────────────────────────
+
+  @override
+  Stream<String> completionWithMessages({
+    required String prompt,
+    required String messagesJson,
+    String? imagePath,
+    List<String>? imagePaths,
+    String? audioPath,
+    int maxTokens = 2048,
+    double temperature = 0.7,
+    double topP = 0.9,
+  }) {
+    if (!_isReady()) {
+      return Stream.error(StateError('模型未加载，请先在模型管理页加载模型'));
+    }
+    final List<Map<String, dynamic>> msgs;
+    try {
+      msgs = _decodeMessages(messagesJson);
+    } catch (e) {
+      return Stream.error(e);
+    }
+    if (prompt.trim().isNotEmpty) {
+      msgs.add({'role': 'user', 'content': prompt});
+    }
+    if (audioPath != null) {
+      _log('⚠️ Windows 语音输入未接入（M3），本条忽略音频');
+    }
+    final images = <String>[
+      if (imagePath != null) imagePath,
+      ...?imagePaths,
+    ];
+    return _postChat(msgs,
+        images: images,
+        maxTokens: maxTokens,
+        temperature: temperature,
+        topP: topP);
+  }
+
+  @override
+  Stream<String> completion({
+    required String prompt,
+    int maxTokens = 2048,
+    double temperature = 0.7,
+    double topP = 0.9,
+  }) {
+    if (!_isReady()) return Stream.error(StateError('模型未加载'));
+    return _postRawCompletion(prompt,
+        maxTokens: maxTokens, temperature: temperature, topP: topP);
+  }
+
+  @override
+  Future<String> complete({
+    required String prompt,
+    int maxTokens = 2048,
+    double temperature = 0.7,
+    double topP = 0.9,
+  }) async {
+    if (!_isReady()) throw StateError('模型未加载');
+    final res = await _dio.post<Map<String, dynamic>>(
+      '${_host!.baseUrl}/completion',
+      data: {
+        'prompt': prompt,
+        'n_predict': maxTokens,
+        'temperature': temperature,
+        'top_p': topP,
+        'stream': false,
+      },
+    );
+    final content = res.data?['content'];
+    return content is String ? content : '';
+  }
+
+  @override
+  Future<void> stopGeneration() async {
+    final c = _cancel;
+    _cancel = null;
+    if (c != null && !c.isCancelled) {
+      c.cancel('user_stop'); // dio 5 CancelToken.cancel 同步返回；连接断开即打断生成
+    }
+  }
+
+  // ── 语音（M3）──────────────────────────────────────────────────────────
+  @override
+  Future<bool> supportsAudio() async => false;
+  @override
+  Future<bool> startRecording() async => false;
+  @override
+  Future<String?> stopRecording() async => null;
+
+  @override
+  Future<Map<String, double>> benchmark({
+    String prompt = 'List 5 common fruits.',
+    int nRepeats = 3,
+  }) async {
+    var tpsSum = 0.0;
+    for (var i = 0; i < nRepeats; i++) {
+      final t0 = DateTime.now();
+      final out = await complete(prompt: prompt, maxTokens: 64);
+      final secs = DateTime.now().difference(t0).inMilliseconds / 1000.0;
+      if (secs > 0) tpsSum += (out.length / 4) / secs; // 粗估 token 数
+    }
+    return {'tg': tpsSum / (nRepeats <= 0 ? 1 : nRepeats), 'pp': 0};
+  }
+
+  @override
+  void dispose() {
+    unawaited(_logSub?.cancel());
+    unawaited(_registry?.dispose().catchError((Object _) {}));
+    _registry = null;
+    _host = null;
+    _loaded = false;
+  }
+
+  // ── SSE 内部 ──────────────────────────────────────────────────────────
+
+  List<Map<String, dynamic>> _decodeMessages(String messagesJson) {
+    final decoded = jsonDecode(messagesJson);
+    if (decoded is! List) throw FormatException('messagesJson 不是数组');
+    return decoded
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+  }
+
+  Stream<String> _postChat(List<Map<String, dynamic>> msgs,
+          {required List<String> images,
+          required int maxTokens,
+          required double temperature,
+          required double topP}) =>
+      _streamRequest(
+        url: '${_host!.baseUrl}/chat/completions',
+        buildBody: () async => {
+          'messages': await _attachImages(msgs, images),
+          'max_tokens': maxTokens,
+          'temperature': temperature,
+          'top_p': topP,
+          'stream': true,
+          // --jinja 下 Qwen3 类模型思考开关；LFM3 等忽略未知 kwargs。
+          'chat_template_kwargs': {'enable_thinking': _enableThinking},
+        },
+        rawMode: false,
+      );
+
+  Stream<String> _postRawCompletion(String prompt,
+          {required int maxTokens,
+          required double temperature,
+          required double topP}) =>
+      _streamRequest(
+        url: '${_host!.baseUrl}/completion',
+        buildBody: () async => {
+          'prompt': prompt,
+          'n_predict': maxTokens,
+          'temperature': temperature,
+          'top_p': topP,
+          'stream': true,
+        },
+        rawMode: true,
+      );
+
+  Future<List<Map<String, dynamic>>> _attachImages(
+      List<Map<String, dynamic>> msgs, List<String> images) async {
+    if (images.isEmpty) return msgs;
+    if (msgs.isEmpty) msgs.add({'role': 'user', 'content': ''});
+    final last = msgs.last;
+    final content = last['content'];
+    final parts = <Map<String, dynamic>>[
+      if (content is String && content.isNotEmpty)
+        {'type': 'text', 'text': content}
+      else if (content is List)
+        for (final p in content) Map<String, dynamic>.from(p as Map),
+    ];
+    for (final path in images) {
+      final f = File(path);
+      if (!await f.exists()) {
+        _log('⚠️ 图片不存在，已跳过: $path');
+        continue;
+      }
+      final b64 = base64Encode(await f.readAsBytes());
+      parts.add({
+        'type': 'image_url',
+        'image_url': {'url': 'data:${_mimeOf(path)};base64,$b64'},
+      });
+    }
+    last['content'] = parts;
+    return msgs;
+  }
+
+  Stream<String> _streamRequest({
+    required String url,
+    required Future<Map<String, dynamic>> Function() buildBody,
+    required bool rawMode,
+  }) {
+    final ctl = StreamController<String>();
+    unawaited(_runStream(ctl, url, buildBody, rawMode));
+    return ctl.stream;
+  }
+
+  Future<void> _runStream(
+    StreamController<String> ctl,
+    String url,
+    Future<Map<String, dynamic>> Function() buildBody,
+    bool rawMode,
+  ) async {
+    final cancel = CancelToken();
+    _cancel = cancel;
+    final t0 = DateTime.now();
+    _lastStats = const {}; // 上一请求的 timings 不得串台
+    final dec = ChatSseDecoder(rawMode: rawMode);
+    try {
+      final body = await buildBody();
+      final res = await _dio.post<ResponseBody>(
+        url,
+        data: body,
+        cancelToken: cancel,
+        options: Options(
+          responseType: ResponseType.stream,
+          headers: const {'Accept': 'text/event-stream'},
+        ),
+      );
+      await for (final data in sseDataLines(res.data!.stream)) {
+        if (data == '[DONE]') break;
+        Map<String, dynamic> chunk;
+        try {
+          chunk = jsonDecode(data) as Map<String, dynamic>;
+        } catch (_) {
+          continue; // 容忍半行/坏行：SSE 断线重连与分块边界的常态
+        }
+        for (final piece in dec.feedChunk(chunk)) {
+          ctl.add(piece);
+        }
+      }
+      for (final piece in dec.finish()) {
+        ctl.add(piece);
+      }
+      _lastStats = dec.timings ??
+          {
+            // server 未给 timings 时 Dart 侧兜底（口径：SSE 增量计数/挂钟）。
+            'n_gen': dec.tokens,
+            't_gen_ms': DateTime.now().difference(t0).inMilliseconds,
+            't_prompt_ms': 0,
+          };
+      await ctl.close();
+    } on DioException catch (e) {
+      if (CancelToken.isCancel(e)) {
+        await ctl.close(); // 用户主动停止：静默收尾（与 Android 语义一致）
+      } else {
+        ctl.addError(_describeDio(e));
+        await ctl.close();
+      }
+    } catch (e) {
+      ctl.addError(e);
+      await ctl.close();
+    } finally {
+      if (identical(_cancel, cancel)) _cancel = null;
+    }
+  }
+
+  /// SSE `data:` 行流（容忍非 utf8 字节与断行）。公开以便单测直接喂字节。
+  static Stream<String> sseDataLines(Stream<List<int>> raw) async* {
+    final lines = const Utf8Decoder(allowMalformed: true)
+        .bind(raw)
+        .transform(const LineSplitter());
+    await for (final line in lines) {
+      final t = line.trim();
+      if (t.startsWith('data:')) yield t.substring(5).trim();
+    }
+  }
+
+  StateError _describeDio(DioException e) {
+    final code = e.response?.statusCode;
+    final detail = e.response?.data is Map ? e.response!.data['error'] : null;
+    return StateError('引擎请求失败(${e.type.name}${code != null ? ' http=$code' : ''}): '
+        '${detail ?? e.message}');
+  }
+}
+
+String _basename(String path) {
+  final i = path.replaceAll('\\', '/').lastIndexOf('/');
+  return i < 0 ? path : path.substring(i + 1);
+}
+
+String _mimeOf(String path) {
+  final p = path.toLowerCase();
+  if (p.endsWith('.png')) return 'image/png';
+  if (p.endsWith('.webp')) return 'image/webp';
+  if (p.endsWith('.gif')) return 'image/gif';
+  if (p.endsWith('.bmp')) return 'image/bmp';
+  return 'image/jpeg';
+}

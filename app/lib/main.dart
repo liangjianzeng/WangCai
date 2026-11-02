@@ -12,7 +12,7 @@ import 'providers/agent_approval.dart'
     show sandboxApproverProvider, toolPreApproverProvider;
 import 'providers/settings_provider.dart' show settingsProvider;
 import 'screens/home_screen.dart';
-import 'services/inference_service.dart';
+import 'platform/inference_gateway.dart';
 import 'services/measure_cmd.dart';
 import 'services/model_manager.dart';
 import 'asr/sherpa_streaming_asr.dart';
@@ -244,11 +244,11 @@ class _AppStartupGateState extends ConsumerState<AppStartupGate> {
           '[Main] Failed to load model catalog, continuing with empty list: $e');
     }
 
-    // 初始化原生推理引擎 — 必须在首次使用 llama.cpp API 前调用。
-    // llama_backend_init() 是线程安全的，多次调用无副作用。
+    // 初始化推理引擎（Android=llama_backend_init 幂等；Windows=装配引擎注册表
+    // + 账本扫孤儿，见 inference_gateway.dart）。
     try {
-      await InferenceService().initialize();
-      debugPrint('[Main] Native inference engine initialized');
+      await initInferenceEngine();
+      debugPrint('[Main] Inference engine initialized');
     } catch (e) {
       debugPrint('[Main] Failed to initialize native engine: $e');
     }

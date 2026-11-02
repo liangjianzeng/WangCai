@@ -23,7 +23,7 @@ import '../providers/model_provider.dart';
 import '../providers/settings_provider.dart' show settingsProvider;
 import '../services/attachment_service.dart'
     show kMaxAttachments, kSupportedExtensions;
-import '../services/inference_service.dart';
+import '../platform/inference_gateway.dart';
 import '../providers/shared_providers.dart';
 import '../providers/context_usage_provider.dart' show contextUsageProvider;
 import '../models/agent_persona.dart' show AgentPersona, kStandardPersonaId;
@@ -215,7 +215,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // 直接进首页后，本页自动加载可能先于启动门控的 InferenceService.initialize()
     // 完成；llama_backend_init 幂等（多次调用无副作用），先确保原生引擎就绪。
     try {
-      await InferenceService().initialize();
+      await initInferenceEngine();
     } catch (e) {
       debugPrint('[Home] InferenceService init failed, skipping auto-load: $e');
       return;
@@ -3859,8 +3859,9 @@ class _ModelStatusSheet extends StatelessWidget {
 
 /// Live memory-usage panel shown inside the model-status sheet.
 ///
-/// Polls [InferenceService.getMemoryInfo] every 2s so the user can watch
-/// system RAM pressure and llama.cpp (in-process) memory while generating.
+/// Polls the inference backend's getMemoryInfo every 2s so the user can watch
+/// system RAM pressure and engine memory while generating (Windows 侧 M1 返回
+/// 空数据，面板显示"未返回"提示，M2 补 GlobalMemoryStatusEx FFI)。
 /// Colors: green = comfortable, orange = tight, red = critical.
 class _MemoryPanel extends StatefulWidget {
   final WidgetRef ref;
