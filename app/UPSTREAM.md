@@ -37,6 +37,7 @@
 | 7 | `test/plugins/plugin_host_dispose_test.dart` tearDown | 临时目录递归删除加 20×50ms 重试 | Windows 迟写文件与删除竞争（errno 145），上游 Android 无此现象 |
 | 8 | `lib/screens/settings_screen.dart` 推理引擎 Tab 顶部 | 仅插 2 行：import + `if (Platform.isWindows) const EngineManagerSection()`；新 UI 全部在新增文件 `lib/screens/engine_manager_section.dart` | 设计 §2.3 M1-b，最小化与上游 diff |
 | 9 | `lib/providers/settings_provider.dart` `_load`/`_persist` | 共约 8 行：API key 迁安全存储+内存叠加（_load）、落盘前清洗（_persist）；实现全在新增件 `lib/services/api_key_store.dart` | 设计 §6.1，密钥不落 settings JSON 明文 |
+| 10 | vendored 接线总账（M1-c 起） | `lib/main.dart`+`lib/screens/home_screen.dart`（initInferenceEngine 门控初始化）；`lib/providers/shared_providers.dart`（inferenceServiceProvider 类型改 InferenceBackend）；`lib/providers/chat_provider.dart`/`model_provider.dart`/`lib/plugins/local_adapter.dart`/`lib/agent/llm/host_llm.dart`（类型换 InferenceBackend）；`lib/services/inference_service.dart`（implements InferenceBackend）；`lib/services/model_storage_service.dart`（4 处 Platform.isWindows 分支走 WangCaiPaths） | 设计 §2.3 D2/D3：平台分支唯一化到 inference_gateway |
 
 ## M0 实测记入的上游债务（非移植回归，上游同跑同挂）
 

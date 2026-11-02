@@ -67,3 +67,7 @@ CLAUDE.md
 *.rej
 tmp/
 .envrc.local
+
+# 引擎商店离线包与上传暂存（不入库）
+tmp_store/
+.zcode-uploads/
