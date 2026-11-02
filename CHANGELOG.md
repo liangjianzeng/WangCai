@@ -25,13 +25,16 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   回写）✓ / Vulkan 双卡（Intel iGPU + RTX 5060 Ti）✓ / 远端协议 ✓
   （`app/test/platform/m2_dod_test.dart`）。
 - **M3 驻留**：托盘（关窗=隐藏，M0-2 模式）、电源感知（FFI GetSystemPowerStatus
-  → 拔电 NPU 加权）、HKCU 自启；多模态链路（mmproj 渲染/image_url 组包）管线
-  验证 + **NPU 视觉编码缺陷归档**（`docs/defect-npu-mtmd.md`：OV 后端
-  graph_compute -1，识图 DoD 归官方引擎线）。
+  → 拔电 NPU 加权）、HKCU 自启；**识图 DoD 达成**（官方引擎线）：SmolVLM2-500M
+  （hf-mirror 下载入模型库）+ 商店 CUDA 引擎，壳网关 20s 全链路出准确语义描述
+  （`app/test/platform/vision_official_test.dart`）；NPU 视觉编码缺陷归档
+  （`docs/defect-npu-mtmd.md`：OV 后端 graph_compute -1，NPU 线做纯文本）。
 - **M4 Agent 回归 + 安装包**：LFM3 --jinja 工具链全链路真机复归（tools/
   tool_calls/tool 结果 200；此前 agent 400 定案为 ctx 超限非协议缺陷，agent
-  c4096 正常回合）；Inno Setup 安装脚本（每用户安装 + 引擎合包 + 引擎二级
-  解析 `engines/wangcai`）。⬜ 干净机装机验证待人工（`packaging/README.md`）。
+  c4096 正常回合）；打包脚本双产出——便携包 `WangCai-0.0.2-win-x64-portable.zip`
+  （App+引擎合包，干净进程自测 DLL 闭合通过；实案：漏 mtmd.dll/impl.dll 均
+  0xC0000135）+ Inno Setup 脚本（每用户安装，装 ISCC 后一键出 Setup.exe）。
+  ⬜ 干净机装机验证待人工（`packaging/README.md`）。
 
 ### 新增 —— 跨模型验证（副靶 Spark-X2.6-4B + Qwen3-4B 复测）
 
