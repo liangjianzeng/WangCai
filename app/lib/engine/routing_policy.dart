@@ -127,10 +127,13 @@ RoutingDecision chooseEngine(RoutingRequest req) {
     }
     if (bound.isEmpty) return null;
     bound.sort((a, b) {
-      // 实测优先：有 t/s 的按降序，没有的排其后按设备启发。
+      // 无实测（未知）先于有实测：新装引擎必须先跑出第一次实测，否则
+      // 「有实测的慢引擎永久压制新装快引擎」死锁（2026-11-03 实案：NPU
+      // 5 t/s 的历史实测压死新装 CUDA）。无实测之间按设备启发；都有实测
+      // 按 t/s 降序。
+      if (a.tps == null && b.tps != null) return -1;
+      if (a.tps != null && b.tps == null) return 1;
       if (a.tps != null && b.tps != null) return b.tps!.compareTo(a.tps!);
-      if (a.tps != null) return -1;
-      if (b.tps != null) return 1;
       return a.c.deviceRank.compareTo(b.c.deviceRank);
     });
     return RoutingDecision(

@@ -403,7 +403,13 @@ class LocalServerInference implements InferenceBackend {
         mmprojPath: mmprojPath,
         ctx: ctx,
         chunk: preset?.chunk,
-        device: preset?.device ?? 'NPU',
+        // device 只对 OV 设备族有意义；llamacpp 驱动由 server 自己挑
+        // （--list-devices 枚举），不伪造 'NPU' 误导日志/指纹。
+        device: preset?.device ??
+            (manifest.capabilities.devices
+                    .any((d) => d.toUpperCase().contains('NPU'))
+                ? 'NPU'
+                : null),
         gpuLayers: preset?.gpuLayers,
         presetName: preset?.name,
         paramsB: preset?.paramsB,
@@ -423,8 +429,11 @@ class LocalServerInference implements InferenceBackend {
       _logSub = host.logs.listen((l) => _log(l.text), onError: (_) {});
 
       await host.start(cfg);
+      // mmproj（视觉塔）入场时首编预算远超纯文本（实测 Omni-2B+c4096 ≈310s），
+      // slack 加到 7 分钟；纯文本维持 +120s。
       final ok = await host.waitReady(Duration(
-          milliseconds: manifest.timingHints.coldCompileMs + 120000));
+          milliseconds: manifest.timingHints.coldCompileMs +
+              (cfg.mmprojPath != null ? 420000 : 120000)));
       if (!ok) {
         _loaded = false;
         _log('❌ 引擎未就绪: ${host.status.error ?? host.status.phase.name}');

@@ -40,8 +40,24 @@ class StoreRelease {
 }
 
 /// 版本白名单（设计 §5.1：manifest 钉「已验证版本」，UI 一键装/升/回滚）。
-/// 装机验证过的才进表；sha256 从官方 release SHA256SUMS 抄录。
+/// 装机验证过的才进表；sha256 为官方 release 包实算（2026-11-03 钉 b12034）。
 class StoreCatalog {
+  /// 装机验证集（官方 ggml-org/llama.cpp release b12034）。
+  static const StoreCatalog verified = StoreCatalog([
+    StoreRelease(
+      version: 'b12034',
+      variant: 'vulkan',
+      assetName: 'llama-b12034-bin-win-vulkan-x64.zip',
+      sha256: 'df6ab37942d02aeb8ab3de5984711ea866826a94d50f7a9c5960a0d18a9d4269',
+    ),
+    StoreRelease(
+      version: 'b12034',
+      variant: 'cuda',
+      assetName: 'llama-b12034-bin-win-cuda-12.4-x64.zip',
+      sha256: '9ccf4900c6d41e0e27b58d2f6db190918c89c83e26a62565f325ae5f36a3c0d4',
+    ),
+  ]);
+
   const StoreCatalog(this.releases);
 
   final List<StoreRelease> releases;
@@ -279,12 +295,20 @@ class EngineStore {
     return parseNvidiaSmi(r.stdout);
   }
 
-  /// `--list-devices` 行解析：兼容两种官方措辞。
+  /// `--list-devices` 行解析：官方措辞两种都收（2026-11-03 b12034 实测：
+  /// `Vulkan0: Intel(R) Graphics (27651 MiB, ...)`；旧版 `Device 0: "name"`）。
   static List<String> parseListDevices(String out) {
     final names = <String>[];
     for (final line in const LineSplitter().convert(out)) {
-      final m = RegExp(r'Device\s+\d+:\s*"?([^"\n]+?)"?\s*$').firstMatch(line.trim());
-      if (m != null) names.add(m.group(1)!.trim());
+      final t = line.trim();
+      final m = RegExp(r'^(?:Vulkan|Device)\s*(\d+):\s*(.+)$').firstMatch(t);
+      if (m == null) continue;
+      var name = m.group(2)!.trim();
+      // 去掉尾部显存标注与引号：`Name (16050 MiB, 15282 MiB free)` → `Name`
+      final parens = name.indexOf(' (');
+      if (parens > 0 && name.endsWith(')')) name = name.substring(0, parens);
+      name = name.replaceAll('"', '').trim();
+      if (name.isNotEmpty) names.add(name);
     }
     return names;
   }
@@ -317,7 +341,11 @@ class _CaptureSink implements Sink<Digest> {
 
 Future<CmdResult?> _realRunner(String exe, List<String> args) async {
   try {
-    final pr = await Process.run(exe, args).timeout(const Duration(seconds: 20));
+    // cwd = exe 所在目录：引擎 exe 依赖同目录 DLL/运行时（2026-11-03 实测：
+    // flutter_tester cwd 下 --list-devices 的 Vulkan 枚举空手而归）。
+    final pr = await Process.run(exe, args,
+            workingDirectory: File(exe).parent.path)
+        .timeout(const Duration(seconds: 20));
     return CmdResult(pr.exitCode, '${pr.stdout}', '${pr.stderr}');
   } catch (_) {
     return null; // 命令不存在/超时 = 探测失败（调用方按不可用处理）

@@ -124,15 +124,25 @@ void main() {
   });
 
   group('探测解析（§5.2）', () {
-    test('--list-devices 行 → 设备名列表', () {
-      const out = '''
+    test('--list-devices 行 → 设备名列表（新旧两种官方措辞）', () {
+      const legacy = '''
 Available devices:
   Device 0: "NVIDIA GeForce RTX 5060 Ti"
   Device 1: "Intel(R) UHD Graphics"
 ''';
-      expect(EngineStore.parseListDevices(out), [
+      expect(EngineStore.parseListDevices(legacy), [
         'NVIDIA GeForce RTX 5060 Ti',
         'Intel(R) UHD Graphics',
+      ]);
+      // b12034 实测格式（含显存标注尾巴）。
+      const modern = '''
+Available devices:
+  Vulkan0: Intel(R) Graphics (27651 MiB, 27651 MiB free)
+  Vulkan1: NVIDIA GeForce RTX 5060 Ti (16050 MiB, 15282 MiB free)
+''';
+      expect(EngineStore.parseListDevices(modern), [
+        'Intel(R) Graphics',
+        'NVIDIA GeForce RTX 5060 Ti',
       ]);
       expect(EngineStore.parseListDevices('no devices here'), isEmpty);
     });

@@ -39,13 +39,14 @@ void main() {
       expect(d.reason, contains('设备启发'));
     });
 
-    test('部分有实测：实测排前（哪怕比启发项慢）', () {
+    test('部分有实测：无实测者按启发先试跑（语义 2026-11-03 修正）', () {
       final d = chooseEngine(RoutingRequest(
         tier: RoutingTier.speedFirst,
         candidates: all4,
         bindings: [b(vulkan, tps: 3)],
       ));
-      expect(d.instanceId, 'llamacpp-vulkan');
+      expect(d.instanceId, 'llamacpp-cuda',
+          reason: 'CUDA 无实测且启发位次最高 → 先试跑出新实测');
     });
 
     test('CUDA 未装：退 Vulkan', () {
@@ -54,6 +55,16 @@ void main() {
       final d = chooseEngine(RoutingRequest(
           tier: RoutingTier.speedFirst, candidates: installed));
       expect(d.instanceId, 'llamacpp-vulkan');
+    });
+
+    test('无实测新引擎先于有实测慢引擎（防死锁：先跑出第一次实测）', () {
+      final d = chooseEngine(RoutingRequest(
+        tier: RoutingTier.speedFirst,
+        candidates: all4,
+        bindings: [b(npu, tps: 5)], // NPU 有历史实测；CUDA 新装无实测
+      ));
+      expect(d.instanceId, 'llamacpp-cuda',
+          reason: 'CUDA deviceRank 更高且无实测 → 先试跑，不得被 NPU 历史实测压死');
     });
   });
 
@@ -71,7 +82,7 @@ void main() {
       final d = chooseEngine(RoutingRequest(
         tier: RoutingTier.npuFirst,
         candidates: all4,
-        bindings: [b(cuda, tps: 42)],
+        bindings: [b(cuda, tps: 42), b(vulkan, tps: 12)],
         blocked: {npu.instanceId: '4B@c>512 OUT_OF_HOST_MEMORY，建议 ctx≤512 或改 CUDA'},
       ));
       expect(d.instanceId, 'llamacpp-cuda');
@@ -82,7 +93,11 @@ void main() {
       final d = chooseEngine(RoutingRequest(
         tier: RoutingTier.npuFirst,
         candidates: all4,
-        bindings: [b(npu, status: BindingStatus.broken), b(cuda, tps: 42)],
+        bindings: [
+          b(npu, status: BindingStatus.broken),
+          b(cuda, tps: 42),
+          b(vulkan, tps: 12),
+        ],
       ));
       expect(d.instanceId, 'llamacpp-cuda');
     });
@@ -93,7 +108,7 @@ void main() {
       final d = chooseEngine(RoutingRequest(
         tier: RoutingTier.auto,
         candidates: all4,
-        bindings: [b(npu, tps: 7), b(cuda, tps: 42)],
+        bindings: [b(npu, tps: 7), b(cuda, tps: 42), b(vulkan, tps: 12)],
       ));
       expect(d.instanceId, 'llamacpp-cuda');
     });
