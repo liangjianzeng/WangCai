@@ -15,16 +15,18 @@ import 'engine_paths.dart';
 
 class StoreRelease {
   const StoreRelease({
-    required this.version, // 'b6010'
+    required this.version, // 'b12034'
     required this.variant, // 'vulkan' | 'cuda'
-    required this.sha256, // 官方 SHA256SUMS 钉死（白名单数据，不是代码）
+    required this.assetName, // 官方资产名（带 cuda 版本段，如
+    // 'llama-b12034-bin-win-cuda-12.4-x64.zip'）—— 数据不是模板，官方命名会变。
+    required this.sha256, // 官方包实算钉死（白名单数据，不是代码）
   });
 
   final String version;
   final String variant;
+  final String assetName;
   final String sha256;
 
-  String get assetName => 'llama-$version-bin-win-$variant-x64.zip';
   String get installDirName => 'llamacpp-$version-$variant';
   String githubUrl({String repo = 'ggml-org/llama.cpp'}) =>
       'https://github.com/$repo/releases/download/$version/$assetName';
@@ -51,6 +53,7 @@ class StoreCatalog {
         StoreRelease(
           version: '${e['version']}',
           variant: '${e['variant']}',
+          assetName: '${e['assetName'] ?? 'llama-${e['version']}-bin-win-${e['variant']}-x64.zip'}',
           sha256: '${e['sha256']}'.toLowerCase(),
         ),
     ]);
@@ -59,7 +62,12 @@ class StoreCatalog {
   Map<String, dynamic> toJson() => {
         'releases': [
           for (final r in releases)
-            {'version': r.version, 'variant': r.variant, 'sha256': r.sha256},
+            {
+              'version': r.version,
+              'variant': r.variant,
+              'assetName': r.assetName,
+              'sha256': r.sha256,
+            },
         ],
       };
 

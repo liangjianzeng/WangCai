@@ -39,24 +39,30 @@ void main() {
   tearDown(() => _rm(tmp));
 
   group('StoreCatalog / URL', () {
-    test('find/latest 与镜像 URL 拼接', () {
+    test('find/latest 与镜像 URL 拼接（assetName 显式数据，含缺省推导）', () {
       final cat = StoreCatalog.fromJson({
         'releases': [
-          {'version': 'b6010', 'variant': 'vulkan', 'sha256': 'aa'},
+          {'version': 'b6010', 'variant': 'vulkan', 'sha256': 'aa'}, // 无 assetName → 推导
           {'version': 'b6100', 'variant': 'vulkan', 'sha256': 'bb'},
-          {'version': 'b6100', 'variant': 'cuda', 'sha256': 'cc'},
+          {
+            'version': 'b6100',
+            'variant': 'cuda',
+            'assetName': 'llama-b6100-bin-win-cuda-12.4-x64.zip',
+            'sha256': 'cc',
+          },
         ],
       });
       expect(cat.find('b6010', 'vulkan')!.sha256, 'aa');
+      expect(cat.find('b6010', 'vulkan')!.assetName, 'llama-b6010-bin-win-vulkan-x64.zip');
       expect(cat.latest('vulkan')!.version, 'b6100');
       expect(cat.latest('cuda')!.version, 'b6100');
       final r = cat.find('b6100', 'cuda')!;
-      expect(r.assetName, 'llama-b6100-bin-win-cuda-x64.zip');
+      expect(r.assetName, 'llama-b6100-bin-win-cuda-12.4-x64.zip');
       final urls = r.downloadUrls(mirrorPrefixes: ['https://ghproxy.example/']);
       expect(urls.first,
-          'https://github.com/ggml-org/llama.cpp/releases/download/b6100/llama-b6100-bin-win-cuda-x64.zip');
+          'https://github.com/ggml-org/llama.cpp/releases/download/b6100/llama-b6100-bin-win-cuda-12.4-x64.zip');
       expect(urls[1],
-          'https://ghproxy.example/github.com/ggml-org/llama.cpp/releases/download/b6100/llama-b6100-bin-win-cuda-x64.zip');
+          'https://ghproxy.example/github.com/ggml-org/llama.cpp/releases/download/b6100/llama-b6100-bin-win-cuda-12.4-x64.zip');
     });
   });
 
@@ -68,7 +74,7 @@ void main() {
         await File(dest).writeAsBytes(zip);
       });
       final res = await store
-          .install(StoreRelease(version: 'b1', variant: 'vulkan', sha256: good));
+          .install(StoreRelease(version: 'b1', variant: 'vulkan', assetName: 'llama-b1-bin-win-vulkan-x64.zip', sha256: good));
       expect(res.ok, isTrue, reason: res.error);
       expect(File(res.serverExe!).existsSync(), isTrue);
       expect(
@@ -84,7 +90,7 @@ void main() {
         await File(dest).writeAsBytes(zip);
       });
       final res = await store.install(
-          StoreRelease(version: 'b1', variant: 'vulkan', sha256: 'deadbeef'));
+          StoreRelease(version: 'b1', variant: 'vulkan', assetName: 'llama-b1-bin-win-vulkan-x64.zip', sha256: 'deadbeef'));
       expect(res.ok, isFalse);
       expect(res.error, contains('sha256'));
       expect(await File('${res.dir}.zip.tmp').exists(), isFalse);
@@ -100,7 +106,7 @@ void main() {
         await File(dest).writeAsBytes(zip);
       });
       final res = await store.install(
-          StoreRelease(version: 'b1', variant: 'vulkan', sha256: good),
+          StoreRelease(version: 'b1', variant: 'vulkan', assetName: 'llama-b1-bin-win-vulkan-x64.zip', sha256: good),
           mirrorPrefixes: ['https://mirror.example']);
       expect(res.ok, isTrue, reason: res.error);
       expect(tried, hasLength(2));
@@ -111,7 +117,7 @@ void main() {
         throw Exception('网络不可达');
       });
       final res = await store
-          .install(StoreRelease(version: 'b1', variant: 'cuda', sha256: 'x'));
+          .install(StoreRelease(version: 'b1', variant: 'cuda', assetName: 'llama-b1-bin-win-cuda-x64.zip', sha256: 'x'));
       expect(res.ok, isFalse);
       expect(res.error, contains('镜像'));
     });
