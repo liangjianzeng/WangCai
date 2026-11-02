@@ -75,8 +75,9 @@
 ### 下一轮候选（按优先级，2026-11-02 更新）
 1. **性能主攻继续**：视觉吞吐已修复（542 ms）；回 4B decode / prefill 剩余杠杆
    （HANDOFF 性能轮清单）；LLM 图启动/导入时间也在此列（与上游 bank-aware import 同族）。
-2. 上游：NPUW bank-aware blob import（热启动 <5 s）；NPUW FOLD×FUNCALL bug 报告；
-   NPUW 缓存不覆盖 baked-Constants 图（本轮新增，见下）。
+2. 上游：**四条 NPUW/插件缺陷已写成可直接提交的报告草稿 `docs/upstream-npuw-report.md`**
+   （①FOLD×FUNCALL 精度损坏；②NPUW 缓存不覆盖 baked-Constants 图；③blob import 不感知
+   weights bank——热启动 <5 s 的拦路虎；④enable_profiling×blob 缓存崩溃）。待提交 GitHub。
 3. 音频 top-1 级 f16 分歧（非阻塞，复利行为同类）。
 
 ### 视觉吞吐基线 → **已定案并修复**（2026-11-02，性能轮收官）
