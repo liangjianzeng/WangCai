@@ -140,6 +140,20 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   Multiply [1,784,16,64] × [1,3136,1,64] broadcast 失败）——静态 rope lowering 的 mrope 分段
   支持列为下一工作项。
 
+### 性能 —— 引擎（4B prefill：chunk256 预算封锁证伪，bench 流 pp +55–59%）
+
+- **旧论断过时**："4B 默认 chunk 256 撞驱动主机内存预算"是三图驱逐修复前的测量。llama-bench 流
+  冷缓存实测 chunk256 全绿（Spark-X2.6-4B，新缓存目录，r≥2）：pp512 84.6→**131.5**（+55%）、
+  pp1900 41.3→**65.9**（+59%）、c8192 pp8064 42.8 可跑；decode 不变（带宽地板）。
+- **新缺陷（未决）**：同形状在 **llama-cli -st / llama-server 流** chunk256+c2048 执行期
+  `UNINITIALIZED`（levels-on/off 都崩、--no-warmup 崩；c512、1.7B、chunk128 全不崩）。已排除
+  n_batch sched 驻留（-ub 128 照崩）、warmup/jinja、level 图数、编图顺序、僵尸进程。生产配置：
+  srv 系流 chunk128，离线 bench 长 prompt chunk256。控制矩阵与遥测方案见 HANDOFF 2026-11-02 晚。
+- **引擎顺带修复**：空批次 decode（sched_reserve warmup，`attention_size_raw==0`）不再落进
+  level-0 全 ctx 图（第三张权重 bank），clamp 到最小 level；chunk128 生产路径回归通过。
+- NPUW 权重 bank 复核：`NPUW_WEIGHTS_BANK="shared"` 早已在 compile_config——插件共享不跨
+  CompiledModel 去重（与上游 issue #3 一致），无白捡的预算。
+
 ## [0.0.1] — 2026-10-31 · 汪柴首个版本
 
 基线 `abb76ab`（llama.cpp）、OpenVINO 2026.4.1。

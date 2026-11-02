@@ -1777,8 +1777,17 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     // why this never showed on LFM3).
     const bool decode_levels_active =
             !ggml_openvino_getenv_int("GGML_OPENVINO_DISABLE_DECODE_LEVELS") && !g_decode_levels_disabled.load();
-    if (is_static && !no_kv_cache && !is_prefill && c_params.attention_size_raw > 0 && decode_levels_active) {
-        decode_level = decode_attention_level(c_params.attention_size_raw, m_params.ctx_per_seq);
+    // Note there is deliberately NO attention_size_raw > 0 precondition: a decode pass with zero
+    // filled cells (llama-cli's sched_reserve/empty-batch warmup, seen after a jinja-empty
+    // conversation) previously fell through to decode_level == 0 -- the full-context baked graph.
+    // With levels on, that third graph (prefill + level-256 + full-ctx) is exactly what blew the
+    // 4B device budget on the first execute (ZE_RESULT_ERROR_UNINITIALIZED, chunk256 c2048,
+    // 2026-11-02). decode_attention_level(0, ctx) clamps to the SMALLEST level (256), which is
+    // functionally correct for an empty batch (no KV rows are written) and costs no extra bank.
+    // (decode_attention_level itself early-returns 0 for n_kv <= 0, hence the explicit clamp.)
+    if (is_static && !no_kv_cache && !is_prefill && decode_levels_active) {
+        decode_level = decode_attention_level(c_params.attention_size_raw > 0 ? c_params.attention_size_raw : 1,
+                                              m_params.ctx_per_seq);
         c_params.attention_size = decode_level;
     }
 

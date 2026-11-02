@@ -274,7 +274,16 @@ llama-server 把可用内存吃掉后，**0.98 GB 的 Omni-Q4_0 在 `-c 4096` �
 
 NPU 4B 预算：默认配置执行期 `OUT_OF_HOST_MEMORY`（驱动侧）；chunk128+禁 levels 可跑。
 配置与数字明细见 HANDOFF 2026-11-01 副靶节；脚本 tools/spark-npu-accept.ps1。
+（**2026-11-02 修正**："禁 levels"已不需要——三图驱逐修复后 chunk128+levels-on 即生产配置，见下。）
 
 性能轮（同日）：4B NPU decode 2.4 → ~6 t/s 稳态（level 预算三图问题修复，设备已贴 2.3 GB
 权重带宽下限 ~7 t/s 的 85%）。数字口径：热缓存 + n≥128（n=64 的 headline 被 level 编译停顿
 摊薄）。排查链与剩余杠杆见 HANDOFF 2026-11-01 性能轮及补记。
+
+4B prefill（2026-11-02 晚）：**"chunk256 撞驱动预算"在三图修复后不成立**——llama-bench 流
+冷缓存实测 chunk256 全绿：pp512 84.6→**131.5**（+55%）、pp1900 41.3→**65.9**（+59%）、c8192
+pp8064 42.8 可跑，decode 不变（带宽地板）。但 **llama-cli -st / llama-server 流 chunk256+c2048
+仍执行期 `UNINITIALIZED`**（levels-on/off 都崩、--no-warmup 崩、c512 与 1.7B 不崩；bench 同形状
+幸存——已排除 n_batch/warmup/level 数/编图顺序/僵尸进程，新缺陷未决，控制矩阵与下一步遥测方案
+见 HANDOFF 2026-11-02 晚）。生产配置：srv 系流 chunk128，离线 bench 长 prompt 用 chunk256。
+engine 侧顺带修复：空批次 decode（raw==0）不再编译第三张全 ctx 图，clamp 到最小 level。

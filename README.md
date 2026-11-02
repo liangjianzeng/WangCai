@@ -65,7 +65,7 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | Prefill 追平 CPU | 🟡 已达参照的 73%，仍在找余量 |
 | Decode 追平 CPU | 🟡 **多跨度 decode 图组落地（2026-11-01）：14–15 t/s 且与 ctx 无关**（c=8192 从 0.9 t/s 提升 17×），距 OV-CPU 参照 21.7–29.2 还差 ~1.5–2×；后续杠杆已探察定案（stateful 7× 慢、lm_head u4 5× 慢、CM 缓存与权重 bank 冲突）——decode 攻坚收官 |
 | LFM3 全模态（音频 / 视觉输入） | 🟡 **音频与视觉输入 NPU 均端到端（2026-11-01）**：音频与 native Q8_0 参照逐字一致；视觉两根因定案修复（cacheless `input_len=-1` 平面越界 + NPUW `FOLD×FUNCALL_FOR_ALL` 配置交互损坏 clip 图），NPU 描述与 native 一致、文本三问 3/3；视觉吞吐（2026-11-02）warm encode 12.6 s → **亚秒级（542 ms 稳态 / 896 ms FS 冷）**（vs native 435 ms），根因：NPU 分支补 `ov::cache_dir` 插件 blob 缓存，权重烤成 Constants 的 clip 图此前每进程全量重编译 |
-| **副靶：跨模型验证（Spark-X2.6-4B + Qwen3-4B）** | ✅ **两个外部模型家族端到端跑通（2026-11-01）**：讯飞 Spark-X2.6-4B 与 Qwen3-4B（均为标准稠密 Transformer，与 LFM3 混合架构不同系）在 NPU 三问验收全 3/3；副靶顺带修好两个横切缺陷——u4 权重无法包宿主内存（曾阻塞所有非对称 4-bit 路径）与整数零点舍入（曾让静态图精度退化），Q4_K_M checkpoint 现在 OV-CPU 开箱即用。4B 只需 `PREFILL_CHUNK_SIZE=128`（驱动预算，不用再禁 decode levels） |
+| **副靶：跨模型验证（Spark-X2.6-4B + Qwen3-4B）** | ✅ **两个外部模型家族端到端跑通（2026-11-01）**：讯飞 Spark-X2.6-4B 与 Qwen3-4B（均为标准稠密 Transformer，与 LFM3 混合架构不同系）在 NPU 三问验收全 3/3；副靶顺带修好两个横切缺陷——u4 权重无法包宿主内存（曾阻塞所有非对称 4-bit 路径）与整数零点舍入（曾让静态图精度退化），Q4_K_M checkpoint 现在 OV-CPU 开箱即用。4B 在 llama-cli/server 流需 `PREFILL_CHUNK_SIZE=128`（驱动预算，不用再禁 decode levels）；llama-bench 离线流实测 chunk256 可跑，pp +55–59%（见 HANDOFF 2026-11-02 晚） |
 | **NPU decode 性能（4B）** | 🟡 **2.4 → ~6 t/s 稳态（2026-11-01 性能轮）**：根因是设备预算三图问题——prefill + legacy 全 ctx decode + level 图三张权重 bank 必爆（1.7B 装得下所以 LFM3 未暴露），level 图首个 execute 即 UNINITIALIZED 后永远降级。修复后 level 图真正生效（raw infer 436→~145 ms，已贴 2.3 GB 权重的带宽下限 ~7 t/s 的 85%）。剩余为 36 层标准注意力算子开销与上游依赖，见 HANDOFF 性能轮 |
 | **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
 | **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
@@ -148,7 +148,7 @@ tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
 | `GGML_OPENVINO_DEVICE=NPU` | 选 NPU 而不是 OpenVINO-CPU |
 | `GGML_OPENVINO_CACHE_DIR` | 持久化 36 s 的图编译缓存；**每种配置用独立目录**，否则过期编译图会无声胜出 |
 | `-c` ≤ 8192 实测通过 | 多跨度 decode 图组落地后 decode 速度与 ctx 无关（c=8192 实测 14.1 t/s）；更高 ctx 未验证 |
-| 4B 模型（NPU）：`GGML_OPENVINO_PREFILL_CHUNK_SIZE=64`（短 prompt）/ `128`（长 prompt） | 4B 权重（requant 后 ~2.3 GB）默认 chunk 256 在执行期撞驱动主机内存预算；削 prefill 图后可跑（Spark-X2.6-4B 热缓存稳态 decode ~6 t/s，上限 ≈ 7 t/s 由权重带宽决定；短 prompt 首 token 延迟 chunk64 比 128 好 ~17%，32 以下固定开销反噬） |
+| 4B 模型（NPU）：`GGML_OPENVINO_PREFILL_CHUNK_SIZE=64`（短 prompt）/ `128`（长 prompt） | 4B 权重（requant 后 ~2.3 GB）在 **llama-cli / llama-server 流**下 chunk256 仍超驱动主机内存预算（执行期 `UNINITIALIZED`；缺陷未决，控制矩阵见 HANDOFF 2026-11-02 晚）。**llama-bench 离线流实测 chunk256 可跑：pp512 84.6→131.5（+55%）、pp1900 41.3→65.9（+59%），decode 不变**——chat/server 用 64/128，离线吞吐可上 256；短 prompt 首 token 延迟 chunk64 比 128 好 ~17%，32 以下固定开销反噬 |
 
 `llama-server.exe` 也一并构建，可用同样的环境变量提供 OpenAI 兼容 HTTP 服务；`-c`/-fa/-np 约束相同。
 完整参数说明、首次运行的预期日志与三个最容易踩的坑见

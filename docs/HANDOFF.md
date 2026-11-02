@@ -1,5 +1,57 @@
 # 会话交接（上下文耗尽时读我）
 
+## 2026-11-02（晚）：4B chunk256 预算封锁证伪（bench 流 pp +55–59%）+ srv 流超预算缺陷（新，未决）
+
+回应 NPUW 权重 bank 线索的实测轮。插件 DLL 字符串扫描证实 `NPUW_WEIGHTS_BANK`（string，"非空名共享权重"）
+早已在 compile_config 里（`"shared"`），`NPUW_WEIGHTS_BANK_ALLOC` 存在——但共享并未跨 CompiledModel 去重
+（与上游 issue #3 的 import 无 dedup 一致）。随后转向"chunk256 到底装不装得下"的实测：
+
+### 一、证伪："4B 默认 chunk 必须 ≤128（驱动主机内存预算）"过时
+三图驱逐修复（上午轮）之后，**llama-bench 流** chunk256 冷缓存全绿（Spark-X2.6-4B，新缓存目录，r≥2）：
+
+| ctx(≈) | pp chunk128 | pp chunk256 | Δ | tg128 |
+|---|---:|---:|---:|---:|
+| 640 | 84.6 ± 1.6 | **131.5 ± 2.8** | **+55%** | 6.75 / 6.66 |
+| 2048 | 41.3（pp1900） | **65.9**（pp1900） | **+59%** | 6.47 / 6.24 |
+| 8192 | — | 42.8（pp8064） | — | 6.49 |
+
+decode 不动（带宽地板不变），prefill 大涨——**"chunk256 撞预算"是三图修复前的旧账**（README/状态表沿用的
+64/128 论断据此修正）。脚本 `ctrl/bank_chunk256_full2.ps1`。
+
+### 二、新缺陷（未决）：srv 系流（llama-cli -st / llama-server）chunk256 + c2048 必爆
+同机同权重同 env，**唯一变量是流量入口**（干净进程状态、僵尸 llama-server 已排除——它 15:07 才出生，
+首崩在 14:3x，且杀干净后照崩）：
+
+| 流 | chunk256 c2048 | 备注 |
+|---|---|---|
+| llama-bench（-p1900/-n128、短 prompt 均试） | ✅ | tg 走 level-2048，prefill+单图驻留 |
+| llama-cli -st（levels-on） | ❌ level-256 首 execute UNINIT，fallback 图再爆 | 首个 decode step 即崩 |
+| llama-cli -st（levels-off，仅 prefill+legacy 两图！） | ❌ | 两图也爆 → 不是 level 图数量问题 |
+| llama-cli -st --no-warmup | ❌ | warmup/jinja-empty 排除 |
+| llama-server | ❌ HTTP 500, ze=2 | chunk128 server ✅（16 token 完成） |
+| llama-cli -st @ c512 | ✅ | 边界在 ctx（1024 未测） |
+| LFM3-1.7B chunk256 c2048 cli | ✅ | 1 GB 权重装得下 → 4B 专属 |
+| llama-cli -st chunk128 c2048（新二进制回归） | ✅ Beijing | clamp 修复无回归 |
+
+已证伪的机制假设：n_batch=2048 sched 驻留（`-ub 128` 照崩）、warmup/jinja、level 图数量（levels-off 两图也崩）、
+编图顺序。**唯一未证伪的差异**：cli/srv 进程相对 bench 多驻留一块设备侧内存（~数百 MB 级，把本就贴边的
+chunk256 prefill 顶出预算）。下一步诊断（别重复我已排除的）：在 `build_static_model`/首次 execute 失败点
+加遥测——枚举进程内全部 CompiledModel 及其 host pinned 缓冲字节数，对比 bench 与 cli 同一时刻的驻留清单。
+在那之前**生产配置不变**：srv 系流（chat/server）4B 用 chunk128（已验证），chunk256 增益目前只在 bench/离线
+长 prompt 流兑现。fallback 失效（首 execute 失败后驱动态污染，"driver is not initialized" 传染后续图）
+同属本缺陷，修复驱逐-重试路径也是候选方向。
+
+### 三、engine 侧已改（两树同步，编译绿，回归过）
+`utils.cpp` decode 级别查找去掉 `attention_size_raw > 0` 前提：空批次 decode（sched_reserve warmup，raw==0）
+此前直落 level-0 全 ctx 图（第三张权重 bank）；现 clamp 到最小 level（256），空批次无 KV 写入、功能等价、
+不多占 bank。`decode_attention_level` 对 n_kv<=0 早退 0，故显式 clamp 到 1。生产判据：chunk128 c2048 cli
+回归 Beijing 正常。
+
+### 四、测量纪律补
+- **跑 NPU 实验前必须 `Get-Process llama*` 清残留**——本轮一个 10 GB 僵尸 llama-server 污染了 15:07–16:2x
+  整批判定（levels-off "两图也崩"的结论在僵尸在场时得出，杀干净后复验才可信）。
+- server 首请求的 t/s 与"空 answer"都不可作判据（编译停顿 + CoT），按既有纪律：热缓存 + ≥128 token。
+
 ## 2026-11-02：视觉性能轮收官后——decode "512 断崖"证伪（非缺陷）+ profiling×blob-cache 崩溃定案
 
 视觉吞吐修复（warm encode 542 ms）已 commit `af30ad4` push。续跑性能轮，测文本热启动/decode t/s，两条结论：
