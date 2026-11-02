@@ -68,6 +68,22 @@ static std::atomic<unsigned> g_budget_trace_irs{0};
 static int g_budget_trace_pass = -1;
 static int g_budget_trace_ctx = -1;
 static int g_budget_trace_level = -1;
+// Process-origin millisecond clock for startup-time forensics. Lazily anchored on the FIRST
+// trace call (static-init-time GetTickCount64/ggml_time_us were both unreliable here).
+static long long g_budget_trace_now_ms() {
+    static const long long t0 = [] {
+#ifdef _WIN32
+        return (long long) GetTickCount64();
+#else
+        return (long long) ggml_time_us() / 1000;
+#endif
+    }();
+#ifdef _WIN32
+    return (long long) GetTickCount64() - t0;
+#else
+    return (long long) ggml_time_us() / 1000 - t0;
+#endif
+}
 static void ov_budget_trace(const char * tag, ov::InferRequest * ir) {
     if (!ggml_openvino_getenv_int("GGML_OPENVINO_BUDGET_TRACE")) {
         return;
@@ -114,8 +130,9 @@ static void ov_budget_trace(const char * tag, ov::InferRequest * ir) {
     // fprintf(stderr) on purpose: llama.cpp's default log callback drops backend GGML_LOG_*
     // lines unless llama runs with -v, and this diagnostic must be visible in the plain logs
     // the defect-7 control matrix is built from (observed 2026-11-02: zero INFO/WARN lines).
-    fprintf(stderr, "ggml-openvino: BUDGET-TRACE %-24s irs=%u results=%zu outputs=%llu MB ws=%llu MB avail=%llu MB commit=%llu MB\n",
-            tag, g_budget_trace_irs.load(), nres, outs / (1024 * 1024), ws_mb, avail_mb, pagefile_mb);
+    fprintf(stderr, "ggml-openvino: BUDGET-TRACE %-40s t=%lld ms irs=%u results=%zu outputs=%llu MB ws=%llu MB avail=%llu MB commit=%llu MB\n",
+            tag, g_budget_trace_now_ms(), g_budget_trace_irs.load(), nres,
+            outs / (1024 * 1024), ws_mb, avail_mb, pagefile_mb);
     fflush(stderr);
 }
 // For a KV cache input, return an ov::Tensor sized to n_kv (== attention_size
@@ -1879,7 +1896,8 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         g_budget_trace_pass = c_params.attention_size_raw;
         g_budget_trace_ctx = m_params.ctx_per_seq;
         g_budget_trace_level = decode_level;
-        fprintf(stderr, "ggml-openvino: BUDGET-TRACE decode-pass filled=%d ctx=%d level=%d levels=%d hit=%d\n",
+        fprintf(stderr, "ggml-openvino: BUDGET-TRACE decode-pass t=%lld ms filled=%d ctx=%d level=%d levels=%d hit=%d\n",
+                g_budget_trace_now_ms(),
                 c_params.attention_size_raw, m_params.ctx_per_seq, decode_level, (int) decode_levels_active,
                 (int) cache_hit);
         fflush(stderr);

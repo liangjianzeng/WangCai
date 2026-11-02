@@ -1,5 +1,18 @@
 # 会话交接（上下文耗尽时读我）
 
+## 2026-11-02（深夜 2）：启动时间分解（4B 生产配置 server）——warmup 只预热 prefill，decode 图在首请求才编译
+
+`ctrl/ck_startup.ps1`（4B chunk128 c2048，warm 缓存）：热启动 **11.7 s** 到 /health ok，分解（llama
+相对时间戳 + BUDGET-TRACE t=）：**0.2→3.4 s 权重装载**（2.4 GB mmap/requant）；**3.4→5.2 s prefill 图
+编译**（blob 命中，1.6 s）；**5.2→11.5 s = srv warmup eval**（sched_reserve 的 256-token **prefill**
+pass 真跑 ~6 s）。关键发现：**warmup 从不触发 decode 图编译**（整个启动只有 1 条 compile-local:prefill）
+——生产 server 的第一个真实请求才付 decode lv 图的编译（实测 8–20 s，随 level 与 blob 冷热）。
+`--no-warmup`：ready 8.4–8.8 s，首请求 12 s（lv256，blob 热后）/ 24 s（blob 冷）——省的是等待时间，
+把编译成本挪到首请求，总量不减。候选杠杆（未做）：启动期后台线程并行预编 decode lv256 图
+（ready 11.7 s 不变，首请求省 ~5–12 s）；权重装载 3.2 s 与 <5 s 目标受限于上游 #3（CM 缓存 × 权重
+bank 导入断言）。遥测补强：BUDGET-TRACE 全部行带 t=ms（GetTickCount64 惰性锚定；静态初始化期的
+ggml_time_us/GetTickCount64 都不可靠，别再往回改）。
+
 ## 2026-11-02（深夜）：srv 流缺陷定案 —— 真规则是 `prefill(chunk256)+decode(KV≥1024 行)` 装不下；bench 对照是假象
 
 上一段（未决）的"srv 流特异驻留"假设**已被 BUDGET-TRACE 证伪并替换**。遥测（env `GGML_OPENVINO_BUDGET_TRACE=1`，
