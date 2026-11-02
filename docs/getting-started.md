@@ -132,6 +132,8 @@ common_perf_print:        load time = 36374 ms        ← cold NPU graph compila
 
 ```powershell
 tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
+# 或在任意目录用绝对路径调（脚本自己定位仓库，不依赖当前目录；banner 打印全部绝对路径）：
+E:\your\path\WangCai\tools\chat-npu.ps1 -Model LFM3-1.7B-Q4_K_M.gguf
 ```
 
 启动后进入对话循环，在 `>` 后输入回车即得回答；`/exit`（或 Ctrl+C）退出、`/clear` 清空历史、
@@ -142,6 +144,18 @@ tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
 `-MaxTokens`（单答上限）、`-CacheDir`（图缓存，默认 `.cache\npu_chat`，**跨次持久**所以暖启动 ~9 s）、
 `-LevelsOff`（设备预算闹脾气时的逃生门）。首次空缓存会编译一次图（几十秒）；对话第一次跨过
 256-token 档也会停下来编一张 decode 图（一次性）。中文输入建议 Windows Terminal（或 `chcp 65001`）。
+
+**换模型与换场景**（图缓存按模型分目录 `.cache\npu_chat\<模型名>`，互不污染）：
+
+| 场景 | 命令 |
+|---|---|
+| 文本对话（任意已验证模型） | `chat-npu.ps1 -Model Spark-X2.6-4B-Q4_K_M.gguf`（4B 的 chunk128 就是默认值，无需额外参数） |
+| 视觉问答（Omni + mmproj） | `chat-npu.ps1 -Model LFM3-Omni-2B-Q4_0.gguf -Image 图.png -Ask '图里有什么？'` |
+| 音频转写/理解 | `chat-npu.ps1 -Model LFM3-Omni-2B-Q4_0.gguf -Audio 录音.wav -Ask '转写这段语音。'` |
+| HTTP 服务（OpenAI 兼容） | `src\llama\build\bin\llama-server.exe`，同一套 env 与 `-c/-fa/-np` 约束（见上文参数表） |
+
+视觉/音频走 `llama-mtmd-cli` 单发（钉住的 llama-cli 无 `--mmproj`，输入即问、不进对话循环）；
+投影器默认按模型同目录 `mmproj-<模型名>.gguf` 自动探测，不匹配时用 `-Mmproj` 指定。
 
 ## 三个容易踩的坑
 

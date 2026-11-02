@@ -13,7 +13,7 @@ ANSI 解析 `.ps1`，源码里只要出现中文字符串字面量或长破折�
 | `configure.ps1` | 在 `vcvars64` 环境内执行 CMake 配置（Release、Ninja，仅 OpenVINO 后端（backend）） |
 | `build.ps1` | 增量构建 `llama-cli llama-completion llama-bench llama-server` |
 | `run-npu.ps1` | 在 NPU / OpenVINO-CPU / CPU-static / native CPU 上执行一次受控运行，各自使用独立的缓存目录与日志 |
-| `chat-npu.ps1` | **交互式终端聊天（0.0.1 式文本交互）**：`>` 提示符多轮对话，`/exit /clear /regen /read /glob`，持久图缓存暖启动 ~9 s；`-Model` 传路径或裸文件名（按 `-ModelDir` / `WANGCAI_MODEL_DIR` / `models\` 查找） |
+| `chat-npu.ps1` | **交互式终端聊天（0.0.1 式文本交互）**：`>` 提示符多轮对话，`/exit /clear /regen /read /glob`，持久图缓存（按模型分目录）暖启动 ~9 s；任意 cwd 用绝对路径调用；`-Model` 传路径或裸文件名（按 `-ModelDir` / `WANGCAI_MODEL_DIR` / `models\` 查找）；`-Image`/`-Audio` 走 mtmd 单发做视觉问答/音频转写（mmproj 自动探测） |
 | `npu-sweep.ps1` | NPU 编译（compile）配置开关的矩阵扫描，每格输出一行 |
 | `compare-tensors.ps1` | 对两次 `GGML_OPENVINO_DUMP_BIN` 转储（dump）做逐元素比对 |
 | `top-token.ps1` | 每个 pass（一次图执行）的 top-1 token / norm / min / max，用于在不同次运行之间对齐 pass |
