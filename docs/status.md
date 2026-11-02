@@ -23,7 +23,7 @@
 | 2.1 | NPU 解码快过 OpenVINO-CPU | 🟡 | **多跨度 decode 图组落地（2026-11-01 第二轮）：decode 14-15 t/s 与 ctx 无关**——c=8192 从 0.9 → 14.1 t/s（17×），c=2048 从 3.3 → 14.3（4.5×）。对 OpenVINO-CPU 参照 21.7–29.2 仍差一截。后续杠杆已逐一探察收官（2026-11-01）：stateful 化证伪（7× 慢）、lm_head u4 化证伪（5× 慢，F16 524 MB @38 GB/s 即带宽界快路径）——残差为状态 I/O 与 attention 算子路径，decode 攻坚收官。根因定案与测量见缺陷 2 节 |
 | 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；`pp1024`：NPU 368 对 OV-CPU 626 / 原生 605；**8K prompt 实测 prefill 122.6 t/s** |
 | 2.2 | 热启动 < 5 s | 🟡 | **热启动 23 s → 8.9 s（2026-11-01）**：requant 全量物化路径行分块并行（发现 ov::parallel_for 在本机构建是串行回退，改用 std::thread 池）+ 修 make_dirs 盘符 bug（Windows 下 CM 缓存曾静默失效）+ 多级图接入 COMPILED_MODEL_CACHE_DIR。剩 <5 s 需解决 NPUW blob 无权重 import（WEIGHTS_PATH/MODEL_PTR）与首次图下载 1.1 s，见 HANDOFF 2026-11-01 2.2 节 |
-| 3.x | 模型线宽度（0.3 B–8 B、长上下文） | 🟡 | **长上下文打通：-c 8192（7K prompt 端到端）与 -c 16384（图级）在 NPU 通过**。Q8_0 被驱动主机内存预算阻塞（见缺陷 7） |
+| 3.x | 模型线宽度（0.3 B–8 B、长上下文） | 🟡 | **长上下文打通：-c 8192（7K prompt 端到端）与 -c 16384（图级）在 NPU 通过**。**Q8_0 可用（2026-11-02 深夜结案）**：原"1.85 GB 必失败"系常驻进程挤占主机内存的污染测量，干净进程下 1.7B/Omni-2B Q8_0 在 c512/c2048 × chunk128/256 全通过（见缺陷 7 结案段） |
 | 4.x | LFM3 全模态（音频输入、视觉输入） | 🟡 | **音频 + 视觉 NPU 均端到端（2026-11-01）**。音频：编码器 requant 修复（"a."-豁免，嵌入 cos 0.963→0.9997）、与 native Q8_0 参照逐字一致、level 图撞设备预算自动降级（零 env）；配置见 mtmd-audio-c512.ps1。视觉：两个根因连定案——①cacheless 图 `input_len=-1` size_t 回绕使多平面位置表读越界（改从 `ne[0]/n_planes` 取平面长度，CPU 静态逐位一致）；②NPUW 三元组 `NPU_USE_NPUW+NPUW_FOLD+FUNCALL_FOR_ALL` 损坏 clip 图（视觉图编译时擦除 FUNCALL_FOR_ALL + extra_cfg 4u），NPU 描述与 native 一致、文本三问 3/3。吞吐（2026-11-02）：warm encode 12.6 s → **亚秒级（542 ms 稳态 / 896 ms FS 冷）**（vs native 435 ms）——NPU 分支补 `ov::cache_dir` 插件 blob 缓存，权重烤成 Constants 的 clip 图此前 NPUW 缓存永不命中、每进程全量重编译 12.2 s。剩：音频 top-1 级 f16 分歧——**2026-11-02 定性为文本自由生成同族（非缺陷）**：同音频 n=128 自由描述，CPU-static 与 NPU 共享前缀 19 词（均正确识别 1000 Hz 正弦音），第 20 词起风格分岔、双方语义均对、无坍缩无平台期（`ctrl/mtmd-audio-freegen.ps1`）；验收判据按转写路径（逐字一致）为准 |
 
 ## 今天能用的部分
@@ -213,7 +213,7 @@ Qwen3-4B 的执行期 `OUT_OF_HOST_MEMORY`（`pfnAppendGraphExecute`）之后，
 基准（1 个 matmul 的编译与 infer 计时）和内存占用排查**，两者都正常才能谈驱动状态；
 不要在没跑基准的情况下重启机器或复位设备。
 
-### 7. Q8_0 模型被 NPU 驱动的主机内存预算阻塞（新发现，2026-10-31；**当晚重框**）
+### 7. Q8_0 模型被 NPU 驱动的主机内存预算阻塞（新发现，2026-10-31；当晚重框；**2026-11-02 深夜结案——非阻塞**）
 
 LFM3-1.7B 与 Omni-2B 的 Q8_0 checkpoint（源文件均 1.85 GB）在 NPU 上编译成功但在首次执行时死于
 `L0 pfnAppendGraphExecute: ZE_RESULT_ERROR_UNINITIALIZED`（DQ 关闭时为显式
@@ -232,6 +232,14 @@ llama-server 把可用内存吃掉后，**0.98 GB 的 Omni-Q4_0 在 `-c 4096` �
 （0.2 s 编译 / 1 ms infer，全程健康）三重证据把楔住论推翻。经验：**NPU 异常先查内存大户
 （`Get-Process`），再怀疑驱动**；预算边界必须标注测量时的可用内存，否则不可复现。
 另见 [troubleshooting](troubleshooting.md) 的"编译/执行一夜之间慢了几十倍"条目与本机复位工具。
+
+**结案（2026-11-02 深夜，BUDGET-TRACE + 干净进程纪律）：Q8_0 并未被阻塞。** 用当时的故障配置原样重测
+——LFM3-1.7B-Q8_0 与 Omni-2B-Q8_0（各 1.85 GB），cli -st，c512/c2048 × chunk128/256，全新缓存目录，
+`Get-Process llama*` 清残留——**四臂全部通过**（c2048 chunk256：pp 35.8 / tg 3.9，首请求含编译摊薄；
+c512 chunk128：pp 53.0 / tg 6.3）。原"1.85 GB 必失败"边界正是当晚重框指出的污染源（常驻 ~23 GB 的
+llama-server 挤占主机内存）叠加上三图驱逐与空批 decode 短路（2026-11-02）尚未落地。剩余真相收敛为
+与 chunk256 定案同一条规则：**prefill 图 + 最大 decode 图 + 权重驻留 vs 当刻可用主机内存**——预算类
+异常先 `Get-Process` 清大户、开 `GGML_OPENVINO_BUDGET_TRACE=1` 再下结论。
 
 ## 约束与不可妥协项
 

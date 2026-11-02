@@ -158,6 +158,10 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   chunk128 生产路径回归通过（cli -st 长 prompt 出 token、lv2048 命中、无 ZE）。
 - NPUW 权重 bank 复核：`NPUW_WEIGHTS_BANK="shared"` 早已在 compile_config——插件共享不跨
   CompiledModel 去重（与上游 issue #3 一致），无白捡的预算。
+- **缺陷 7（Q8_0 阻塞）结案——非阻塞**：原故障配置原样重测（1.7B-Q8_0 与 Omni-2B-Q8_0 各 1.85 GB，
+  cli -st，c512/c2048 × chunk128/256，全新缓存，清残留进程）四臂全过（c2048×chunk256：pp 35.8/tg 3.9）。
+  "1.85 GB 必失败"边界 = 常驻 ~23 GB llama-server 的污染测量（10-31 重框已疑，今日干净复测坐实），
+  叠加三图驱逐与空批短路两个后续修复。里程碑 3.x 的 Q8_0 行同步转 ✅。
 
 ## [0.0.1] — 2026-10-31 · 汪柴首个版本
 
