@@ -24,7 +24,7 @@
 | 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；`pp1024`：NPU 368 对 OV-CPU 626 / 原生 605；**8K prompt 实测 prefill 122.6 t/s** |
 | 2.2 | 热启动 < 5 s | 🟡 | **热启动 23 s → 8.9 s（2026-11-01）**：requant 全量物化路径行分块并行（发现 ov::parallel_for 在本机构建是串行回退，改用 std::thread 池）+ 修 make_dirs 盘符 bug（Windows 下 CM 缓存曾静默失效）+ 多级图接入 COMPILED_MODEL_CACHE_DIR。剩 <5 s 需解决 NPUW blob 无权重 import（WEIGHTS_PATH/MODEL_PTR）与首次图下载 1.1 s，见 HANDOFF 2026-11-01 2.2 节 |
 | 3.x | 模型线宽度（0.3 B–8 B、长上下文） | 🟡 | **长上下文打通：-c 8192（7K prompt 端到端）与 -c 16384（图级）在 NPU 通过**。Q8_0 被驱动主机内存预算阻塞（见缺陷 7） |
-| 4.x | LFM3 全模态（音频输入、视觉输入） | 🟡 | **音频 + 视觉 NPU 均端到端（2026-11-01）**。音频：编码器 requant 修复（"a."-豁免，嵌入 cos 0.963→0.9997）、与 native Q8_0 参照逐字一致、level 图撞设备预算自动降级（零 env）；配置见 mtmd-audio-c512.ps1。视觉：两个根因连定案——①cacheless 图 `input_len=-1` size_t 回绕使多平面位置表读越界（改从 `ne[0]/n_planes` 取平面长度，CPU 静态逐位一致）；②NPUW 三元组 `NPU_USE_NPUW+NPUW_FOLD+FUNCALL_FOR_ALL` 损坏 clip 图（视觉图编译时擦除 FUNCALL_FOR_ALL + extra_cfg 4u），NPU 描述与 native 一致、文本三问 3/3。剩：视觉 NPU 吞吐未测、音频 top-1 级 f16 分歧（非阻塞） |
+| 4.x | LFM3 全模态（音频输入、视觉输入） | 🟡 | **音频 + 视觉 NPU 均端到端（2026-11-01）**。音频：编码器 requant 修复（"a."-豁免，嵌入 cos 0.963→0.9997）、与 native Q8_0 参照逐字一致、level 图撞设备预算自动降级（零 env）；配置见 mtmd-audio-c512.ps1。视觉：两个根因连定案——①cacheless 图 `input_len=-1` size_t 回绕使多平面位置表读越界（改从 `ne[0]/n_planes` 取平面长度，CPU 静态逐位一致）；②NPUW 三元组 `NPU_USE_NPUW+NPUW_FOLD+FUNCALL_FOR_ALL` 损坏 clip 图（视觉图编译时擦除 FUNCALL_FOR_ALL + extra_cfg 4u），NPU 描述与 native 一致、文本三问 3/3。吞吐（2026-11-02）：warm encode 12.6 s → **542 ms**（vs native 435 ms）——NPU 分支补 `ov::cache_dir` 插件 blob 缓存，权重烤成 Constants 的 clip 图此前 NPUW 缓存永不命中、每进程全量重编译 12.2 s。剩：音频 top-1 级 f16 分歧（非阻塞） |
 
 ## 今天能用的部分
 

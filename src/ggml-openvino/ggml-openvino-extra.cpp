@@ -190,6 +190,13 @@ void ggml_openvino_device_config::init() {
         if (cache_dir && strlen(cache_dir) > 0) {
             compile_config["NPUW_CACHE_DIR"] = cache_dir;
             compile_config.insert(ov::cache_mode(ov::CacheMode::OPTIMIZE_SIZE));
+            // The plugin blob cache (CACHE_DIR) as well as the NPUW IR cache (NPUW_CACHE_DIR):
+            // NPUW's cache only covers its own subgraph/funccall decomposition -- graphs whose
+            // weights are baked ov::Constants (the mtmd vision encoder) miss NPUW_CACHE_DIR on
+            // every process start (measured: full NPUW recompile ~12 s per run, while the plugin
+            // blob cache hits at ~0.4 s for the identical IR). without_npuw strips CACHE_MODE for
+            // the non-NPUW route (which rejects it) but keeps CACHE_DIR, which that route accepts.
+            compile_config.insert(ov::cache_dir(cache_dir));
         }
         // GGML_OPENVINO_NPU_COMPILE_OVERRIDES=KEY=VALUE,KEY=VALUE... replaces or adds top-level
         // NPU compile-config entries. The defaults above trade accuracy for NPU throughput

@@ -8,7 +8,7 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 ## [Unreleased]
 
-2026-11-01 在硬件上验证的三批改动。
+2026-11-01/02 在硬件上验证的四批改动。
 
 ### 新增 —— 跨模型验证（副靶 Spark-X2.6-4B + Qwen3-4B 复测）
 
@@ -115,6 +115,22 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   回退到 LLM decode 专用，避免误导后来人。
 - **TEMP 插桩拆除**：VISROPE（openvino/utils.cpp、rope.cpp）、PERFTRACE（decode 分支）、
   WARMTRACE 标记 TEMP 的 requant 计时块全部移除。
+
+### 性能 —— 引擎（NPU 视觉编码 12.6 s → 0.54 s：插件 blob 缓存补位）
+
+- **上一轮的"5061 ms 编码"是冷态假象**：单次冷跑把每进程 clip 重编译计进了编码时间。
+  行级计时分解：clip 图 NPU **纯推理**本来只要 147–191 ms（python 直测同一 IR），真正的开销是
+  **每进程 ~12.2 s 的全量 NPUW 重编译**；warm `mtmd batch encoding` 实际 12.6 s。
+- **根因**：NPU 编译配置只设 `NPUW_CACHE_DIR`（NPUW 自身的 funcall/子图分解缓存），从不设
+  `ov::cache_dir`（插件 blob 缓存）。视觉编码器权重烤成 `ov::Constants`，NPUW 缓存对它**永不命中**；
+  LLM 图走 shared weights bank 路线 NPUW 缓存正常命中（~2.3 s），所以缺陷只在视觉侧暴露。
+  python 实证：NPUW-only 每次 12–13 s；补 CACHE_DIR 后同一 IR 命中 0.41–0.74 s；视觉 IR
+  跨进程逐位稳定（md5 相同，可安全命中）。
+- **修复**：`ggml-openvino-extra.cpp` NPU 分支补插 `compile_config.insert(ov::cache_dir(cache_dir))`
+  （`without_npuw` 路径剥 CACHE_MODE 但保留 CACHE_DIR，非 NPUW 路线接受该键）。修复后
+  **warm encode 542 ms**（vs native 435 ms、OV-CPU 动态 956 ms），冷启动一次性 16.9 s；
+  最终二进制验收：视觉描述正确、文本三问 3/3、音频 EXITCODE=0。
+- **上游可报**：NPUW_CACHE_DIR 不覆盖权重烤成 Constants 的图——与 bank-aware blob import 同族。
 
 ### 新增 —— 引擎（视觉输入，探察）
 

@@ -3,7 +3,8 @@
 ## 2026-11-01 深夜：视觉精度两根因连定案，NPU 视觉端到端收官 ✅
 
 **结果**：NPU 视觉端到端描述与 native 一致（"black field + red circle + green band"），文本三问
-3/3（最终二进制上复测）。视觉里程碑（milestone 4.x 视觉半）完成；剩视觉 NPU 吞吐未测。
+3/3（最终二进制上复测）。视觉里程碑（milestone 4.x 视觉半）完成；吞吐缺陷次轮已定案修复
+（见下方"视觉吞吐基线 → 已定案并修复"：warm encode 12.6 s → 542 ms）。
 
 ### 根因①：cacheless 图 input_len=-1 → size_t 回绕 → 多平面位置表读越界
 - cacheless 图（mtmd 视觉编码器：显式 softmax，无 FLASH_ATTN_EXT）没有任何代码给
@@ -40,20 +41,37 @@
   `without_npuw` 过滤：改编译配置前先确认目标图实际走哪条（vision 图走
   ov_graph_compute_static 的 full-config 分支，第一轮修错了点）。
 
-### 下一轮候选（按优先级）
-1. **性能主攻回到主线**：视觉 NPU 吞吐测量（prefill 编码器 t/s、端到端延迟），
-   然后回 4B decode / prefill 剩余杠杆（HANDOFF 性能轮清单）。
-2. 上游：NPUW bank-aware blob import（热启动 <5 s）；NPUW FOLD×FUNCALL bug 报告。
+### 下一轮候选（按优先级，2026-11-02 更新）
+1. **性能主攻继续**：视觉吞吐已修复（542 ms）；回 4B decode / prefill 剩余杠杆
+   （HANDOFF 性能轮清单）；LLM 图启动/导入时间也在此列（与上游 bank-aware import 同族）。
+2. 上游：NPUW bank-aware blob import（热启动 <5 s）；NPUW FOLD×FUNCALL bug 报告；
+   NPUW 缓存不覆盖 baked-Constants 图（本轮新增，见下）。
 3. 音频 top-1 级 f16 分歧（非阻塞，复利行为同类）。
 
-### 视觉吞吐基线（2026-11-01 实测，单图 448×448 → 784 patch，`mtmd batch encoding` 行）
-- native ggml CPU（`-dev none`）：**435 ms**
-- OV-CPU 动态：**956 ms**
-- NPU 静态（本修复后）：**5061 ms**（比 native 慢 11.6×、比 OV-CPU 慢 5.3×）
-- 下一性能轮靶子：clip 图在 NPUW 上的显式 softmax/Reshape/Concat 路径（warmup 已列
-  unsupported-ops 清单：SOFT_MAX/CONT/PERMUTE/RESHAPE/CONCAT 全部回退执行）；对照文本侧
-  经验（requant/f16 折叠、bank 冲突）逐项排除。工具：ctrl/vis-npu-fix.ps1（NPU）、
-  vis-cpu-b.ps1、vis-nat-b.ps1；缓存目录 cache_vis_fix / cache_vis_cpu_b / cache_vis_nat_b。
+### 视觉吞吐基线 → **已定案并修复**（2026-11-02，性能轮收官）
+上一轮记录的 **5061 ms 是冷态假象**（单次冷跑把每进程 clip 重编译算进了编码时间）。
+本轮分解（448×448 → 3136 patch 图，python 直测 IR 与 engine 行级计时双通道）：
+
+| 通道 | 修复前 | 修复后 |
+|---|---|---|
+| clip 图 NPU **纯推理**（python，warm） | 147–191 ms | 同（本来就不慢） |
+| clip 图**每进程编译**（engine 行级） | **~12.2 s**（每次都重编译） | ~0.4 s（blob 缓存命中） |
+| `mtmd batch encoding`（warm，engine） | 12.6 s | **542 ms** |
+| 冷启动首跑（一次性） | 16.9 s | 16.9 s（编译一次，之后全命中） |
+| native ggml CPU / OV-CPU 动态（参照） | 435 ms / 956 ms | 不变 |
+
+**根因**：NPU 编译配置只设了 `NPUW_CACHE_DIR`（NPUW 自己的 funcall/子图分解缓存），没设
+`ov::cache_dir`（插件 blob 缓存）。视觉编码器权重烤成 `ov::Constants`，NPUW 缓存对它**永不命中**
+（每进程全量 NPUW 重编译 ~12 s）；而 LLM 图走 shared weights bank 路线，NPUW 缓存正常命中
+（~2.3 s），所以此前只有视觉暴露此缺陷。python 实证矩阵：NPUW-only 每次 12–13 s；加 CACHE_DIR
+后同一 IR 命中 0.41–0.74 s；视觉 IR 跨进程逐位稳定（md5 相同，可安全命中）。
+**修复**：`ggml-openvino-extra.cpp` NPU 分支在 `NPUW_CACHE_DIR` 旁补插
+`compile_config.insert(ov::cache_dir(cache_dir))`（without_npuw 路径剥 CACHE_MODE 但保留
+CACHE_DIR，非 NPUW 路线接受该键）。验收：最终二进制 warm encode 542 ms、描述正确、文本 3/3、
+音频 EXITCODE=0。工具：ctrl/vis-npu-cdir.ps1（PERFW 行级计时）、vis_time.py（IR 直测）、
+vis_cfg.py（配置键二分）；缓存 cache_cdir。
+**上游可报**：NPUW_CACHE_DIR 对权重烤成 Constants 的图永不命中——要么文档化，要么让 NPUW
+缓存层也覆盖 baked-Constants 图（与 bank-aware blob import 是同一家族问题）。
 
 ---
 
