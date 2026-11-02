@@ -26,11 +26,22 @@ class EngineManagerSection extends ConsumerStatefulWidget {
 class _EngineManagerSectionState extends ConsumerState<EngineManagerSection> {
   EngineRegistry? _registry;
   String? _error;
+  String _tier = 'auto';
+  int _idleMinutes = 0;
+  bool _routingLoaded = false;
+  final _idleCtl = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _load();
+    _loadRouting();
+  }
+
+  @override
+  void dispose() {
+    _idleCtl.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -40,6 +51,22 @@ class _EngineManagerSectionState extends ConsumerState<EngineManagerSection> {
       if (mounted) setState(() => _registry = reg);
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
+    }
+  }
+
+  Future<void> _loadRouting() async {
+    try {
+      final r = await LocalServerInference.instance.routingSettings();
+      if (mounted) {
+        setState(() {
+          _tier = r.tier;
+          _idleMinutes = r.idleMinutes;
+          _idleCtl.text = '${r.idleMinutes}';
+          _routingLoaded = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _routingLoaded = true);
     }
   }
 
@@ -76,6 +103,58 @@ class _EngineManagerSectionState extends ConsumerState<EngineManagerSection> {
               '引擎由「模型管理」页加载模型时自动拉起；这里做状态观察、停止与诊断。',
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
+            if (_routingLoaded) ...[
+              const SizedBox(height: 8),
+              Row(children: [
+                const Text('路由档位',
+                    style:
+                        TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'auto', label: Text('自动')),
+                      ButtonSegment(value: 'npu', label: Text('NPU 优先')),
+                      ButtonSegment(value: 'speed', label: Text('速度优先')),
+                    ],
+                    selected: {_tier},
+                    showSelectedIcon: false,
+                    style: const ButtonStyle(
+                        visualDensity: VisualDensity.compact,
+                        textStyle: WidgetStatePropertyAll(
+                            TextStyle(fontSize: 11))),
+                    onSelectionChanged: (s) async {
+                      setState(() => _tier = s.first);
+                      await LocalServerInference.instance
+                          .setRoutingTier(s.first);
+                    },
+                  ),
+                ),
+              ]),
+              const SizedBox(height: 6),
+              Row(children: [
+                Text('空闲卸载（分钟，0=不卸）',
+                    style:
+                        TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                const SizedBox(width: 8),
+                SizedBox(
+                  width: 64,
+                  child: TextField(
+                    controller: _idleCtl,
+                    keyboardType: TextInputType.number,
+                    style: const TextStyle(fontSize: 12),
+                    decoration: const InputDecoration(
+                        isDense: true, border: OutlineInputBorder()),
+                    onSubmitted: (v) async {
+                      final n = int.tryParse(v.trim()) ?? 0;
+                      setState(() => _idleMinutes = n < 0 ? 0 : n);
+                      await LocalServerInference.instance
+                          .setIdleUnloadMinutes(_idleMinutes);
+                    },
+                  ),
+                ),
+              ]),
+            ],
             const SizedBox(height: 8),
             for (final inst in reg.instances)
               if (reg.manifestOf(inst.id).kind != 'remote')

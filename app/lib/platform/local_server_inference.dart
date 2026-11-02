@@ -201,11 +201,50 @@ class LocalServerInference implements InferenceBackend {
             ? 'npu'
             : 'auto';
     try {
-      final paths = WangCaiPaths.enginePaths();
-      await paths.ensureDirs();
-      await File('${paths.dataDir.path}${Platform.pathSeparator}routing.json')
-          .writeAsString(jsonEncode({'tier': _tierName}), flush: true);
+      final j = await _readRoutingJson();
+      j['tier'] = _tierName;
+      await _writeRoutingJson(j);
     } catch (_) {}
+  }
+
+  /// 空闲卸载分钟（0=关闭）；§7.3 调度护栏的 UI 入口。
+  Future<void> setIdleUnloadMinutes(int minutes) async {
+    try {
+      final j = await _readRoutingJson();
+      j['idleUnloadMinutes'] = minutes;
+      await _writeRoutingJson(j);
+      if (minutes <= 0) {
+        _idleTimer?.cancel();
+        _idleTimer = null;
+      }
+    } catch (_) {}
+  }
+
+  /// 当前档位与空闲配置（设置 UI 初始化读）。
+  Future<({String tier, int idleMinutes})> routingSettings() async {
+    final j = await _readRoutingJson();
+    final tier = await _tierSetting();
+    final idle = j['idleUnloadMinutes'];
+    return (tier: tier, idleMinutes: idle is num ? idle.toInt() : 0);
+  }
+
+  Future<Map<String, dynamic>> _readRoutingJson() async {
+    try {
+      final f = File('${WangCaiPaths.enginePaths().dataDir.path}'
+          '${Platform.pathSeparator}routing.json');
+      if (await f.exists()) {
+        final d = jsonDecode(await f.readAsString());
+        if (d is Map) return Map<String, dynamic>.from(d);
+      }
+    } catch (_) {}
+    return {};
+  }
+
+  Future<void> _writeRoutingJson(Map<String, dynamic> j) async {
+    final paths = WangCaiPaths.enginePaths();
+    await paths.ensureDirs();
+    await File('${paths.dataDir.path}${Platform.pathSeparator}routing.json')
+        .writeAsString(jsonEncode(j), flush: true);
   }
 
   /// 绑定表实测 t/s（诊断 UI 用）。
