@@ -2545,6 +2545,7 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
                 }
             }
             dump_ov_outputs_raw(infer_request, ov_output_names_local, "prefill");
+            dump_ov_profiling_info(*infer_request);
         }
         infer_end_time = ggml_time_us();
     } else {

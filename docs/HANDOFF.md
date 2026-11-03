@@ -2,7 +2,29 @@
 
 ## 性能攻坚计划（2026-11-03 立项，自主循环逐项做，做完即勾）
 
-背景：decode 已贴权重带宽地板（见 P3 论证）、prefill chunk256 甜点已交付、预算规则已定案。
+- [x] **P11 P3"decode 贴权重带宽地板"被证伪（2026-11-04，本轮最重要发现）**：权重字节判别实验
+  （llama-bench 1.7B p512 tg128 r3，同机同构建，warm）——Q4_K_M（1.02 GiB）14.07 t/s、
+  **Q5_K_M（1.16 GiB，字节 +14%）14.84 t/s、Q8_0（1.71 GiB，字节 +67%）14.96 t/s**：
+  权重字节近乎翻倍、decode 步时零变化 → 步时与权重字节数**无关**，P3 的"15.7 GB/s DMA 地板"
+  是两模型（1.7B 24 层 / 4B 36 层、注意力层数不同）在"每层算子开销 × 层数"上的巧合拟合。
+  逐节点剖析（`GGML_OPENVINO_PROFILING=2`，1.7B lv256 decode 图；剖析总量 236.9 ms ≈ 实测
+  67.7 ms × ~3.5 倍 profiling 放大，相对占比可用）：**MatMul 仅 18%**（n=56，0.76 ms/个——权重流
+  大体被重叠隐藏）、Add 20%（n=28，单节点最高 24.8 ms）、Multiply 18%（n=120！）、Concat 17%
+  （n=20，顶部单个 18.3 ms [DMA]）、Parameter 13%（n=57，状态输入 DMA）、GroupConvolution 6%
+  （n=5）、Mod 4%（n=6，KV 环回绕）——**非 MatMul 算子汤占 ~80%**。
+  **结论：decode 软件侧空间重新打开。** 主攻方向 = 压算子数 / 调度开销 / 状态 I/O，让权重流与
+  计算重叠，理论地板 ~36 ms（1.37 GB ÷ 38 GB/s 实测常量流速率）≈ 27 t/s（对 14.07 基线 +91%）。
+  基线表（本日 bench 口径）：1.7B pp512 406.5 / pp2048 283.7 / tg 14.07；4B pp2048(ck128) 42.8 /
+  pp512(ck256) 135.6 / tg 6.89。
+- [ ] **P12 NPUW 编译开关 1.7B 重测**（旧证伪在带宽论误判背景下做出，需翻案）：FOLD=NO /
+  FUNCALL_FOR_ALL=NO / FUNCALL_ASYNC=NO / DQ=NO 四臂。
+- [ ] **P13 prefill 逐节点剖析**：静态 prefill 循环原本没有 `dump_ov_profiling_info`（只有 decode
+  分支有）——已补（utils.cpp 两树同步）；prof_prefill 首轮 4 个 CSV 实为 decode 图（剖析桩缺失时
+  的误采，作废）。重跑取 chunk256 prefill 真实构成。
+- [ ] **P14 decode 算子汤手术**（P12 数据出来后定向）：候选 = rope 乘法链折叠、conv 状态
+  Concat/Mod 环操作改造、residual Add 折叠进 SDPA/MatMul、Parameter（状态）绑定合并。
+
+背景：~~decode 已贴权重带宽地板~~（P11 证伪）、prefill chunk256 甜点已交付、预算规则已定案。
 剩余性能空间按性价比排序，逐项执行、证伪也记录、每项独立 commit：
 
 - [x] **P1 `--no-warmup` 净赢验证（2026-11-03 定案：赢 2.7 s）**：同暖缓存 A/B × 2 轮（`ctrl/ck_wu_ab.ps1`），
