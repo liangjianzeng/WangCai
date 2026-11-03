@@ -7,8 +7,10 @@
 > **面向 Intel® Core™ Ultra 的纯 NPU 端侧推理引擎。**
 > 让被业界晾了多年的 *Intel® AI Boost* 重新产生价值。
 >
-> **v0.0.1 · 2026-10-31 · 汪柴首个版本** —— NPU 端到端跑通 LFM3，精度主缺陷已定案修复
-> （三问验收 3/3）。变更全文见 [CHANGELOG.md](CHANGELOG.md)。
+> **v0.0.1 · 2026-10-31 引擎收官** —— NPU 端到端跑通 LFM3，精度主缺陷已定案修复（三问验收 3/3）。
+> **v0.0.2 · 2026-11-02/03 助手落地** —— Windows 桌面壳 M1–M4 完成：NPU / CUDA / Vulkan / 远端
+> 四线路由、托盘驻留、识图 DoD（官方引擎线）、Agent 回归、便携包 + Inno Setup 安装器。
+> 变更全文见 [CHANGELOG.md](CHANGELOG.md)。
 
 **简体中文** · [English](README_en.md)
 
@@ -19,8 +21,8 @@ CPU，也不依赖任何独立显卡。token 进来之后，prefill 与 decode �
 在 NPU 上执行。
 
 当前的模型线是 Liquid AI 的 **[LFM3](https://www.liquid.ai)**：一套"短卷积 + 滑动窗口注意力 +
-全局注意力"混合结构的全模态（omni-modal）模型族。第一个里程碑是其中的**文本（LLM）链路**，也是本
-仓库目前的全部工作内容。
+全局注意力"混合结构的全模态（omni-modal）模型族。第一个里程碑是其中的**文本（LLM）链路**；
+v0.0.2 起，仓库还包含把引擎装进端侧助手的 Windows 壳（见[路线图](#wangcai-assistant)）。
 
 ```
 prompt ──► llama.cpp（分词、构建 ggml cgraph）
@@ -67,8 +69,7 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | LFM3 全模态（音频 / 视觉输入） | 🟡 **音频与视觉输入 NPU 均端到端（2026-11-01）**：音频与 native Q8_0 参照逐字一致；视觉两根因定案修复（cacheless `input_len=-1` 平面越界 + NPUW `FOLD×FUNCALL_FOR_ALL` 配置交互损坏 clip 图），NPU 描述与 native 一致、文本三问 3/3；视觉吞吐（2026-11-02）warm encode 12.6 s → **亚秒级（542 ms 稳态 / 896 ms FS 冷）**（vs native 435 ms），根因：NPU 分支补 `ov::cache_dir` 插件 blob 缓存，权重烤成 Constants 的 clip 图此前每进程全量重编译 |
 | **副靶：跨模型验证（Spark-X2.6-4B + Qwen3-4B）** | ✅ **两个外部模型家族端到端跑通（2026-11-01）**：讯飞 Spark-X2.6-4B 与 Qwen3-4B（均为标准稠密 Transformer，与 LFM3 混合架构不同系）在 NPU 三问验收全 3/3；副靶顺带修好两个横切缺陷——u4 权重无法包宿主内存（曾阻塞所有非对称 4-bit 路径）与整数零点舍入（曾让静态图精度退化），Q4_K_M checkpoint 现在 OV-CPU 开箱即用。4B 在 llama-cli/server 流需 `PREFILL_CHUNK_SIZE=128`（预算规则：chunk + 最大 decode 图联合驻留，见 HANDOFF 2026-11-02 深夜；ctx≤512 的短对话实测 chunk256 可用且 pp +55–59%）；llama-bench 离线流 chunk256 随便用 |
 | **NPU decode 性能（4B）** | 🟡 **2.4 → ~6 t/s 稳态（2026-11-01 性能轮）**：根因是设备预算三图问题——prefill + legacy 全 ctx decode + level 图三张权重 bank 必爆（1.7B 装得下所以 LFM3 未暴露），level 图首个 execute 即 UNINITIALIZED 后永远降级。修复后 level 图真正生效（raw infer 436→~145 ms，已贴 2.3 GB 权重的带宽下限 ~7 t/s 的 85%）。剩余为 36 层标准注意力算子开销与上游依赖，见 HANDOFF 性能轮 |
-| **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
-| **端侧多模态助手「汪柴」** | 🟡 规划中 —— 把本引擎装进 TongYiLite（Flutter，安卓→Windows） |
+| **端侧多模态助手「汪柴」（v0.0.2）** | ✅ **M1–M4 全部完成（2026-11-02/03 开发机验证）**：`app/` Flutter Windows 壳（TongYi-Lite Dart 同路径 vendored，分叉清单 `app/UPSTREAM.md`）+ llama-server 子进程网关；三引擎齐——引擎商店钉官方 llama.cpp b12034（Vulkan+CUDA，sha256 白名单）+ OpenAI 远端 + 绑定表实测 t/s 回写 + 路由三档（速度优先 / NPU 优先 / 自动·拔电 NPU 加权），**DoD 四线真机 5/5**（NPU 1.7B / CUDA 4B 117.6 t/s / Vulkan 双卡 / 远端协议）；托盘驻留 + 电源感知 + HKCU 自启；**识图 DoD 达成**（SmolVLM2-500M + 商店 CUDA 引擎，壳网关 20 s 出准确语义描述；NPU 视觉编码缺陷归档 [docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md)，NPU 线做纯文本）；Agent `--jinja` 工具链全链路回归（tools 200，agent c4096）；便携包 `WangCai-0.0.2-win-x64-portable.zip`（干净进程自测 DLL 闭合）+ Inno Setup 脚本。⬜ 干净机装机验证待人工（`packaging/README.md`） |
 
 精度主缺陷的完整攻坚记录是这个仓库最有价值的资产之一：从"logits 被压平、K 缓存第 0 行错八个
 数量级"出发，历经 scatter / conv 算子 / DQ / RMS 池化 / 广播 tile 一连串被证伪的假设，最终钉死在
@@ -171,8 +172,11 @@ tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
 
 一句话：**汪柴 = 端侧多模态 AI 助手，NPU 引擎是它的低功耗心脏。**
 
-本仓库（WangCai）现在只做一件事：让大模型**完整跑在 Intel NPU 上**。这是"引擎"。但引擎不是终点——
-把它装进一个会说话、会看、会听、会推理的助手里，才是"汪柴"。
+本仓库（WangCai）的引擎线让大模型**完整跑在 Intel NPU 上**。引擎不是终点——把它装进一个会说话、会看、
+会听、会推理的助手里，才是"汪柴"。**这一步已经在 v0.0.2 落地**：`app/` 是 Flutter Windows 桌面壳
+（TongYi-Lite Dart 同路径 vendored，分叉清单 `app/UPSTREAM.md`），设计全文见
+[docs/assistant-v0.0.2-design.md](docs/assistant-v0.0.2-design.md)，M1–M4 验收记录见
+[CHANGELOG.md](CHANGELOG.md)。
 
 ### 三层结构
 
@@ -196,6 +200,9 @@ TongYiLite 现在是 **Flutter（不是 Kotlin）应用**：Dart 约 54k 行，K
   **`ggml-openvino`（NPU）**。
 - 本机已证明可行性：`.upgrade-tmp/host-mingw/bin/llama-mtmd-cli.exe` —— llama.cpp 已在 MinGW GCC 下
   原生构建成功。
+- **落地状态（v0.0.2）**：M1 起按"同路径 vendored + 分叉清单 `app/UPSTREAM.md`"完成移植；传输层走
+  **llama-server 子进程网关**（平台分支唯一化），C ABI 直链留作并行线、成熟后替换传输层壳无感
+  （设计稿 §0"明确不做"）。
 
 ### 为什么是 NPU（低功耗驱动）
 
@@ -209,25 +216,35 @@ LFM3 时 prefill 已达 **415 t/s**（CPU 参照的 73%），CPU 全程空闲。
 
 ### 多模态
 
-TongYiLite 已经具备：文本✅、视觉✅（mtmd + mmproj）、语音输入✅（sherpa ASR）、语音输出✅
-（Edge TTS + sherpa VITS）。模型目录里 `LFM3-VL-2B QAD-Q4_0` 已带 mmproj——**文本链路打通后，多模态
-是同一套后端的事**。
+助手线**识图 DoD 已达成（2026-11-03，官方引擎线）**：SmolVLM2-500M（商店下载入模型库）+ 引擎商店
+CUDA 引擎，壳网关全链路 20 s 出准确语义描述（`app/test/platform/vision_official_test.dart`）。NPU 侧
+视觉编码在 OV 后端 `graph_compute` 返 -1，缺陷归档 [docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md)
+——**NPU 线当前做纯文本**，识图由路由派给官方引擎。引擎侧音频输入 NPU 已端到端（与 native Q8_0
+参照逐字一致，见上表）。语音输入/输出管线（sherpa ASR / TTS）随壳 vendored，未列入 M1–M4 验收面。
 
 ### 分期
 
-- **Phase 0（本仓库）**：纯 NPU 引擎，LFM3 文本链路。🟡 进行中。
-- **Phase 1**：引擎移植进 TongYiLite 服务层，C ABI 抽取 + 后端可插拔。
-- **Phase 2**：App 在 Windows 跑通，CPU 后端先可用，再切 NPU。
-- **Phase 3**：多模态（视觉 / 语音）在 NPU 上端到端。
-- **Phase 4**：低功耗实测 + 功耗感知的调度策略。
+- **Phase 0（本仓库）**：纯 NPU 引擎，LFM3 文本链路。✅ 完成（v0.0.1 收官；音频/视觉见上表）。
+- **Phase 1**：引擎进入服务层。🟡 v0.0.2 实际以 **llama-server 子进程网关**落地（平台分支唯一化）；
+  C ABI 直链为并行线，成熟后替换传输层、壳无感。
+- **Phase 2**：App 在 Windows 跑通。✅ **v0.0.2 M1–M4 完成**：NPU/CUDA/Vulkan/远端四线 DoD、
+  托盘驻留、路由三档、Agent 回归、便携包 + Inno Setup 安装器（⬜ 干净机验证待人工）。
+- **Phase 3**：多模态端到端。🟡 识图 DoD 已在官方引擎线达成；NPU 视觉编码缺陷归档（NPU 线纯文本）；
+  语音管线 vendored、未列入已验收面。
+- **Phase 4**：低功耗实测 + 功耗感知的调度策略。⬜ 未启动（前置：电池机或外置功率计）。
+
+出包与安装：`packaging/build-installer.ps1`（便携 zip 无需 Inno 即可产出；装 Inno Setup 6 后自动附出
+`Setup.exe`），包内容与干净机验证清单见 [packaging/README.md](packaging/README.md)。
 
 ## 仓库结构
 
 ```
 src/ggml-openvino/    引擎本体：ggml OpenVINO 后端（上游 + WangCai 改动），可直接阅读
+app/                  汪柴助手 Flutter Windows 壳（v0.0.2 M1–M4；分叉清单 app/UPSTREAM.md）
+packaging/            打包：build-installer.ps1（便携 zip + Inno Setup 脚本）+ 包内容说明
 patches/              同一份改动的补丁形式（评审与上游化用）+ 逐 hunk 说明
 tools/                bootstrap / configure / build / run-npu / npu-sweep / compare-tensors / top-token
-docs/                 上手、构建、架构、NPU 内部机制、环境变量、基准、状态、排障、路线图
+docs/                 上手、构建、架构、NPU 内部机制、环境变量、基准、状态、排障、路线图、助手设计
 prompts/              中英样例 prompt（UTF-8）
 src/llama/            vendored 的 llama.cpp（.gitignore 排除，由 bootstrap 生成）
 ```
@@ -245,6 +262,7 @@ src/llama/            vendored 的 llama.cpp（.gitignore 排除，由 bootstrap
 | [当前状态](docs/status.md) | 今天到底什么能用，附验证命令 |
 | [故障排查](docs/troubleshooting.md) | 我们踩过的每一个报错及解法 |
 | [路线图](docs/roadmap.md) | 先精度、再吞吐、然后全模态 |
+| [助手 v0.0.2 设计](docs/assistant-v0.0.2-design.md) | 壳架构、引擎注册表、路由策略、M1–M4 DoD |
 
 ## 硬件要求
 

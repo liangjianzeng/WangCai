@@ -7,8 +7,11 @@
 > **Pure-NPU on-device inference engine for Intel® Core™ Ultra.**
 > Giving *Intel® AI Boost* — the accelerator the industry forgot — a second life.
 >
-> **v0.0.1 · 2026-10-31 · first release** — LFM3 end-to-end on the NPU; the main accuracy defect
-> root-caused and fixed (3-question acceptance 3/3). Full history in [CHANGELOG.md](CHANGELOG.md).
+> **v0.0.1 · 2026-10-31 · engine closed** — LFM3 end-to-end on the NPU; the main accuracy defect
+> root-caused and fixed (3-question acceptance 3/3).
+> **v0.0.2 · 2026-11-02/03 · the assistant lands** — Windows desktop shell, milestones M1–M4 done:
+> NPU / CUDA / Vulkan / remote routing, tray residency, vision DoD (official-engine line), agent
+> regression, portable zip + Inno Setup installer. Full history in [CHANGELOG.md](CHANGELOG.md).
 
 [简体中文](README.md) · **English**
 
@@ -23,7 +26,8 @@ executed on the NPU.
 
 The current target line is **[LFM3](https://www.liquid.ai)** from Liquid AI: a hybrid
 short-convolution / sliding-window / global-attention family that ships as an omni-modal stack.
-The first milestone is the **text (LLM) path**, which is what this repository documents today.
+The first milestone is the **text (LLM) path**; since v0.0.2 the repository also carries the
+Windows shell that puts the engine inside an on-device assistant (see the [roadmap](#wangcai-assistant)).
 
 ```
 prompt ──► llama.cpp (tokenize, build ggml cgraph)
@@ -73,7 +77,7 @@ Honest, measured, tracked in [docs/status.md](docs/status.md).
 | LFM3 omni modalities (audio in / vision in) | 🟡 **both audio and vision run end-to-end on the NPU (2026-11-01)**: audio byte-identical to the native Q8_0 reference; vision fixed via two root causes (cacheless `input_len=-1` plane overread + the NPUW `FOLD×FUNCALL_FOR_ALL` config interaction corrupting the clip graph) — the NPU description now matches native, text 3-question gate 3/3; vision throughput (2026-11-02): warm encode 12.6 s → **sub-second (542 ms steady / 896 ms FS-cold)** (vs native 435 ms) — root cause: the NPU branch now also sets `ov::cache_dir` (plugin blob cache), since the clip graph's baked `ov::Constants` weights never hit the NPUW cache and were fully recompiled every process |
 | **Secondary target: cross-model validation (Spark-X2.6-4B + Qwen3-4B)** | ✅ **two external model families run end-to-end (2026-11-01)**: iFlytek Spark-X2.6-4B and Qwen3-4B (both dense Transformers, unrelated to the LFM3 hybrid) pass the 3-question acceptance on the NPU 3/3. The secondary target surfaced two cross-cutting fixes — u4 weights could not wrap host memory (which blocked every asymmetric 4-bit path) and rounded integer zero points (which degraded static-graph accuracy); Q4_K_M checkpoints now run on OV-CPU out of the box. 4B needs `PREFILL_CHUNK_SIZE=128` on the llama-cli/server flows (budget rule: the prefill graph plus the LARGEST decode-level graph must fit together -- see HANDOFF 2026-11-02 late night; chunk256 is verified fine for ctx<=512 with pp +55–59%) -- llama-bench runs chunk256 freely (its decode mask never exceeds 256) |
 | **NPU decode performance (4B)** | 🟡 **2.4 → ~6 t/s steady-state (2026-11-01 performance round)**: root cause was a three-graph device-budget over-commit — prefill + legacy full-ctx decode + the level graph each carry a weights bank (a 1.7B model fits three, so LFM3 never exposed it); the level graph died on its first execute and every step silently ran the full-ctx graph. After the fix the level graphs actually run (raw infer 436→~145 ms, at 85% of the ~7 t/s weight-bandwidth floor for 2.3 GB; measure with a warm cache and n≥128 — the n=64 headline undercounts). The remainder is 36-layer standard-attention op overhead plus upstream dependencies — see the HANDOFF performance round |
-| **On-device multimodal assistant "WangCai"** | 🟡 planned — this engine inside TongYiLite (Flutter, Android→Windows) |
+| **On-device multimodal assistant "WangCai" (v0.0.2)** | ✅ **M1–M4 complete (2026-11-02/03, dev-machine verified)**: `app/` Flutter Windows shell (TongYi-Lite Dart vendored at the same paths, fork ledger `app/UPSTREAM.md`) + llama-server subprocess gateway; three engines wired — engine store pinned to official llama.cpp b12034 (Vulkan + CUDA, sha256 whitelist) + OpenAI-compatible remote + binding table with measured t/s write-back + three routing tiers — **DoD four lines green 5/5 on real hardware** (NPU 1.7B / CUDA 4B at 117.6 t/s / Vulkan dual-GPU / remote protocol); tray residency + power awareness + HKCU autostart; **vision DoD achieved** (SmolVLM2-500M + store CUDA engine, accurate semantic description through the shell gateway in 20 s; the NPU vision-encode defect is archived in [docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md) — the NPU line is text-only); agent `--jinja` tool-calling regression green (tools 200, agent c4096); portable `WangCai-0.0.2-win-x64-portable.zip` (clean-process self-test, DLL closure) + Inno Setup script. ⬜ clean-machine install verification pending (manual, `packaging/README.md`) |
 
 The hunt for the main accuracy defect is one of the most valuable assets in this repo: starting from
 "flattened logits, K-cache row 0 off by eight orders of magnitude", through a chain of disproven
@@ -92,11 +96,16 @@ which only an instruction-following prompt reveals.
 
 ## Roadmap: the on-device multimodal assistant "WangCai"
 
+<a id="wangcai-assistant"></a>
+
 In one line: **WangCai is an on-device multimodal assistant, and the NPU engine is its low-power heart.**
 
-This repository currently does one thing: run a quantized LLM **entirely on the Intel NPU**. That is the
-engine. The engine is not the destination — putting it inside an assistant that talks, sees, listens and
-reasons is what "WangCai" means.
+The engine line of this repository runs a quantized LLM **entirely on the Intel NPU**. The engine is not
+the destination — putting it inside an assistant that talks, sees, listens and reasons is what "WangCai"
+means, **and that step landed in v0.0.2**: `app/` is the Flutter Windows desktop shell (TongYi-Lite Dart
+vendored at the same paths, fork ledger `app/UPSTREAM.md`); full design in
+[docs/assistant-v0.0.2-design.md](docs/assistant-v0.0.2-design.md), M1–M4 acceptance records in
+[CHANGELOG.md](CHANGELOG.md).
 
 ### Three layers
 
@@ -123,6 +132,10 @@ loading, per-token callbacks, MTP speculative decoding and mtmd vision encoding.
   MSVC + Ninja + **`ggml-openvino` (NPU)**.
   Feasibility is already demonstrated locally: `.upgrade-tmp/host-mingw/bin/llama-mtmd-cli.exe` proves
   llama.cpp builds natively for Windows x64 under MinGW.
+- **Porting status (v0.0.2)**: since M1 the port is done via *same-path vendoring + fork ledger
+  (`app/UPSTREAM.md`)*; the transport layer is a **llama-server subprocess gateway** (single point of
+  platform branching). The direct C ABI link stays a parallel line — once mature it replaces the
+  transport with the shell unaware (§0 "explicitly not in scope" of the design doc).
 
 ### Why the NPU (low power)
 
@@ -139,17 +152,35 @@ that, plus prefill headroom, is the next target (accuracy was fixed in v0.0.1;
 
 ### Modalities
 
-TongYiLite already ships text ✅, vision ✅ (mtmd + mmproj), speech in ✅ (sherpa ASR) and speech out ✅
-(Edge TTS + sherpa VITS). Its model catalog already carries `LFM3-VL-2B QAD-Q4_0` with an mmproj — once the
-text path is right, the modalities are a question for the same backend.
+The assistant's **vision DoD is achieved (2026-11-03, on the official-engine line)**: SmolVLM2-500M
+(downloaded into the model library via the store) + the store's CUDA engine — an accurate semantic
+description of the test image end-to-end through the shell gateway in 20 s
+(`app/test/platform/vision_official_test.dart`). On the NPU side, mtmd vision encoding fails with
+`graph_compute` returning -1 on the OV backends; the defect is archived in
+[docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md) — **the NPU line is text-only today**, and vision
+routes to the official engines. On the engine side, audio input already runs end-to-end on the NPU
+(byte-identical to the native Q8_0 reference; see the status table). The speech in/out pipelines
+(sherpa ASR / TTS) are vendored with the shell but were not part of the M1–M4 acceptance surface.
 
 ### Phases
 
-- **Phase 0 (this repository)**: pure-NPU engine, LFM3 text path. 🟡 in progress.
-- **Phase 1**: move the engine into the TongYiLite service layer — C ABI extraction, pluggable backends.
-- **Phase 2**: the app runs on Windows; CPU backend first, NPU second.
-- **Phase 3**: modalities (vision / speech) end to end on the NPU.
-- **Phase 4**: measured low power, and power-aware scheduling policy.
+- **Phase 0 (this repository)**: pure-NPU engine, LFM3 text path. ✅ done (closed in v0.0.1;
+  audio / vision in the status table above).
+- **Phase 1**: move the engine into the service layer. 🟡 landed in v0.0.2 as a **llama-server
+  subprocess gateway** (single point of platform branching); the direct C ABI link stays a parallel
+  line — mature, it replaces the transport and the shell does not notice.
+- **Phase 2**: the app runs on Windows. ✅ **v0.0.2 M1–M4 complete**: NPU/CUDA/Vulkan/remote DoD
+  four lines green, tray residency, three routing tiers, agent regression, portable zip + Inno Setup
+  installer (⬜ clean-machine verification pending, manual).
+- **Phase 3**: modalities end to end. 🟡 vision DoD achieved on the official-engine line; the NPU
+  vision-encode defect is archived (NPU line text-only); speech pipelines vendored, not yet in the
+  accepted surface.
+- **Phase 4**: measured low power, and power-aware scheduling policy. ⬜ not started (needs a
+  battery-backed machine or an external power meter).
+
+Build and install: `packaging/build-installer.ps1` (portable zip without Inno; with Inno Setup 6 the
+`Setup.exe` is produced too) — package contents and the clean-machine checklist in
+[packaging/README.md](packaging/README.md).
 
 ## Measured numbers
 
@@ -233,10 +264,12 @@ build details in [docs/build.md](docs/build.md).
 
 ```
 src/ggml-openvino/    the engine itself: the ggml OpenVINO backend (upstream + WangCai changes)
+app/                  the assistant's Flutter Windows shell (v0.0.2 M1–M4; fork ledger app/UPSTREAM.md)
+packaging/            packaging: build-installer.ps1 (portable zip + Inno Setup script) + package notes
 patches/              the same change as a reviewable patch, with per-hunk notes
 tools/                bootstrap / configure / build / run-npu / npu-sweep / compare-tensors / top-token
 docs/                 getting started, build, architecture, NPU internals, env vars, benchmarks,
-                      status, troubleshooting, roadmap
+                      status, troubleshooting, roadmap, assistant design
 prompts/              sample prompts (UTF-8)
 src/llama/            vendored llama.cpp (git-ignored, produced by bootstrap)
 ```
@@ -254,6 +287,7 @@ src/llama/            vendored llama.cpp (git-ignored, produced by bootstrap)
 | [Status](docs/status.md) | what works today, with the command that proves it |
 | [Troubleshooting](docs/troubleshooting.md) | every error we hit and how it was resolved |
 | [Roadmap](docs/roadmap.md) | accuracy first, then throughput, then omni modalities |
+| [Assistant v0.0.2 design](docs/assistant-v0.0.2-design.md) | shell architecture, engine registry, routing, M1–M4 DoD |
 
 ## Hardware requirements
 
