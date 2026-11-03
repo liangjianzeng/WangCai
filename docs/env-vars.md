@@ -35,12 +35,17 @@
 当设备为 NPU 时，由后端设置的默认值：
 
 ```
-NPU_COMPILER_DYNAMIC_QUANTIZATION = YES      NPUW_FOLD          = YES
+NPU_COMPILER_DYNAMIC_QUANTIZATION = YES      NPUW_FOLD          = NO（2026-11-04 起，见下）
 NPU_USE_NPUW                      = YES      NPUW_WEIGHTS_BANK  = shared
 NPUW_DEVICES                      = NPU      NPUW_FUNCALL_FOR_ALL = YES
 NPUW_DQ                           = YES      NPUW_FUNCALL_ASYNC = YES
 NPUW_DQ_FULL                      = NO       NPUW_CACHE_DIR     = <GGML_OPENVINO_CACHE_DIR>
 ```
+
+`NPUW_FOLD=NO`（2026-11-04 性能轮定案）：权重折叠在 NPU 上把 decode/prefill 步序列化成
+eltwise/concat 算子汤——关掉后 1.7B `pp512 406→778 t/s / tg 14.1→22.5`、4B
+`pp2048(chunk256) 42.8→86 / tg 6.9→8.9`，三问验收两模型全绿。代价是冷编译慢 ~10×
+（blob 缓存吸收）；用 `GGML_OPENVINO_NPU_COMPILE_OVERRIDES=NPUW_FOLD=YES` 可恢复旧行为。
 
 | 变量 | 取值 | 说明 |
 |---|---|---|

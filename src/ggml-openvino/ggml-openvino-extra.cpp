@@ -190,7 +190,13 @@ void ggml_openvino_device_config::init() {
             {"NPU_COMPILER_DYNAMIC_QUANTIZATION", "YES"   },
             {"NPU_USE_NPUW",                      "YES"   },
             {"NPUW_DEVICES",                      "NPU"   },
-            {"NPUW_FOLD",                         "YES"   },
+            // FOLD=NO since 2026-11-04 (P12): NPUW weight folding materializes dequant
+            // "cluster" patterns that serialize the step into eltwise/concat soup -- with
+            // folding off, llama-bench 1.7B jumps pp512 406->778 / tg 14.1->22.5 t/s and 4B
+            // pp2048(chunk256) 42.8->86 / tg 6.9->8.9 t/s, with 3-question acceptance green
+            // on both models. Compile is ~10x slower cold (blob cache absorbs it). Override
+            // with GGML_OPENVINO_NPU_COMPILE_OVERRIDES=NPUW_FOLD=YES to restore.
+            {"NPUW_FOLD",                         "NO"    },
             {"NPUW_WEIGHTS_BANK",                 "shared"},
             {"NPUW_FUNCALL_FOR_ALL",              "YES"   },
             {"NPUW_FUNCALL_ASYNC",                "YES"   },

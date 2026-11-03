@@ -16,8 +16,31 @@
   计算重叠，理论地板 ~36 ms（1.37 GB ÷ 38 GB/s 实测常量流速率）≈ 27 t/s（对 14.07 基线 +91%）。
   基线表（本日 bench 口径）：1.7B pp512 406.5 / pp2048 283.7 / tg 14.07；4B pp2048(ck128) 42.8 /
   pp512(ck256) 135.6 / tg 6.89。
-- [ ] **P12 NPUW 编译开关 1.7B 重测**（旧证伪在带宽论误判背景下做出，需翻案）：FOLD=NO /
-  FUNCALL_FOR_ALL=NO / FUNCALL_ASYNC=NO / DQ=NO 四臂。
+- [x] **P12 NPUW 编译开关重测 → `NPUW_FOLD=NO` 成为新默认（2026-11-04 定案）**：旧"证伪"是带宽论
+  误判时代（level 图落地前、2.4 t/s 全 ctx 图域）的数据，全部翻案重测。1.7B（bench p512 tg128 r3，
+  对基线 pp 406.5 / tg 14.07）：
+  | 臂 | pp512 | tg128 | 备注 |
+  |---|---:|---:|---|
+  | **FOLD=NO** | **778.9（+91%）** | **22.54（+60%）** | 唯一大杠杆；冷编译 ~10×（blob 缓存吸收） |
+  | FUNCALL_FOR_ALL=NO | 451.6（+11%） | 20.52（+46%） | 机制疑似与 FOLD 同族 |
+  | FUNCALL_ASYNC=NO | 426.8（+5%） | 15.04（+7%） | 边际 |
+  | FOLD+FCALL 组合 | 778.5 | 22.23 | 无叠加，FOLD 单独即最优 |
+  | DQ=NO | — | — | 进程消失（4B 时代即编译失败，复现，未再追） |
+  4B（Spark，对基线 pp2048/ck128 42.8、pp512/ck256 135.6、tg 6.89）：FOLD=NO →
+  pp2048/ck128 50.6（+18%）、**pp512/ck256 192.2（+42%）**、**pp2048/ck256 86.0（+101%，见 P15）**、
+  tg 8.9（+29%）；组合臂 52.3/8.92 无叠加。
+  **精度**：1.7B 三问 3/3（n=96；n=48 时 Beijing 因 CoT 前导截断，语义在轨）、4B 三问 3/3。
+  **默认值已翻转**（extra.cpp NPU 分支 NPUW_FOLD=NO，注释含数字与回退方式；两树同步）。
+- [ ] **P15 预算规则重审**：旧"ctx≥1024 禁止 chunk256"（2026-11-02 定案）在 FOLD=NO 下部分松动——
+  4B chunk256 c2048 **bench 流**三遍全绿且 pp +101%（86.0）；但 **cli -st 流 chunk256 c640 仍 flaky**
+  （三问 1 pass / 2 fail，decode 首 execute "Compute error"——同旧 ZE_UNINITIALIZED 家族签名；
+  干净磁盘 36 GB 复测排除磁盘满伪影）。**生产结论不变：4B 用 chunk128**（新默认下验收 3/3：
+  reg4b128），chunk256 维持"离线 bench/批量 prefill 专用"。待查：lv256@c640 首执行失败后的
+  fallback 缓存交互（Q3 在 Q1/Q2 编译过 fallback 后通过，疑似 fallback 图被盘缓存救活）。
+  音频/视觉 NPU 图未在 FOLD=NO 下复验（不在 v0.0.2 已接受 surface 内，复验挂起）。
+  **磁盘教训**：4B FOLD=NO 图缓存 ~14 GB/ctx 形状（c4fold 两形状 28 GB）——本轮曾把 D: 盘写满
+  （100%），之后所有缓存写入静默失败、实验数字仍有效（编译在内存完成）但复跑全量重编。
+  生产发布需在 packaging 文档写明缓存目录预留 ≥20 GB/模型/ctx。
 - [ ] **P13 prefill 逐节点剖析**：静态 prefill 循环原本没有 `dump_ov_profiling_info`（只有 decode
   分支有）——已补（utils.cpp 两树同步）；prof_prefill 首轮 4 个 CSV 实为 decode 图（剖析桩缺失时
   的误采，作废）。重跑取 chunk256 prefill 真实构成。
