@@ -34,12 +34,17 @@ void main() {
     ProjectStore.testDefault = store;
     JsonlSessionStore.legacyBaseOverrideForTest = legacyBase.path;
     JsonlSessionStore.projectIdResolver = null;
+    // v0.0.4 修复：SQLite 库路径同样隔离——此前直写真实
+    // %APPDATA%\WangCai\wangcai.db，留下 mig-old-* 测试垃圾会话。
+    StorageService.dbPathOverrideForTest = '${tmp.path}/test.db';
   });
 
-  tearDown(() {
+  tearDown(() async {
     ProjectStore.testDefault = null;
     JsonlSessionStore.legacyBaseOverrideForTest = null;
     JsonlSessionStore.projectIdResolver = null;
+    StorageService.dbPathOverrideForTest = null;
+    await StorageService.closeForTest(); // 释放句柄后再删临时目录
     if (tmp.existsSync()) tmp.deleteSync(recursive: true);
     if (legacyBase.existsSync()) legacyBase.deleteSync(recursive: true);
   });

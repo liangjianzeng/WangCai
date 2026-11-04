@@ -41,7 +41,9 @@ Future<void> _initDesktopWindow() async {
     await windowManager.waitUntilReadyToShow(
       WindowOptions(
         title: '汪柴 WangCai',
-        minimumSize: const Size(520, 480),
+        // v0.0.4：聊天工具式窄窗（用户 2026-11-05：最小宽度要到原来的一半，
+        // "太肥大了"）——360 宽 ≈ 手机聊天宽度；几何记忆会记住用户的窄窗尺寸。
+        minimumSize: const Size(360, 480),
         size: geo?.size ?? const Size(1280, 800),
       ),
       () async {

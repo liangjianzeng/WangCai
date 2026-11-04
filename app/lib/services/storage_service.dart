@@ -16,6 +16,18 @@ class StorageService {
   /// 测试注入：旧库候选路径（覆盖 CWD 默认探测）。
   static List<String>? legacyDbCandidatesForTest;
 
+  /// 测试注入：库文件路径（覆盖真实 %APPDATA%\WangCai\wangcai.db——
+  /// 2026-11-05 实案：project_layer_test 无隔离直写真库，留下 mig-old-* 垃圾会话）。
+  static String? dbPathOverrideForTest;
+
+  /// 测试专用：关闭单例连接（tearDown 删临时库目录前必须调用，否则文件句柄
+  /// 未释放 → 删除失败）。
+  static Future<void> closeForTest() async {
+    final d = _db;
+    _db = null;
+    await d?.close();
+  }
+
   Future<Database> get database async {
     if (_db != null) return _db!;
     _db = await _init();
@@ -28,6 +40,8 @@ class StorageService {
   /// 首次打开时旧库整体 copy 过来（旧文件原地保留 = 天然备份，不 rename：
   /// 旧位可能在另一卷），此后新库为准。
   static String databasePath() {
+    final o = dbPathOverrideForTest;
+    if (o != null) return o;
     final f = migrateLegacyDbIfAny();
     return f.path;
   }
@@ -40,10 +54,16 @@ class StorageService {
       // 跟 CWD 走），但这里必须在 openDatabase 前同步定案；旧位只可能是少数几个，
       // 逐候选探测即可，全部只读。
       final cwd = Directory.current.path;
+      final repo = WangCaiPaths.repoRoot();
       final candidates = legacyDbCandidatesForTest ??
           <String>[
             join(cwd, '.dart_tool', 'sqflite_common_ffi', 'databases',
                 'tongyilite.db'),
+            // v0.0.4 补：打包/Release 形态 CWD 没有 .dart_tool，但开发机旧
+            // dev 库就在仓库里（repo marker 上溯定位）——按标记找回搬迁。
+            if (repo != null)
+              join(repo.path, '.dart_tool', 'sqflite_common_ffi', 'databases',
+                  'tongyilite.db'),
             join(cwd, 'databases', 'tongyilite.db'),
             join(cwd, 'tongyilite.db'),
           ];

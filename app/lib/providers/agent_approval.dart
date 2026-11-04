@@ -67,6 +67,14 @@ class PendingApprovalsNotifier extends StateNotifier<PendingApproval?> {
       await Future<void>.delayed(const Duration(milliseconds: 100));
       guard++;
     }
+    // 队列自愈（v0.0.4 真机实案：用户在别的会话没看到卡片 → 前一条悬挂 →
+    // 回合永远"思考中"转圈 + 并发槽占满）：60s 无人决议的旧请求视为拒绝
+    // 放行，绝不让 completer 悬挂。
+    final stale = state;
+    if (stale != null) {
+      if (!stale.completer.isCompleted) stale.completer.complete(false);
+      state = null;
+    }
     if (!c.isCompleted) state = req;
     try {
       return await c.future;

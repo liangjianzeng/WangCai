@@ -192,7 +192,11 @@ final conversationsProvider =
   // 项目层级（v0.0.3）：watch 激活项目 id —— 切换项目时 riverpod 重建本
   // notifier（值相等去重，改名/刷新不会白白重载列表）。
   return ConversationsNotifier(ref.read(storageServiceProvider),
-      projectId: ref.watch(activeProjectIdProvider));
+      projectId: ref.watch(activeProjectIdProvider),
+      // v0.0.4 修复：create 时**惰性再取一次**激活项目——构造期项目还没加载
+      // 完（null）而用户几分钟后才点"新对话"时，旧写法把会话挂成 NULL
+      // projectId，在自定义项目下不可见（2026-11-05 真机实案）。
+      projectIdResolver: () => ref.read(activeProjectIdProvider));
 });
 
 class ConversationsNotifier extends StateNotifier<List<Conversation>> {
@@ -200,9 +204,14 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
 
   /// 归属项目（null = 未加载/不过滤：加载期间先展示全量，加载完自然收敛）。
   final String? _projectId;
+
+  /// create 时惰性解析（见 conversationsProvider 注释）；null 回落 [_projectId]。
+  final String? Function()? _projectIdResolver;
   Completer<void>? _loadCompleter;
-  ConversationsNotifier(this._storage, {String? projectId})
+  ConversationsNotifier(this._storage,
+      {String? projectId, String? Function()? projectIdResolver})
       : _projectId = projectId,
+        _projectIdResolver = projectIdResolver,
         super([]) {
     _ensureLoaded();
   }
@@ -225,10 +234,11 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
   Future<void> ensureLoaded() => _ensureLoaded();
 
   Future<void> create({String title = '新对话'}) async {
-    // 新会话自动归属当前激活项目（项目未加载时留 NULL = 默认项目语义，
-    // 迁移器的 NULL 兜底保证可见性）。
+    // 新会话自动归属当前激活项目：惰性解析优先（创建那一刻的真实激活项），
+    // 未加载时留 NULL = 默认项目语义（迁移器的 NULL 兜底保证可见性）。
+    final pid = _projectIdResolver?.call() ?? _projectId;
     final conv = await _storage.createConversation(
-        title: title, projectId: _projectId);
+        title: title, projectId: pid);
     state = [conv, ...state];
   }
 
