@@ -2,13 +2,13 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../../models/chat_message.dart' show ChatMessage, MessageRole;
 import '../../project/project.dart';
 import '../../project/project_store.dart';
 import 'event.dart';
 import 'log.dart';
+import '../../platform/wangcai_paths.dart';
 
 /// JSONL 会话存储（Phase 0；v0.0.3 挂项目树）。
 ///
@@ -57,7 +57,7 @@ final class JsonlSessionStore {
   /// 旧平铺路径（ApplicationSupport/sessions，只读兜底，不建目录）。
   Future<String> legacyPathFor(String conversationId) async {
     final base = legacyBaseOverrideForTest ??
-        (await getApplicationSupportDirectory()).path;
+        WangCaiPaths.legacyAppSupportHome().path;
     return p.join(base, 'sessions', '${_safe(conversationId)}.jsonl');
   }
 

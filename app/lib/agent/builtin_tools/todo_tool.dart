@@ -14,9 +14,9 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show visibleForTesting;
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../tool_definition.dart';
+import '../../platform/wangcai_paths.dart';
 
 /// 各会话的进程级清单缓存（key = conversationId；写入即落盘）。
 final Map<String, List<Map<String, String>>> _todoStores = {};
@@ -27,7 +27,7 @@ String _safeConv(String conversationId) =>
     conversationId.replaceAll(RegExp(r'[^\w-]'), '_');
 
 Future<String> _baseDir() async {
-  _todoBaseDir ??= (await getApplicationSupportDirectory()).path;
+  _todoBaseDir ??= WangCaiPaths.dataDir('todo').path;
   return _todoBaseDir!;
 }
 

@@ -16,6 +16,7 @@ import 'providers/agent_approval.dart'
 import 'providers/settings_provider.dart' show settingsProvider;
 import 'screens/home_screen.dart';
 import 'platform/inference_gateway.dart';
+import 'platform/wangcai_paths.dart';
 import 'services/model_manager.dart';
 import 'services/storage_service.dart' show StorageService;
 import 'asr/sherpa_streaming_asr.dart';
@@ -44,6 +45,11 @@ Future<void> main() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
+
+  // v0.0.4 数据家统一（DSH ~/.dsh 纪律）：旧家（com.dgxspark\wangcai_app）子目录
+  // 一次性搬进 %APPDATA%\WangCai。幂等、失败静默、旧数据不删（.migrated 备份）。
+  // 必须在任何 store/goal/skill 初始化之前跑。
+  WangCaiPaths.migrateLegacyHome();
 
   // v0.0.3 项目层级（设计 §12 Phase 1）：会话→项目解析器接线 +
   // 旧平铺会话一次性幂等迁移。迁移失败绝不阻塞启动——读取侧本来就有

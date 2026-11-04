@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 import '../models/chat_message.dart';
 import '../models/conversation.dart';
+import '../platform/wangcai_paths.dart';
 
 class StorageService {
   static final StorageService _instance = StorageService._internal();
@@ -11,16 +13,62 @@ class StorageService {
 
   static Database? _db;
 
+  /// 测试注入：旧库候选路径（覆盖 CWD 默认探测）。
+  static List<String>? legacyDbCandidatesForTest;
+
   Future<Database> get database async {
     if (_db != null) return _db!;
     _db = await _init();
     return _db!;
   }
 
+  /// 数据库绝对路径（v0.0.4 数据家统一）：%APPDATA%\WangCai\wangcai.db。
+  /// 旧名 tongyilite.db 且位置跟 CWD 走（getDatabasesPath：开发态
+  /// .dart_tool/sqflite_common_ffi/databases、打包态 exe 工作目录）——
+  /// 首次打开时旧库整体 copy 过来（旧文件原地保留 = 天然备份，不 rename：
+  /// 旧位可能在另一卷），此后新库为准。
+  static String databasePath() {
+    final f = migrateLegacyDbIfAny();
+    return f.path;
+  }
+
+  static File migrateLegacyDbIfAny() {
+    final target = File(join(WangCaiPaths.dataRoot().path, 'wangcai.db'));
+    if (target.existsSync()) return target;
+    try {
+      // getDatabasesPath 是异步 API（实测 = absolute('.dart_tool/sqflite_common_ffi/databases')，
+      // 跟 CWD 走），但这里必须在 openDatabase 前同步定案；旧位只可能是少数几个，
+      // 逐候选探测即可，全部只读。
+      final cwd = Directory.current.path;
+      final candidates = legacyDbCandidatesForTest ??
+          <String>[
+            join(cwd, '.dart_tool', 'sqflite_common_ffi', 'databases',
+                'tongyilite.db'),
+            join(cwd, 'databases', 'tongyilite.db'),
+            join(cwd, 'tongyilite.db'),
+          ];
+      for (final c in candidates) {
+        final old = File(c);
+        if (old.existsSync()) {
+          target.parent.createSync(recursive: true);
+          old.copySync(target.path);
+          // 伴生 journal/wal 一并带走（若有），避免旧事务尾巴丢进新库。
+          for (final suffix in ['-journal', '-wal', '-shm']) {
+            final j = File('$c$suffix');
+            if (j.existsSync()) j.copySync('${target.path}$suffix');
+          }
+          break;
+        }
+      }
+    } catch (_) {
+      // 搬迁失败不阻塞：新库照常创建（旧库仍在原位可手工找回）。
+    }
+    return target;
+  }
+
   Future<Database> _init() async {
-    final path = join(await getDatabasesPath(), 'tongyilite.db');
     return await openDatabase(
-      path,
+      databasePath(),
       version: 7,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,

@@ -11,7 +11,7 @@ library;
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
+import '../../platform/wangcai_paths.dart';
 
 /// 加载的 AGENTS.md 内容。
 final class AgentsMd {
@@ -51,8 +51,7 @@ Future<AgentsMd> loadAgentsMd({String? workspacePath}) async {
 }
 
 Future<String?> _readGlobal() async {
-  final dir = await getApplicationSupportDirectory();
-  final file = File(p.join(dir.path, 'AGENTS.md'));
+  final file = File(WangCaiPaths.dataDir('AGENTS.md').path);
   if (!file.existsSync()) return null;
   try {
     return file.readAsStringSync();

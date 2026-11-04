@@ -16,12 +16,12 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import '../agent/dev/workspace_store.dart';
 import '../services/storage_service.dart';
 import 'project.dart';
 import 'project_store.dart';
+import '../platform/wangcai_paths.dart';
 
 /// 迁移结果（日志与测试断言用）。
 final class MigrationReport {
@@ -58,7 +58,7 @@ Future<MigrationReport> migrateLegacySessions({
   // --- 1. 旧平铺目录 → 默认项目 sessions 树 --------------------------------
   final legacyDir = legacySessionsDir ??
       Directory(
-          p.join((await getApplicationSupportDirectory()).path, 'sessions'));
+          p.join(WangCaiPaths.legacyAppSupportHome().path, 'sessions'));
   if (legacyDir.existsSync()) {
     final backup = Directory('${legacyDir.path}.backup');
     if (!backup.existsSync()) {

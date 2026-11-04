@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'workspace.dart';
 import 'task.dart';
+import '../../platform/wangcai_paths.dart';
 
 final class DevStore {
   DevStore({this.baseDirOverride});
@@ -33,8 +34,7 @@ final class DevStore {
   /// ApplicationSupport/dev/ 根目录（测试时 = override/dev）。
   Future<String> _devDir() async {
     if (baseDirOverride != null) return p.join(baseDirOverride!, 'dev');
-    final base = await getApplicationSupportDirectory();
-    return p.join(base.path, 'dev');
+    return WangCaiPaths.dataDir('dev').path;
   }
 
   Future<String> _workspaceDir() async => p.join(await _devDir(), 'workspaces');

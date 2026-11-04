@@ -13,7 +13,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import 'package:url_launcher/url_launcher.dart';
 import 'package:uuid/uuid.dart';
@@ -2040,8 +2039,7 @@ class AgentSettingsBodyState extends ConsumerState<AgentSettingsBody> {
   }
 
   Future<void> _loadAgentsMdInfo() async {
-    final base = await getApplicationSupportDirectory();
-    final file = File(p.join(base.path, 'AGENTS.md'));
+    final file = File(WangCaiPaths.dataDir('AGENTS.md').path);
     if (!mounted) return;
     setState(() {
       _agentsMdPath = file.path;
@@ -2930,8 +2928,7 @@ class AgentSettingsBodyState extends ConsumerState<AgentSettingsBody> {
 
   /// AGENTS.md 编辑对话框（全局文件）。
   Future<void> _editAgentsMd() async {
-    final base = await getApplicationSupportDirectory();
-    final file = File(p.join(base.path, 'AGENTS.md'));
+    final file = File(WangCaiPaths.dataDir('AGENTS.md').path);
     final initial = file.existsSync() ? file.readAsStringSync() : '';
     if (!mounted) return;
     final controller = TextEditingController(text: initial);
@@ -2983,13 +2980,14 @@ class AgentSettingsBodyState extends ConsumerState<AgentSettingsBody> {
 
   /// 智能体数据目录对话框（可复制路径）。
   Future<void> _showDataDirs() async {
-    final base = await getApplicationSupportDirectory();
     if (!mounted) return;
     final dirs = <String, String>{
-      '会话事件日志': p.join(base.path, 'sessions'),
-      '工具输出溢写': p.join(base.path, 'agent_spill'),
-      '用户技能': p.join(base.path, 'skills'),
-      'AGENTS.md': _agentsMdPath ?? p.join(base.path, 'AGENTS.md'),
+      '数据根目录': WangCaiPaths.dataRoot().path,
+      '会话事件日志（项目树）': WangCaiPaths.dataDir('projects').path,
+      '工具输出溢写': WangCaiPaths.dataDir('agent_spill').path,
+      '用户技能': WangCaiPaths.dataDir('skills').path,
+      'AGENTS.md': _agentsMdPath ?? WangCaiPaths.dataDir('AGENTS.md').path,
+      '数据库': WangCaiPaths.dataDir('wangcai.db').path,
     };
     await showDialog<void>(
       context: context,

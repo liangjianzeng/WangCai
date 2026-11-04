@@ -4,7 +4,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:path_provider/path_provider.dart';
 import '../asr/hold_to_talk.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart'
@@ -66,6 +65,7 @@ import '../plugins/plugin_host.dart';
 import '../plugins/plugin_input_icon.dart';
 import '../plugins/slot_outlet.dart';
 import 'package:plugin_kernel/plugin_kernel.dart' show SlotRegistry;
+import '../platform/wangcai_paths.dart';
 
 /// App-lifetime guard: 启动自动加载默认模型只执行一次。
 /// 放在库作用域，避免首页路由重建时重复触发（与设置页 `_appLaunchScanDone` 同风格）。
@@ -2362,8 +2362,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// 计划存储（P1 计划实体化；与 chat_provider 同目录 goals/）。
   GoalStore? _planStoreCache;
   Future<GoalStore> _planStore() async {
-    _planStoreCache ??= GoalStore(
-        baseDir: '${(await getApplicationSupportDirectory()).path}/goals');
+    _planStoreCache ??=
+        GoalStore(baseDir: WangCaiPaths.dataDir('goals').path);
     return _planStoreCache!;
   }
 

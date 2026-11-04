@@ -7,9 +7,9 @@ library;
 
 import 'dart:io';
 
-import 'package:path_provider/path_provider.dart';
 
 import 'skill.dart';
+import '../../platform/wangcai_paths.dart';
 
 String _join(String a, String b) {
   final sep = (a.endsWith('/') || a.endsWith('\\')) ? '' : '/';
@@ -151,7 +151,7 @@ List<Skill> _dedupeByRank(List<Skill> skills) {
 Future<List<Skill>> loadUserSkills({String? skillsDirOverride}) async {
   try {
     final dirPath = skillsDirOverride ??
-        _join((await getApplicationSupportDirectory()).path, 'skills');
+        WangCaiPaths.dataDir('skills').path;
     final dir = Directory(dirPath);
     if (!dir.existsSync()) return const [];
     final out = <Skill>[];
@@ -180,7 +180,7 @@ Future<List<Skill>> loadUserSkills({String? skillsDirOverride}) async {
 
 /// 用户技能根目录路径（`ApplicationSupport/skills`）。
 Future<String> userSkillsDirPath() async =>
-    _join((await getApplicationSupportDirectory()).path, 'skills');
+    WangCaiPaths.dataDir('skills').path;
 
 /// 技能名 → 安全目录名：压缩空白为 `-`，剔除路径/非法字符。
 /// 剔除后为空（如纯符号名）返回 null，由调用方报错。
@@ -235,7 +235,7 @@ Future<String> writeUserSkill({
     throw ArgumentError('技能名无效（剔除非法字符后为空）');
   }
   final root = skillsDirOverride ??
-      _join((await getApplicationSupportDirectory()).path, 'skills');
+      WangCaiPaths.dataDir('skills').path;
   final skillDir = Directory(_join(root, dirName));
   skillDir.createSync(recursive: true);
   if (previousName != null) {
@@ -267,7 +267,7 @@ Future<bool> deleteUserSkill(String name, {String? skillsDirOverride}) async {
   final dirName = sanitizeSkillDirName(name);
   if (dirName == null) return false;
   final root = skillsDirOverride ??
-      _join((await getApplicationSupportDirectory()).path, 'skills');
+      WangCaiPaths.dataDir('skills').path;
   final dir = Directory(_join(root, dirName));
   if (!dir.existsSync()) return false;
   dir.deleteSync(recursive: true);

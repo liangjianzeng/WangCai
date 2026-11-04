@@ -18,9 +18,9 @@ import 'package:crypto/crypto.dart';
 import 'package:edge_tts/edge_tts.dart';
 import 'package:flutter/foundation.dart' show ValueNotifier, debugPrint;
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import 'tts_text.dart';
+import '../platform/wangcai_paths.dart';
 
 /// 供 UI 直接展示的音色条目（解耦 edge_tts 的 Voice 类）。
 class TtsVoiceInfo {
@@ -258,8 +258,7 @@ class EdgeTtsService {
   // ---- 合成 ----
 
   Future<Directory> _cacheDir() async {
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory(p.join(base.path, 'tts_cache'));
+    final dir = Directory(WangCaiPaths.dataDir('tts_cache').path);
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return dir;
   }

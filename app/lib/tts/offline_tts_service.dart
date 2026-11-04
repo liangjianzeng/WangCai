@@ -24,8 +24,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
+import '../platform/wangcai_paths.dart';
 
 /// 引擎抽象：真机用 [SherpaOfflineTtsEngine]，测试塞假的即可（原生跑不了测试）。
 abstract interface class OfflineTtsEngine {
@@ -161,7 +161,7 @@ final class OfflineTtsService {
   }
 
   static Future<Directory> _rootDir() async =>
-      Directory(p.join((await getApplicationSupportDirectory()).path, 'tts'));
+      Directory(WangCaiPaths.dataDir('tts').path);
 
   /// 这个引擎接不接这段文本。**宁可少接，不许念错**：模型是英文 VITS，
   /// 喂中文它不会报错、只会吐出念不成形的声音 —— 那比不念还糟（听写场景直接误导孩子）。

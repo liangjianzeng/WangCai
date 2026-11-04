@@ -17,10 +17,10 @@ import 'dart:typed_data';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart' show ChangeNotifier, debugPrint;
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
 import 'secret_store.dart' show resolveSshSecrets;
 import 'ssh_credentials.dart';
+import '../../../platform/wangcai_paths.dart';
 
 /// 连接状态。
 enum SshStatus { idle, connecting, connected, failed }
@@ -357,8 +357,7 @@ final class SshEnvironmentService extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   Future<File> _hostKeysFile() async {
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory(p.join(base.path, 'dev', 'ssh'));
+    final dir = Directory(WangCaiPaths.dataDir('dev', 'ssh').path);
     if (!dir.existsSync()) dir.createSync(recursive: true);
     return File(p.join(dir.path, 'hostkeys.json'));
   }

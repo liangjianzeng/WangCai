@@ -6,11 +6,14 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
+import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import '../models/chat_message.dart';
 import '../models/conversation.dart';
 import '../models/turn_trace.dart';
+import '../project/project_store.dart';
 import 'project_provider.dart' show activeProjectIdProvider;
+import '../platform/wangcai_paths.dart';
 
 import '../agent/agent.dart';
 import '../agent/dev/dev.dart'
@@ -231,8 +234,8 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
     // 计划按会话管理（2026-10-25 用户定案）：会话删除 → 计划文件随删。
     unawaited(() async {
       try {
-        final base = await getApplicationSupportDirectory();
-        await GoalStore(baseDir: '${base.path}/goals').deletePlan(id);
+        await GoalStore(baseDir: WangCaiPaths.dataDir('goals').path)
+            .deletePlan(id);
       } catch (_) {}
     }());
     // 会话 JSONL 随删（v0.0.3 项目树；旧平铺一并清，绝不留幽灵副本）。
@@ -380,12 +383,21 @@ class ChatNotifier extends StateNotifier<bool> {
   /// sendMessage 顶部同步注册占位（防双开竞态），finally 注销。
   final Map<String, _ActiveTurn> _activeTurns = {};
 
-  /// P0 遥测：回合指标落盘（ApplicationSupport/metrics/turn_metrics.jsonl）。
-  /// 循环零侵入——指标在回合结束后从 SessionLog 纯派生。
-  TurnMetricsStore? _metricsStore;
+  /// 项目作用域子目录（v0.0.4 Phase 1c）：metrics/traces 归
+  /// `projects/<pid>/`，解析失败回退全局 dataDir（默认项目前/解析异常时）。
+  Future<String> _projectSubBase(String conversationId, String name) async {
+    try {
+      final pid =
+          await StorageService().projectOfConversation(conversationId);
+      if (pid != null && pid.isNotEmpty) {
+        return await ProjectStore().projectSubDir(pid, name);
+      }
+    } catch (_) {}
+    return WangCaiPaths.dataDir(name).path;
+  }
 
-  /// P0 轨迹：每回合自动落盘的目录缓存（ApplicationSupport/traces）。
-  String? _traceDir;
+  /// P0 遥测：回合指标落盘（projects/<pid>/metrics/，全局兜底）。
+  /// 循环零侵入——指标在回合结束后从 SessionLog 纯派生。
 
   /// P1-D 技能目录冻结缓存：convId → 目录文本。同一会话内技能目录文本
   /// 不变（系统提示稳定保 API prompt cache / 本地 KV 前缀），技能集变化
@@ -397,9 +409,7 @@ class ChatNotifier extends StateNotifier<bool> {
   final Map<String, String> _lastTurnEndReason = {};
 
   Future<GoalStore> _goalStore() async {
-    _goalStoreCache ??= GoalStore(
-        baseDir:
-            '${(await getApplicationSupportDirectory()).path}/goals');
+    _goalStoreCache ??= GoalStore(baseDir: WangCaiPaths.dataDir('goals').path);
     return _goalStoreCache!;
   }
 
@@ -1904,10 +1914,9 @@ class ChatNotifier extends StateNotifier<bool> {
         final metrics =
             TurnMetrics.fromLog(sessionLog, agent.phaseState.turn);
         if (metrics != null) {
-          _metricsStore ??= TurnMetricsStore(
-              baseDir:
-                  '${(await getApplicationSupportDirectory()).path}/metrics');
-          await _metricsStore!.record(metrics);
+          final store = TurnMetricsStore(
+              baseDir: await _projectSubBase(conversationId, 'metrics'));
+          await store.record(metrics);
         }
       } catch (e) {
         debugPrint('[ChatNotifier] metrics record failed: $e');
@@ -1915,10 +1924,9 @@ class ChatNotifier extends StateNotifier<bool> {
       // P0 轨迹：设置开启时整份会话轨迹落 JSONL（回放/评估/排障用）。
       if (settings.agentTraceExportEnabled) {
         try {
-          _traceDir ??=
-              '${(await getApplicationSupportDirectory()).path}/traces';
           final f = await trace_export.writeTraceFile(sessionLog,
-              baseDir: _traceDir!, conversationId: conversationId);
+              baseDir: await _projectSubBase(conversationId, 'traces'),
+              conversationId: conversationId);
           logManager.appendInferenceLog('轨迹已落盘 | ${f.path}');
         } catch (e) {
           debugPrint('[ChatNotifier] trace export failed: $e');
@@ -2443,8 +2451,7 @@ class ChatNotifier extends StateNotifier<bool> {
   /// 溢写存储：超长工具输出落盘 `ApplicationSupport/agent_spill/`，
   /// 返回文件路径（模型侧摘要里带定位，可按需读取）。
   static Future<String> _writeSpillFile(Uint8List bytes) async {
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory('${base.path}/agent_spill');
+    final dir = WangCaiPaths.dataDir('agent_spill');
     if (!dir.existsSync()) dir.createSync(recursive: true);
     final file = File('${dir.path}/'
         'spill_${DateTime.now().microsecondsSinceEpoch}_${bytes.length}.bin');

@@ -16,13 +16,13 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 import 'package:plugin_kernel/plugin_kernel.dart';
 
 import '../../services/settings_service.dart' show InferenceSettings;
 import '../../providers/settings_provider.dart';
 import '../../providers/shared_providers.dart';
 import 'plugin_files.dart';
+import '../../platform/wangcai_paths.dart';
 
 /// 切档的结果（面板照着播一句话就行）。
 final class ProfileSwitchResult {
@@ -280,8 +280,7 @@ class HostProfiles {
 
   /// 开机时读一次盘，拿到档目录与当前档。
   static Future<HostProfiles> boot() async {
-    final support = await getApplicationSupportDirectory();
-    final dir = Directory(p.join(support.path, 'profiles'));
+    final dir = Directory(WangCaiPaths.dataDir('profiles').path);
     if (!await dir.exists()) await dir.create(recursive: true);
     final file = JsonMapFile('plugin_profile.json');
     final data = await file.read();

@@ -14,9 +14,9 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
-import 'package:path_provider/path_provider.dart';
 
 import 'long_image_plan.dart';
+import '../platform/wangcai_paths.dart';
 
 export 'long_image_plan.dart'
     show
@@ -206,8 +206,7 @@ class LongImageService {
   }
 
   static Future<Directory> _defaultSlicesDir() async {
-    final base = await getApplicationSupportDirectory();
-    final dir = Directory('${base.path}/vision_slices');
+    final dir = Directory(WangCaiPaths.dataDir('vision_slices').path);
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
