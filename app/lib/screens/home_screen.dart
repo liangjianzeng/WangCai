@@ -951,6 +951,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ?.title;
     final headerTitle =
         (convTitle == null || convTitle.isEmpty) ? '' : convTitle;
+    // v0.0.4（用户反馈"类似聊天工具"）：窄窗（<700 逻辑像素）自动收起左栏
+    // ——rail 不占位，导航走顶栏汉堡（开「会话」面板，面板滑入覆盖任何宽度
+    // 都可用）；宽窗下仍由 Logo 手动收起/展开。
+    final narrowWindow = MediaQuery.sizeOf(context).width < 700;
+    final railVisible = !_railCollapsed && !narrowWindow;
 
     // harness 布局：左栏（能力/配置入口）+ 主区（AppBar + 消息 + composer）。
     // 面板从左滑入、只盖主区（含 AppBar），rail 恒可见。
@@ -1032,8 +1037,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     color: Theme.of(context).colorScheme.outlineVariant),
               ),
               toolbarHeight: 44,
-              leading: _railCollapsed
-                  ? Tooltip(
+              leading: railVisible
+                  ? null
+                  : (narrowWindow
+                      // 窄窗：汉堡 = 开「会话」面板（面板滑入覆盖，任何宽度可用）。
+                      ? IconButton(
+                          tooltip: '会话',
+                          onPressed: () => _railPanel.toggle('chats'),
+                          icon: const Icon(Icons.menu, size: 20),
+                        )
+                      // 宽窗手动收起态：恢复 Logo。
+                      : Tooltip(
                       message: '展开侧边栏',
                       child: GestureDetector(
                         onTap: () => setState(() => _railCollapsed = false),
@@ -1061,8 +1075,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           ),
                         ),
                       ),
-                    )
-                  : null,
+                    )),
               // v0.0.4（用户 2026-11-05）：顶栏放**当前会话名**——应用名在
               // 窗口标题栏已经有了，主区顶栏不重复占位；无为空、有则显示。
               title: headerTitle.isEmpty
@@ -1133,7 +1146,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _buildRail(SlotRegistry registry) {
     final anyRunning = ref.watch(runningTurnsProvider).isNotEmpty;
-    if (_railCollapsed) return const SizedBox.shrink();
+    // 收起条件：手动折叠（Logo 点击）或窄窗自动收起（聊天工具形态）。
+    if (_railCollapsed || MediaQuery.sizeOf(context).width < 700) {
+      return const SizedBox.shrink();
+    }
     return AppRail(
       onLogoTap: () {
         setState(() => _railCollapsed = true);

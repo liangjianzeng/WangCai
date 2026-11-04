@@ -302,7 +302,10 @@ class _RailPanelHostState extends State<RailPanelHost> {
                 final open = key != null && widget.pages.containsKey(key);
                 if (open) _lastKey = key;
                 final spec = _lastKey != null ? widget.pages[_lastKey] : null;
+                // clipBehavior 显式 hardEdge：面板滑出（-1.2 倍自身宽）后
+                // 任何越界像素一律裁掉——"收起不干净、漏出一条"在渲染层不可能发生。
                 return Stack(
+                  clipBehavior: Clip.hardEdge,
                   children: [
                     widget.child,
                     // 幕布：开着才可点（IgnorePointer 防穿透）。
