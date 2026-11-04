@@ -1136,3 +1136,20 @@ NEOX rotate-half 的每节点 Multiply(x2,-1) 移进共享 swapped-sin 表（P14
 NPUW 编译旋钮面（FOLD/DQ/DQ_FULL/FUNCALL/WEIGHTS_BANK）也无 prefill 增益——
 剩余差距 = DPU MatMul 计算域（54%）+ residual Add launch 界（27%，数学不可消）+ chunk 固定成本。
 **下一步需要 NPUW 内部调度改动（subgraph 粒度 / tile 策略），不是 translator 工作。**
+
+### P18：自动 prefill 升档 + 默认翻转失效修复（2026-11-05 晚）
+**P18 auto prefill chunk promotion**（utils.cpp，未 pin 流零改动）：env 把 chunk 钉在 128（4B 生产档）时，
+token 数 129–512 的 prefill 自动升 chunk256 图（该区间 chunk128 需 2–4 个整块，chunk256 只需 1–2）。
+- **bench 实锤**：pp200（升档区正中）184.81 t/s = chunk256 单块 1.08s；非升图 chunk128 模型值 ~127 t/s
+  （2 块 1.58s）→ **+46%**，与 README 时代 +55-59% 的区间结论一致
+- >512 保持 128（大图顶爆 decode 预算共存）；≤128 不换图；env 未设置 = 256 缺省不变；decode 图不受影响
+- **验证插曲（两条教训）**：① 第一轮"假阴性"（43.6 t/s 不升档）是 `D:\llm\npu\bin` 陈旧 DLL（04:28 早于
+  P18 构建 06:34）——刷新镜像后 bench 才实锤；llama-cli 那个 1793 字符长 prompt 实际 >512 token，
+  本来就该留在 128 区（设计行为，不是 bug）。② **两树同步是手工的**：bld.bat 只 build D: 树，
+  E: 的改动必须先 cp 过去（本轮 extra.cpp 修复差点被漏掉——DLL mtime 不动才发现）
+- **重大发现：6077ff8 的默认翻转是死的**。`ggml_openvino_getenv_int()` 对未设置变量返回缺省 0，
+  门控里 `getenv_int(...) == 0` 把"未设置"当成显式 `=0` → 装出来的"默认 ON"实际是默认 OFF。
+  tg128 探针（env 不设，新 DLL）实测 **8.87 t/s = 链式值**（该是 12.26）当场抓包。
+  修复：改用 `getenv_str` 判 nullptr 区分"未设置"与"显式 0"。**教训：任何 default 翻转，
+  必须用"env 完全不设"的探针验一遍，A/B 的 ON 臂是显式 =1，验不出翻转失效。**
+  （受影响范围：6077ff8 起所有"默认开"路径；打包 zip 里的引擎同样是 OFF 的，需要重打包）

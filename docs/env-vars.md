@@ -22,11 +22,11 @@
 
 | 变量 | 取值 | 说明 |
 |---|---|---|
-| `GGML_OPENVINO_PREFILL_CHUNK_SIZE` | 整数，默认 `256` | 每个静态预填充（prefill）分块的 token 数；必须 ≤ `-b`。同时也是图缓存键的一部分。 |
+| `GGML_OPENVINO_PREFILL_CHUNK_SIZE` | 整数，默认 `256` | 每个静态预填充（prefill）分块的 token 数；必须 ≤ `-b`。同时也是图缓存键的一部分。**P18 自动升档（2026-11-05）**：当该值被显式钉在 `128`（4B 生产档）时，token 数落在 129–512 的 prefill 自动改用 chunk256 图（该区间 chunk128 需 2–4 个整块而 chunk256 只需 1–2 个；bench 实测 pp200 升档 184.8 t/s，非升图模型值 ~127 t/s）；>512 保持钉住的 128（更大图会顶爆 decode 预算共存），≤128 不换图（单块本就装得下）。env 未设置时保持 256 缺省不变；decode 图不受影响，prefill/decode 缓存键互不混淆。 |
 | `GGML_OPENVINO_STATEFUL_EXECUTION` | `0`/`1` | 基于 OV `Variable` 的缓存（无需每步重新绑定）。**仅限 CPU/GPU** —— 在 NPU 上会被强制关闭。 |
 | `GGML_OPENVINO_MANUAL_GQA_ATTN` | `0`/`1` | 绕过 `SDPA`，用基本算子（op）组合出 GQA 注意力。GPU 路径默认使用；**NPU 上不可行（P14c 定案，2026-11-04）**：VCL 编译器拒绝组合图（`ZE_RESULT_ERROR_INVALID_ARGUMENT`），4B A/B 四臂全灭于编译。 |
 | `GGML_OPENVINO_ROPE_F16` | `0`/`1`（默认 `0`） | **由 WangCai 新增（P14d）。** 无状态且 f16 的 rope 全链路在 f16 域计算（cos/sin 表在共享链内转一次），省掉被钉在 Shave 上的 f32 往返。**A/B 已证伪（2026-11-04）**：两模型全轴持平略负（4B tg 8.6 vs 8.96），默认保持 OFF；保留开关供 rope 相关实验复现。 |
-| `GGML_OPENVINO_KV_HOST_WRITE` | `0`/`1`（**默认开**，`0` 显式关闭） | **由 WangCai 新增（P14e，2026-11-05 转默认）。** 静态 NPU decode 图的 FULL-attention 层 KV 行写出图外：set_rows 摘掉 ScatterNDUpdate、attention 用 Concat 补当前列、执行器在 infer 后 memcpy 行到 cache（行号 = idx % rows）。**严格同 cache A/B 实锤（2026-11-05）**：4B tg128 8.89 → 12.26 t/s = **+38% 纯摘链增益**（vs P11 基线 6.89 = **+78%**），prefill 双向持平，1.7B 双向回归绿（混合 SWA 模型的 SWA 环写保持链式）。解码器 all-or-nothing 门控保证不合格图完全走链式。**默认翻转使 extra_cfg blob 键变化——旧编译缓存失效一次（冷编译）**。 |
+| `GGML_OPENVINO_KV_HOST_WRITE` | `0`/`1`（**默认开**，`0` 显式关闭） | **由 WangCai 新增（P14e，2026-11-05 转默认）。** 静态 NPU decode 图的 FULL-attention 层 KV 行写出图外：set_rows 摘掉 ScatterNDUpdate、attention 用 Concat 补当前列、执行器在 infer 后 memcpy 行到 cache（行号 = idx % rows）。**严格同 cache A/B 实锤（2026-11-05）**：4B tg128 8.89 → 12.26 t/s = **+38% 纯摘链增益**（vs P11 基线 6.89 = **+78%**），prefill 双向持平，1.7B 双向回归绿（混合 SWA 模型的 SWA 环写保持链式）。解码器 all-or-nothing 门控保证不合格图完全走链式。**默认翻转使 extra_cfg blob 键变化——旧编译缓存失效一次（冷编译）**。**2026-11-05 修正**：6077ff8 的翻转实际是死的（`getenv_int` 对未设置变量返回缺省 0，`== 0` 判定把"未设置"当成了显式关），当天 tg128 探针（未设 env 实测 8.87 = 链式值）抓到后改为 `getenv_str` 判 nullptr——未设置才真正默认开，显式 `0` 仍可退出。 |
 | `GGML_OPENVINO_MOE_NPU` | `0`/`1`（默认 `0`） | **由 WangCai 新增（P15）。** 在 NPU 上也注册 MoE 融合 pass（FuseMoeRouter/FuseMoeCompressed）。NPUW 能编译融合图（无崩溃），但 Spark-X2.6-4B 是 dense 模型（GGUF 无 expert 键），pass 无匹配对象——**当前模型集上为 no-op**，保留给真 MoE 模型。 |
 | `GGML_OPENVINO_NATIVE_SOFTPLUS` | `0`/`1` | 使用原生 `SoftPlus`，还是组合式实现。 |
 | `GGML_OPENVINO_DISABLE_REMOTE_OUTPUTS` | `0`/`1` | 停止通过 remote tensor 把输出别名到 ggml 缓冲区。 |
