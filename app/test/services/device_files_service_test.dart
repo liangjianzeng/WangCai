@@ -5,7 +5,7 @@
 // "跑成功了但什么都没发生"。这一组用例钉死：**空串必须抛**，别让它冒充成功。
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/services/device_files_service.dart';
+import 'package:wangcai/services/device_files_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

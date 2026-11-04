@@ -6,9 +6,9 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/session/event.dart' show kEventToolResult;
-import 'package:tongyi_lite/agent/session/store.dart';
-import 'package:tongyi_lite/models/chat_message.dart';
+import 'package:wangcai/agent/session/event.dart' show kEventToolResult;
+import 'package:wangcai/agent/session/store.dart';
+import 'package:wangcai/models/chat_message.dart';
 
 ChatMessage _user(String id, String content, {int ms = 0}) => ChatMessage(
       id: id,

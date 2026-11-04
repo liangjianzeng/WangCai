@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'package:dartssh2/dartssh2.dart' show SSHKeyPair;
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/dev/ssh/ssh_credentials.dart';
-import 'package:tongyi_lite/services/settings_service.dart';
+import 'package:wangcai/agent/dev/ssh/ssh_credentials.dart';
+import 'package:wangcai/services/settings_service.dart';
 
 void main() {
   group('InferenceSettings 智能体配置默认值', () {

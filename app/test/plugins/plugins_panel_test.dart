@@ -10,11 +10,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_kernel/plugin_kernel.dart';
 import 'package:plugin_sdk/testing.dart';
-import 'package:tongyi_lite/plugins/builtin/en_dictation/en_dictation_plugin.dart';
-import 'package:tongyi_lite/plugins/builtin/hello/hello_plugin.dart';
-import 'package:tongyi_lite/plugins/host/host_profiles.dart';
-import 'package:tongyi_lite/plugins/panel/plugins_screen.dart';
-import 'package:tongyi_lite/plugins/plugin_host.dart';
+import 'package:wangcai/plugins/builtin/en_dictation/en_dictation_plugin.dart';
+import 'package:wangcai/plugins/builtin/hello/hello_plugin.dart';
+import 'package:wangcai/plugins/host/host_profiles.dart';
+import 'package:wangcai/plugins/panel/plugins_screen.dart';
+import 'package:wangcai/plugins/plugin_host.dart';
 
 /// 一改配置就炸的插件：`apply` 抛异常 → `setConfig` 返回的是 **`Ok(ChangeResult)` 里装着失败**。
 /// 面板要是只看 Ok/Err，就会对着一个根本没生效的操作回一句「已更新」。

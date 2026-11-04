@@ -9,9 +9,9 @@ library;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/websearch/src/engine_http.dart';
-import 'package:tongyi_lite/websearch/src/link_resolver.dart';
-import 'package:tongyi_lite/websearch/src/multi_engine_search.dart';
+import 'package:wangcai/websearch/src/engine_http.dart';
+import 'package:wangcai/websearch/src/link_resolver.dart';
+import 'package:wangcai/websearch/src/multi_engine_search.dart';
 
 const _live = bool.fromEnvironment('LIVE_SEARCH');
 const _liveEnv = 'TONGYILITE_LIVE_SEARCH';

@@ -14,17 +14,17 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:tongyi_lite/engine/bindings_store.dart';
-import 'package:tongyi_lite/models/chat_message.dart';
-import 'package:tongyi_lite/platform/local_server_inference.dart';
-import 'package:tongyi_lite/platform/wangcai_paths.dart';
-import 'package:tongyi_lite/providers/chat_provider.dart';
-import 'package:tongyi_lite/providers/model_provider.dart';
-import 'package:tongyi_lite/providers/settings_provider.dart';
-import 'package:tongyi_lite/providers/shared_providers.dart';
-import 'package:tongyi_lite/services/settings_service.dart';
-import 'package:tongyi_lite/services/storage_service.dart';
-import 'package:tongyi_lite/tts/edge_tts_service.dart';
+import 'package:wangcai/engine/bindings_store.dart';
+import 'package:wangcai/models/chat_message.dart';
+import 'package:wangcai/platform/local_server_inference.dart';
+import 'package:wangcai/platform/wangcai_paths.dart';
+import 'package:wangcai/providers/chat_provider.dart';
+import 'package:wangcai/providers/model_provider.dart';
+import 'package:wangcai/providers/settings_provider.dart';
+import 'package:wangcai/providers/shared_providers.dart';
+import 'package:wangcai/services/settings_service.dart';
+import 'package:wangcai/services/storage_service.dart';
+import 'package:wangcai/tts/edge_tts_service.dart';
 
 class _InMemSettingsService extends SettingsService {
   InferenceSettings _current = const InferenceSettings();

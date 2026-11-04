@@ -1,29 +1,23 @@
-/// 开发工作区模型（Dev Agent Phase A）—— 一个可操作目录的"身份"。
+/// 开发工作区模型（Dev Agent Phase A，桌面独立版）—— 一个可操作目录的"身份"。
 ///
 /// 现有 `documents/workspace` 根目录退化为 `default` 工作区实例
 /// （backend=localApp），旧行为零回归。用户新建的项目是独立工作区，
 /// 本地镜像落在 `documents/workspace/projects/<id>/`，远端工作区
-/// （Termux / 远程 PC）以 [remotePath] 指路、经 SSH/SFTP 访问。
+/// （远程 PC）以 [remotePath] 指路、经 SSH/SFTP 访问。
+///
+/// Windows 分叉：手机端 embedded（内嵌沙箱）与 termux 后端已删除。
 library;
 
 /// 工作区后端：决定文件工具/命令的物理执行位置。
 enum WorkspaceBackend {
-  /// app 沙盒内（documents/workspace 及 projects/<id> 本地镜像）。
+  /// 本机（documents/workspace 及 projects/<id> 本地镜像，系统 shell/git 执行）。
   localApp,
-
-  /// 内嵌工具沙箱（app 私有 dev 目录 + 系统 toybox/mksh + jniLibs 工具 +
-  /// JGit 进程内 git）。本地执行、无 SSH；文件即本地镜像目录。
-  embedded,
-
-  /// 手机上的 Termux Linux 用户态（127.0.0.1:8022）。
-  termux,
 
   /// 远程电脑（OpenSSH/WSL），同一连接层、host 指 PC。
   remotePc;
 
   /// 是否远端后端（需要 SSH 配置与远端路径）。
-  bool get isRemoteBackend =>
-      this == WorkspaceBackend.termux || this == WorkspaceBackend.remotePc;
+  bool get isRemoteBackend => this == WorkspaceBackend.remotePc;
 }
 
 /// 工作区内部参数键：ToolExecutor 执行前注入当前激活工作区 id
@@ -77,8 +71,7 @@ final class DevWorkspace {
   bool get isDefault => id == kDefaultId;
 
   /// 是否远端后端（文件/命令经 SSH/SFTP）。
-  bool get isRemote =>
-      backend == WorkspaceBackend.termux || backend == WorkspaceBackend.remotePc;
+  bool get isRemote => backend == WorkspaceBackend.remotePc;
 
   DevWorkspace copyWith({
     String? name,

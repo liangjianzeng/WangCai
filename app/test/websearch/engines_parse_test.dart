@@ -8,11 +8,11 @@ library;
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/websearch/src/engines/baidu_engine.dart';
-import 'package:tongyi_lite/websearch/src/engines/bing_cn_engine.dart';
-import 'package:tongyi_lite/websearch/src/engines/so360_engine.dart';
-import 'package:tongyi_lite/websearch/src/engines/sogou_engine.dart';
-import 'package:tongyi_lite/websearch/src/search_hit.dart';
+import 'package:wangcai/websearch/src/engines/baidu_engine.dart';
+import 'package:wangcai/websearch/src/engines/bing_cn_engine.dart';
+import 'package:wangcai/websearch/src/engines/so360_engine.dart';
+import 'package:wangcai/websearch/src/engines/sogou_engine.dart';
+import 'package:wangcai/websearch/src/search_hit.dart';
 
 String fixture(String name) =>
     File('test/websearch/fixtures/$name').readAsStringSync();

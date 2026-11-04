@@ -4,8 +4,8 @@ library;
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/websearch/src/search_hit.dart';
-import 'package:tongyi_lite/websearch/src/engines/quark_engine.dart';
+import 'package:wangcai/websearch/src/search_hit.dart';
+import 'package:wangcai/websearch/src/engines/quark_engine.dart';
 
 String _hydrate(Map<String, dynamic> data) =>
     '<script type="application/json" id="s-data-1" data-used-by="hydrate">'

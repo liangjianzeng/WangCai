@@ -5,9 +5,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/models/chat_message.dart';
-import 'package:tongyi_lite/providers/context_usage_provider.dart';
-import 'package:tongyi_lite/widgets/conversation_stats_bar.dart';
+import 'package:wangcai/models/chat_message.dart';
+import 'package:wangcai/providers/context_usage_provider.dart';
+import 'package:wangcai/widgets/conversation_stats_bar.dart';
 
 ChatMessage _user(String c) => ChatMessage(
       id: 'u${c.hashCode}',

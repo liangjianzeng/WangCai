@@ -6,8 +6,8 @@ import 'dart:io';
 import 'package:archive/archive_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/engine/engine_paths.dart';
-import 'package:tongyi_lite/engine/engine_store.dart';
+import 'package:wangcai/engine/engine_paths.dart';
+import 'package:wangcai/engine/engine_store.dart';
 
 List<int> _zipWithServer() {
   final arch = Archive()

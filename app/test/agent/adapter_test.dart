@@ -1,12 +1,12 @@
 import 'dart:async';
 
-import 'package:tongyi_lite/agent/capability.dart';
-import 'package:tongyi_lite/agent/llm/adapter.dart';
-import 'package:tongyi_lite/agent/llm/base_engine_adapter.dart';
-import 'package:tongyi_lite/agent/protocol/prompt_json_protocol.dart';
-import 'package:tongyi_lite/agent/protocol/protocol_selector.dart';
-import 'package:tongyi_lite/agent/protocol/tool_protocol.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
+import 'package:wangcai/agent/capability.dart';
+import 'package:wangcai/agent/llm/adapter.dart';
+import 'package:wangcai/agent/llm/base_engine_adapter.dart';
+import 'package:wangcai/agent/protocol/prompt_json_protocol.dart';
+import 'package:wangcai/agent/protocol/protocol_selector.dart';
+import 'package:wangcai/agent/protocol/tool_protocol.dart';
+import 'package:wangcai/agent/tool_registry.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// 覆写 prepareCall 的桩（仿 [BaseEngineAdapter]，注入能力快照）。

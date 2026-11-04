@@ -3,7 +3,7 @@
 // 用 `flutter test test/plugins` 跑（它 import 了 Flutter 负载，跑不了纯 dart test）。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_sdk/testing.dart';
-import 'package:tongyi_lite/plugins/builtin/hello/hello_plugin.dart';
+import 'package:wangcai/plugins/builtin/hello/hello_plugin.dart';
 
 void main() {
   test('hello-note 过 conformance 六组', () async {

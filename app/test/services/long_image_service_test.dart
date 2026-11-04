@@ -5,7 +5,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/services/long_image_service.dart';
+import 'package:wangcai/services/long_image_service.dart';
 
 /// 断言：块 y 严格递增、每块 >0 高、并集完整覆盖 [0, height)。
 void expectFullCoverage(List<List<int>> plan, int height) {

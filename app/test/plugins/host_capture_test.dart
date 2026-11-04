@@ -2,7 +2,7 @@
 // 用 `flutter test test/plugins` 跑。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_sdk/plugin_sdk.dart';
-import 'package:tongyi_lite/plugins/host/host_capture.dart';
+import 'package:wangcai/plugins/host/host_capture.dart';
 
 class _FakePort implements ImagePickPort {
   _FakePort({this.photos = const ['/sdcard/DCIM/1.jpg'], this.gallery = const [], this.granted = true, this.throws});

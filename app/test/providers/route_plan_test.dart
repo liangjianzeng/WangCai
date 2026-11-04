@@ -1,6 +1,6 @@
-import 'package:tongyi_lite/models/api_model.dart';
-import 'package:tongyi_lite/providers/chat_provider.dart';
-import 'package:tongyi_lite/services/settings_service.dart';
+import 'package:wangcai/models/api_model.dart';
+import 'package:wangcai/providers/chat_provider.dart';
+import 'package:wangcai/services/settings_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 // ---------------------------------------------------------------------------

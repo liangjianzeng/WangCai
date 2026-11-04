@@ -11,8 +11,8 @@
 /// 3. 完整档逐字节保持旧行为（不许被瘦身顺带改坏）。
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/agent.dart';
-import 'package:tongyi_lite/agent/protocol/native_tool_protocol.dart';
+import 'package:wangcai/agent/agent.dart';
+import 'package:wangcai/agent/protocol/native_tool_protocol.dart';
 
 void main() {
   /// 一个"重描述 + 带沙箱升级参数"的工具 —— 模拟 python_exec/shell_exec

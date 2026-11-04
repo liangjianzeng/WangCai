@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/agent.dart';
-import 'package:tongyi_lite/agent/llm/adapter.dart'
+import 'package:wangcai/agent/agent.dart';
+import 'package:wangcai/agent/llm/adapter.dart'
     show LlmFailure, LlmFailureCode;
 
 void main() {

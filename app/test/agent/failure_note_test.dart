@@ -1,10 +1,10 @@
-import 'package:tongyi_lite/agent/llm/adapter.dart' show LlmAdapter, LlmFailure, LlmFailureCode, LlmResult, ProviderKind;
-import 'package:tongyi_lite/agent/loop/agent.dart';
-import 'package:tongyi_lite/agent/loop/config.dart';
-import 'package:tongyi_lite/agent/loop/failure.dart';
-import 'package:tongyi_lite/agent/session/session.dart';
-import 'package:tongyi_lite/agent/tool_definition.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
+import 'package:wangcai/agent/llm/adapter.dart' show LlmAdapter, LlmFailure, LlmFailureCode, LlmResult, ProviderKind;
+import 'package:wangcai/agent/loop/agent.dart';
+import 'package:wangcai/agent/loop/config.dart';
+import 'package:wangcai/agent/loop/failure.dart';
+import 'package:wangcai/agent/session/session.dart';
+import 'package:wangcai/agent/tool_definition.dart';
+import 'package:wangcai/agent/tool_registry.dart';
 import '../helpers/fake_llm.dart';
 import 'package:flutter_test/flutter_test.dart';
 

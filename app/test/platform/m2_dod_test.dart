@@ -8,13 +8,13 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:tongyi_lite/engine/bindings_store.dart';
-import 'package:tongyi_lite/engine/engine_config.dart' show EngineConfig;
-import 'package:tongyi_lite/engine/engine_paths.dart';
-import 'package:tongyi_lite/engine/engine_store.dart';
-import 'package:tongyi_lite/platform/local_server_inference.dart';
-import 'package:tongyi_lite/platform/wangcai_paths.dart';
-import 'package:tongyi_lite/providers/shared_providers.dart';
+import 'package:wangcai/engine/bindings_store.dart';
+import 'package:wangcai/engine/engine_config.dart' show EngineConfig;
+import 'package:wangcai/engine/engine_paths.dart';
+import 'package:wangcai/engine/engine_store.dart';
+import 'package:wangcai/platform/local_server_inference.dart';
+import 'package:wangcai/platform/wangcai_paths.dart';
+import 'package:wangcai/providers/shared_providers.dart';
 
 void main() {
   // 刻意不 ensureInitialized（M1-d 教训：binding 把 HttpClient mock 成 400，

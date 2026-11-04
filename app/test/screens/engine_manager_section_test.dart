@@ -5,9 +5,9 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/engine/engine_paths.dart';
-import 'package:tongyi_lite/engine/engine_registry.dart';
-import 'package:tongyi_lite/screens/engine_manager_section.dart';
+import 'package:wangcai/engine/engine_paths.dart';
+import 'package:wangcai/engine/engine_registry.dart';
+import 'package:wangcai/screens/engine_manager_section.dart';
 
 void main() {
   late Directory tmp;

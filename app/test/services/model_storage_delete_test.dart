@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/services/model_storage_service.dart';
+import 'package:wangcai/services/model_storage_service.dart';
 
 /// 模型删除的落盘清扫（2026-10-30 反馈「删除点了没反应，再进列表还在」）。
 ///

@@ -4,11 +4,11 @@
 //    主动压缩迟迟不触发直到撞服务端硬墙）。
 // 2. CompactionStats：压缩必须可观测——before/after token、遮蔽数、来源。
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/context_eng/compaction.dart';
-import 'package:tongyi_lite/agent/context_eng/token_estimate.dart';
-import 'package:tongyi_lite/agent/loop/failure.dart';
-import 'package:tongyi_lite/agent/session/event.dart';
-import 'package:tongyi_lite/agent/session/session.dart';
+import 'package:wangcai/agent/context_eng/compaction.dart';
+import 'package:wangcai/agent/context_eng/token_estimate.dart';
+import 'package:wangcai/agent/loop/failure.dart';
+import 'package:wangcai/agent/session/event.dart';
+import 'package:wangcai/agent/session/session.dart';
 
 void main() {
   group('estimateContextTokens（中文加权）', () {

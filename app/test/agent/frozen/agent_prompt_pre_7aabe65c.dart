@@ -10,8 +10,8 @@
 /// 此处先做最简拼接。
 library;
 
-import 'package:tongyi_lite/agent/protocol/tool_protocol.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
+import 'package:wangcai/agent/protocol/tool_protocol.dart';
+import 'package:wangcai/agent/tool_registry.dart';
 
 /// 组装系统提示。
 ///
@@ -39,9 +39,9 @@ String buildSystemPrompt({
   final toolSection = protocol.buildToolSection(registry, modelId: modelId);
   final hasPersona = personaName != null && personaName.trim().isNotEmpty;
   final identity = hasPersona
-      ? '你是「${personaName.trim()}」——TongYi-Lite 智能体，由 $modelName 模型驱动，'
+      ? '你是「${personaName.trim()}」——汪柴智能体，由 $modelName 模型驱动，'
           '能调用工具获取真实信息或精确计算结果。'
-      : '你是 TongYi-Lite 智能体，由 $modelName 模型驱动。'
+      : '你是 汪柴智能体，由 $modelName 模型驱动。'
           '你能调用工具获取真实信息或精确计算结果。';
   final personaSection = (personaPrompt ?? '').trim();
   final sections = <String>[

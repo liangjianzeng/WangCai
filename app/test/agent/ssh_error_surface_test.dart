@@ -12,7 +12,7 @@ import 'dart:io';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/dev/ssh/ssh_environment.dart';
+import 'package:wangcai/agent/dev/ssh/ssh_environment.dart';
 
 void main() {
   group('哨兵：dartssh2 的错误不是 Exception（这正是全app 兜底失效的原因）', () {

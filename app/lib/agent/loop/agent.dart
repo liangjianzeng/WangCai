@@ -458,6 +458,16 @@ class ReactLoopAgent {
             turnDone = true;
             break;
           }
+          catch (e) {
+            // 非预期异常（非 LlmFailure、非取消）：适配器内部 try 之外
+            // （如图片预处理）抛错会到这里。记入错误文案后按错误收场，
+            // 绝不静默成界"未知错误"——让失败瀑布/日志能看到真实原因。
+            debugPrint('[AgentStep] unexpected error: $e');
+            _turnError = e.toString();
+            reason = TurnEndReasonKind.error;
+            turnDone = true;
+            break;
+          }
         }
         _session.append(kEventStepEnd, {'turn': turn, 'step': step});
       }

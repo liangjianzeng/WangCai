@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 /// 左栏 harness（2026-10-24 UI 改造，设计稿见会话存档）：
@@ -105,7 +107,8 @@ class AppRail extends StatelessWidget {
     return Material(
       color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
       child: Container(
-        width: 48,
+        // 桌面（Windows）屏幕充裕，左栏略宽一点更舒展；移动端维持 48。
+        width: Platform.isWindows ? 64 : 48,
         decoration: BoxDecoration(
           border: Border(
             right: BorderSide(color: scheme.outlineVariant, width: 1),
@@ -345,7 +348,11 @@ class _RailPanelHostState extends State<RailPanelHost> {
     final scheme = Theme.of(context).colorScheme;
     return LayoutBuilder(builder: (context, constraints) {
       // 设计稿：面板宽 ≈ 88% 主区宽（296/336），右侧留出对话画布一线。
-      final width = (constraints.maxWidth * 0.88).clamp(240.0, 300.0);
+      // 桌面（Windows）屏幕够，放宽上下限到桌面尺寸，避免引擎操作行
+      // 「停止 / 按上次配置重启 / 日志 / 启动命令」被 300px 上限截断。
+      final width = Platform.isWindows
+          ? (constraints.maxWidth * 0.72).clamp(360.0, 620.0)
+          : (constraints.maxWidth * 0.88).clamp(240.0, 300.0);
       return Material(
         color: scheme.surface,
         elevation: 10,

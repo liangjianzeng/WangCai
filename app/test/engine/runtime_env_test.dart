@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/engine/runtime_env.dart';
+import 'package:wangcai/engine/runtime_env.dart';
 
 void main() {
   test('清除 GGML_OPENVINO_*/NPUW_* 残留；PATH 前置；注入引擎 env', () {

@@ -10,12 +10,12 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/llm/adapter.dart';
-import 'package:tongyi_lite/agent/llm/openai_adapter.dart';
-import 'package:tongyi_lite/agent/loop/agent.dart';
-import 'package:tongyi_lite/agent/session/session.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
-import 'package:tongyi_lite/services/openai_service.dart';
+import 'package:wangcai/agent/llm/adapter.dart';
+import 'package:wangcai/agent/llm/openai_adapter.dart';
+import 'package:wangcai/agent/loop/agent.dart';
+import 'package:wangcai/agent/session/session.dart';
+import 'package:wangcai/agent/tool_registry.dart';
+import 'package:wangcai/services/openai_service.dart';
 
 void main() {
   group('SessionLog：user/message 携带 imagePath', () {

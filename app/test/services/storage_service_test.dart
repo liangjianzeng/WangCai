@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
-import 'package:tongyi_lite/models/chat_message.dart';
-import 'package:tongyi_lite/services/storage_service.dart';
+import 'package:wangcai/models/chat_message.dart';
+import 'package:wangcai/services/storage_service.dart';
 
 // ---------------------------------------------------------------------------
 // StorageService 真库行为（sqflite_common_ffi，纯 Dart 跑 SQLite）

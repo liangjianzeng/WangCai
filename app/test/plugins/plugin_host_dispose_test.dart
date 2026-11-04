@@ -14,7 +14,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_sdk/plugin_sdk.dart';
-import 'package:tongyi_lite/plugins/plugin_host.dart';
+import 'package:wangcai/plugins/plugin_host.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

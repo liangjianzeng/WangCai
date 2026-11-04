@@ -4,7 +4,7 @@
 // ② 总活跃回合数不得超过并发会话槽位（API 会话可真正并行）。
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/providers/chat_provider.dart'
+import 'package:wangcai/providers/chat_provider.dart'
     show checkTurnAdmission;
 
 void main() {

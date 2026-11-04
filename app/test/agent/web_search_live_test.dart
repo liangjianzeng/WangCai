@@ -2,7 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/web_search/web_search_provider.dart';
+import 'package:wangcai/agent/web_search/web_search_provider.dart';
 
 /// 真实 SearXNG 实例的连通性验收（默认 **跳过**，不污染常规测试与 CI）。
 ///

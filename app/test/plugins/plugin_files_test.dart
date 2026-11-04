@@ -10,7 +10,7 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/plugins/host/plugin_files.dart';
+import 'package:wangcai/plugins/host/plugin_files.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

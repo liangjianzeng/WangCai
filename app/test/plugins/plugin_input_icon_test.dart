@@ -12,7 +12,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/plugins/plugin_input_icon.dart';
+import 'package:wangcai/plugins/plugin_input_icon.dart';
 
 String _read(String p) => File(p).readAsStringSync();
 

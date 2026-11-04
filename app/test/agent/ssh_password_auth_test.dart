@@ -7,9 +7,9 @@
 /// 表现为"配好了却报配置不完整"。
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/dev/ssh/secret_store.dart';
-import 'package:tongyi_lite/agent/dev/ssh/ssh_credentials.dart';
-import 'package:tongyi_lite/agent/dev/ssh/ssh_diagnostics.dart';
+import 'package:wangcai/agent/dev/ssh/secret_store.dart';
+import 'package:wangcai/agent/dev/ssh/ssh_credentials.dart';
+import 'package:wangcai/agent/dev/ssh/ssh_diagnostics.dart';
 
 SshConfig _pc({
   SshAuthType authType = SshAuthType.password,

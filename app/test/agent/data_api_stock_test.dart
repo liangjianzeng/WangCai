@@ -3,9 +3,9 @@ import 'dart:convert';
 import 'package:fast_gbk/fast_gbk.dart' as gbk;
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/builtin_tools/data_api/data_api_tool.dart';
-import 'package:tongyi_lite/agent/builtin_tools/data_api/stock_source.dart';
-import 'package:tongyi_lite/agent/builtin_tools/fetch_url_tool.dart';
+import 'package:wangcai/agent/builtin_tools/data_api/data_api_tool.dart';
+import 'package:wangcai/agent/builtin_tools/data_api/stock_source.dart';
+import 'package:wangcai/agent/builtin_tools/fetch_url_tool.dart';
 
 /// 按 URL 前缀路由到各源 fixture 的桩。
 ApiHttp stubHttp({

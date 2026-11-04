@@ -7,8 +7,8 @@
 /// 同时交叉验证精简档必须严格短于完整档（否则分档形同虚设）。
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/agent.dart';
-import 'package:tongyi_lite/agent/protocol/native_tool_protocol.dart';
+import 'package:wangcai/agent/agent.dart';
+import 'package:wangcai/agent/protocol/native_tool_protocol.dart';
 import 'frozen/agent_prompt_pre_7aabe65c.dart' as pre;
 
 void main() {

@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/mcp/mcp_client.dart';
+import 'package:wangcai/agent/mcp/mcp_client.dart';
 
 /// 极简 MCP server 桩：处理 initialize/notifications/initialized/tools/list/
 /// tools/call。[sse] = 用 text/event-stream 帧响应（默认 JSON）。

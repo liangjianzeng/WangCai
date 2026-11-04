@@ -14,12 +14,12 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/adb/adb_client.dart';
-import 'package:tongyi_lite/agent/adb/adb_connection.dart';
-import 'package:tongyi_lite/agent/adb/adb_protocol.dart';
+import 'package:wangcai/agent/adb/adb_client.dart';
+import 'package:wangcai/agent/adb/adb_connection.dart';
+import 'package:wangcai/agent/adb/adb_protocol.dart';
 
 import 'fake_adbd.dart';
-import 'package:tongyi_lite/agent/adb/adb_rsa.dart';
+import 'package:wangcai/agent/adb/adb_rsa.dart';
 
 void main() {
   late AdbRsaKeyPair key;

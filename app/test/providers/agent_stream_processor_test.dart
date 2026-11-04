@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/providers/agent_stream_processor.dart';
+import 'package:wangcai/providers/agent_stream_processor.dart';
 
 void main() {
   group('AgentStreamProcessor', () {

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
@@ -730,15 +731,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   // 为什么必须放聊天里：**激活哪个工作区**决定模型收到哪段
   // `<workspace:context>`（远端工作区才会走 ssh_* 工具在电脑上读写/跑命令）。
   // 以前这份选择只存在于设置页深处的一组 ChoiceChip，聊天里完全不可见，
-  // 而且激活态不持久化 → 用户"连上了远程电脑，它却还在手机本地瞎忙"。
+  // 而且激活态不持久化 → 用户"连上了远程电脑，它却还在本机本地瞎忙"。
   // =========================================================================
 
   /// 工作区图标。
   IconData _workspaceIcon(WorkspaceBackend backend) => switch (backend) {
-        WorkspaceBackend.localApp ||
-        WorkspaceBackend.embedded =>
-          Icons.phone_android,
-        WorkspaceBackend.termux => Icons.terminal,
+        WorkspaceBackend.localApp => Icons.folder,
         WorkspaceBackend.remotePc => Icons.desktop_windows,
       };
 
@@ -825,7 +823,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
                   child: Text(
                     '智能体按「激活的工作区」读写文件、跑命令：远端工作区走 SSH '
-                    '在你电脑上执行，本地工作区只在手机目录里。',
+                    '在对方电脑上执行，本地工作区只在本机目录里干活。',
                     style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
                   ),
                 ),
@@ -1032,7 +1030,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     )
                   : null,
               title: const Text(
-                'TongYi-Lite',
+                '汪柴 WangCai',
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
               ),
               actions: [
@@ -2216,7 +2214,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 Icon(Icons.auto_awesome, size: 64, color: Colors.grey.shade400),
                 const SizedBox(height: 16),
                 Text(
-                  '你好！我是 TongYi-Lite\n端到端离线的 AI 助手',
+                  '你好！我是汪柴\n端到端离线的 AI 助手',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 16),
                 ),
@@ -2395,33 +2393,54 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   registry: slots),
               ValueListenableBuilder<TextEditingValue>(
                 valueListenable: _textController,
-                builder: (_, value, __) => TextField(
-                  controller: _textController,
-                  textInputAction: TextInputAction.newline,
-                  // 行高压到 1.3：默认行高让「两行」虚高近三行（2026-10-25
-                  // 用户定案：自然两行即可，手机打不了那么多字）。
-                  style: const TextStyle(fontSize: 14, height: 1.3),
-                  decoration: InputDecoration(
-                    hintText: _inputHintFor(isGenerating, value.text),
-                    hintStyle: const TextStyle(fontSize: 14),
-                    border: InputBorder.none,
-                    filled: false,
-                    isDense: true,
-                    contentPadding:
-                        const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
-                  ),
-                  onSubmitted: (_) {
-                    // 生成中：Enter = 插话转向（steer，不打断执行）。
-                    if (isGenerating) {
-                      _steerMessage();
-                      return;
+                builder: (_, value, __) => Focus(
+                  // 拦截回车做"回车即发送"：本 Focus 不抢焦点（canRequestFocus
+                  // 同 Shortcuts 的取键做法），只在上冒泡时接管 Enter。
+                  // 实证（test/enter_send_probe_test.dart）：多行 TextField 外包
+                  // Focus(onKeyEvent) 能在换行前拦下回车，文本不追加 \n。
+                  canRequestFocus: false,
+                  onKeyEvent: (node, event) {
+                    if (event is KeyDownEvent &&
+                        event.logicalKey == LogicalKeyboardKey.enter) {
+                      // 生成中：Enter = 插话转向（steer，不打断执行）；
+                      // 空闲：Enter = 直接发送。
+                      if (isGenerating) {
+                        _steerMessage();
+                      } else {
+                        _sendMessage();
+                      }
+                      return KeyEventResult.handled;
                     }
-                    _sendMessage();
+                    return KeyEventResult.ignored;
                   },
-                  // 两行起显（2026-10-25 用户反馈）：输入框默认两行高，
-                  // 打长句不用等换行才看到第二行；超过 8 行内部滚动。
-                  minLines: 2,
-                  maxLines: 8,
+                  child: TextField(
+                    controller: _textController,
+                    textInputAction: TextInputAction.newline,
+                    // 行高压到 1.3：默认行高让「两行」虚高近三行（2026-10-25
+                    // 用户定案：自然两行即可，手机打不了那么多字）。
+                    style: const TextStyle(fontSize: 14, height: 1.3),
+                    decoration: InputDecoration(
+                      hintText: _inputHintFor(isGenerating, value.text),
+                      hintStyle: const TextStyle(fontSize: 14),
+                      border: InputBorder.none,
+                      filled: false,
+                      isDense: true,
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 6, vertical: 6),
+                    ),
+                    onSubmitted: (_) {
+                      // 生成中：Enter = 插话转向（steer，不打断执行）。
+                      if (isGenerating) {
+                        _steerMessage();
+                        return;
+                      }
+                      _sendMessage();
+                    },
+                    // 两行起显（2026-10-25 用户反馈）：输入框默认两行高，
+                    // 打长句不用等换行才看到第二行；超过 8 行内部滚动。
+                    minLines: 2,
+                    maxLines: 8,
+                  ),
                 ),
               ),
               const SizedBox(height: 2),

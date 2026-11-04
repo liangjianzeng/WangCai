@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/tts/edge_tts_service.dart';
+import 'package:wangcai/tts/edge_tts_service.dart';
 
 /// 播报失败分类（纯函数）。
 ///

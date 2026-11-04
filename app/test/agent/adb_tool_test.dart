@@ -8,9 +8,9 @@ library;
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/adb/adb_targets.dart';
-import 'package:tongyi_lite/agent/tool_definition.dart';
-import 'package:tongyi_lite/agent/adb/adb_tool.dart';
+import 'package:wangcai/agent/adb/adb_targets.dart';
+import 'package:wangcai/agent/tool_definition.dart';
+import 'package:wangcai/agent/adb/adb_tool.dart';
 
 import 'fake_adbd.dart';
 

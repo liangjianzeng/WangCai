@@ -2,7 +2,7 @@
 ///
 /// **这个包是平台与插件之间唯一的合法接触面。** 三条方向铁律（由 app 侧
 /// `test/plugins/direction_rules_test.dart` 机检，不靠自觉）：
-/// 1. 本包绝不 `import 'package:tongyi_lite/...'` 或任何 `lib/**`；
+/// 1. 本包绝不 `import 'package:wangcai/...'` 或任何 `lib/**`；
 /// 2. `lib/plugins/**` 只用本包的类型与 [PluginCtx] 取宿主能力，不得 import `screens/`、`providers/`、`agent/`、`tts/`、`services/`；
 /// 3. `lib/plugins/builtin/<a>/**` 不得 import `lib/plugins/builtin/<b>/**`（插件之间只能经注册表协作）。
 ///

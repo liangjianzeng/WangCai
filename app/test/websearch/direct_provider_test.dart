@@ -2,9 +2,9 @@
 library;
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/services/settings_service.dart';
-import 'package:tongyi_lite/agent/web_search/direct_search_provider.dart';
-import 'package:tongyi_lite/agent/web_search/web_search_seam.dart';
+import 'package:wangcai/services/settings_service.dart';
+import 'package:wangcai/agent/web_search/direct_search_provider.dart';
+import 'package:wangcai/agent/web_search/web_search_seam.dart';
 
 void main() {
   tearDown(() {

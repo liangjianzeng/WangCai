@@ -5,11 +5,11 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:tongyi_lite/engine/bindings_store.dart';
-import 'package:tongyi_lite/engine/remote_discovery.dart';
-import 'package:tongyi_lite/models/api_model.dart';
-import 'package:tongyi_lite/services/api_key_store.dart';
-import 'package:tongyi_lite/services/settings_service.dart';
+import 'package:wangcai/engine/bindings_store.dart';
+import 'package:wangcai/engine/remote_discovery.dart';
+import 'package:wangcai/models/api_model.dart';
+import 'package:wangcai/services/api_key_store.dart';
+import 'package:wangcai/services/settings_service.dart';
 
 ApiModelConfig api(String id, String key) => ApiModelConfig(
     id: id, name: id, baseUrl: 'https://api.x.com', apiKey: key, model: 'm-$id');

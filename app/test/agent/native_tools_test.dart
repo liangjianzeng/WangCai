@@ -15,21 +15,21 @@ import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/capability.dart';
-import 'package:tongyi_lite/agent/context_eng/compaction.dart';
-import 'package:tongyi_lite/agent/llm/adapter.dart';
-import 'package:tongyi_lite/agent/llm/base_engine_adapter.dart';
-import 'package:tongyi_lite/agent/llm/openai_adapter.dart';
-import 'package:tongyi_lite/agent/loop/agent.dart';
-import 'package:tongyi_lite/agent/loop/config.dart';
-import 'package:tongyi_lite/agent/loop/failure.dart';
-import 'package:tongyi_lite/agent/protocol/native_tool_protocol.dart';
-import 'package:tongyi_lite/agent/protocol/prompt_json_protocol.dart';
-import 'package:tongyi_lite/agent/protocol/protocol_selector.dart';
-import 'package:tongyi_lite/agent/session/session.dart';
-import 'package:tongyi_lite/agent/tool_definition.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
-import 'package:tongyi_lite/providers/agent_stream_processor.dart';
+import 'package:wangcai/agent/capability.dart';
+import 'package:wangcai/agent/context_eng/compaction.dart';
+import 'package:wangcai/agent/llm/adapter.dart';
+import 'package:wangcai/agent/llm/base_engine_adapter.dart';
+import 'package:wangcai/agent/llm/openai_adapter.dart';
+import 'package:wangcai/agent/loop/agent.dart';
+import 'package:wangcai/agent/loop/config.dart';
+import 'package:wangcai/agent/loop/failure.dart';
+import 'package:wangcai/agent/protocol/native_tool_protocol.dart';
+import 'package:wangcai/agent/protocol/prompt_json_protocol.dart';
+import 'package:wangcai/agent/protocol/protocol_selector.dart';
+import 'package:wangcai/agent/session/session.dart';
+import 'package:wangcai/agent/tool_definition.dart';
+import 'package:wangcai/agent/tool_registry.dart';
+import 'package:wangcai/providers/agent_stream_processor.dart';
 
 // ---------------------------------------------------------------------------
 // 测试桩

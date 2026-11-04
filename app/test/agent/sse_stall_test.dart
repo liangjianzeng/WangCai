@@ -10,8 +10,8 @@ import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/models/api_model.dart';
-import 'package:tongyi_lite/services/openai_service.dart';
+import 'package:wangcai/models/api_model.dart';
+import 'package:wangcai/services/openai_service.dart';
 
 /// 假传输层：回一个 SSE 响应，发出首个 chunk 后**永久挂起**（不发数据也
 /// 不结束流）——精确复现"网关挂起不回包"。

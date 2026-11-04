@@ -6,14 +6,14 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart' hide EnginePhase;
 import 'package:flutter_riverpod/flutter_riverpod.dart' show ProviderContainer;
-import 'package:tongyi_lite/engine/engine_config.dart';
-import 'package:tongyi_lite/engine/engine_paths.dart';
-import 'package:tongyi_lite/engine/engine_registry.dart';
-import 'package:tongyi_lite/engine/engine_status.dart' show EnginePhase;
-import 'package:tongyi_lite/engine/engine_host.dart' show EngineProcess;
-import 'package:tongyi_lite/engine/llama_server_host.dart' show LlamaServerHost;
-import 'package:tongyi_lite/platform/local_server_inference.dart';
-import 'package:tongyi_lite/providers/shared_providers.dart';
+import 'package:wangcai/engine/engine_config.dart';
+import 'package:wangcai/engine/engine_paths.dart';
+import 'package:wangcai/engine/engine_registry.dart';
+import 'package:wangcai/engine/engine_status.dart' show EnginePhase;
+import 'package:wangcai/engine/engine_host.dart' show EngineProcess;
+import 'package:wangcai/engine/llama_server_host.dart' show LlamaServerHost;
+import 'package:wangcai/platform/local_server_inference.dart';
+import 'package:wangcai/providers/shared_providers.dart';
 
 class FakeProcess implements EngineProcess {
   final stdoutCtl = StreamController<List<int>>();

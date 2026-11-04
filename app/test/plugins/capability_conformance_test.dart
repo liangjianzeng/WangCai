@@ -11,11 +11,11 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_kernel/plugin_kernel.dart';
 import 'package:plugin_sdk/testing.dart';
-import 'package:tongyi_lite/plugins/host/host_capture.dart';
-import 'package:tongyi_lite/plugins/host/host_interact.dart';
-import 'package:tongyi_lite/plugins/host/host_llm.dart';
-import 'package:tongyi_lite/plugins/host/host_speak.dart';
-import 'package:tongyi_lite/plugins/host/host_speak_offline.dart';
+import 'package:wangcai/plugins/host/host_capture.dart';
+import 'package:wangcai/plugins/host/host_interact.dart';
+import 'package:wangcai/plugins/host/host_llm.dart';
+import 'package:wangcai/plugins/host/host_speak.dart';
+import 'package:wangcai/plugins/host/host_speak_offline.dart';
 
 /// 体检只该碰契约面（available / unavailableReason / probe / warmUp），
 /// 所以这些端口方法一律"没被调用"——真被调用了就是实现把 IO 漏进了可用性判断里。

@@ -3,10 +3,10 @@ library;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:dio/dio.dart';
-import 'package:tongyi_lite/websearch/src/link_resolver.dart';
-import 'package:tongyi_lite/websearch/src/multi_engine_search.dart';
-import 'package:tongyi_lite/websearch/src/search_engine.dart';
-import 'package:tongyi_lite/websearch/src/search_hit.dart';
+import 'package:wangcai/websearch/src/link_resolver.dart';
+import 'package:wangcai/websearch/src/multi_engine_search.dart';
+import 'package:wangcai/websearch/src/search_engine.dart';
+import 'package:wangcai/websearch/src/search_hit.dart';
 
 /// 可脚本化的假引擎：[handler] 决定返回结果或抛异常。
 class FakeEngine implements SearchEngine {

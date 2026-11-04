@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/engine/bundled_manifests.dart';
-import 'package:tongyi_lite/engine/engine_config.dart';
-import 'package:tongyi_lite/engine/engine_manifest.dart';
+import 'package:wangcai/engine/bundled_manifests.dart';
+import 'package:wangcai/engine/engine_config.dart';
+import 'package:wangcai/engine/engine_manifest.dart';
 
 void main() {
   group('模板渲染', () {

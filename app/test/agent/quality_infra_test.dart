@@ -3,19 +3,19 @@
 import 'dart:convert' show jsonDecode;
 import 'dart:io';
 
-import 'package:tongyi_lite/agent/context_eng/compaction.dart';
-import 'package:tongyi_lite/agent/loop/agent.dart';
-import 'package:tongyi_lite/agent/loop/config.dart';
-import 'package:tongyi_lite/agent/loop/failure.dart'
+import 'package:wangcai/agent/context_eng/compaction.dart';
+import 'package:wangcai/agent/loop/agent.dart';
+import 'package:wangcai/agent/loop/config.dart';
+import 'package:wangcai/agent/loop/failure.dart'
     show CompactionResultKind, NoCompactionPlugin, SessionRef;
-import 'package:tongyi_lite/agent/llm/adapter.dart';
-import 'package:tongyi_lite/agent/metrics/turn_metrics.dart';
-import 'package:tongyi_lite/agent/session/session.dart';
-import 'package:tongyi_lite/agent/session/trace_export.dart';
-import 'package:tongyi_lite/agent/skills/provider.dart';
-import 'package:tongyi_lite/agent/skills/skill.dart';
-import 'package:tongyi_lite/agent/tool_definition.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
+import 'package:wangcai/agent/llm/adapter.dart';
+import 'package:wangcai/agent/metrics/turn_metrics.dart';
+import 'package:wangcai/agent/session/session.dart';
+import 'package:wangcai/agent/session/trace_export.dart';
+import 'package:wangcai/agent/skills/provider.dart';
+import 'package:wangcai/agent/skills/skill.dart';
+import 'package:wangcai/agent/tool_definition.dart';
+import 'package:wangcai/agent/tool_registry.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import '../helpers/fake_llm.dart';

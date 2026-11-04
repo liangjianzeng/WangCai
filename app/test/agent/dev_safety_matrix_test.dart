@@ -8,8 +8,8 @@ library;
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/dev/safety.dart';
-import 'package:tongyi_lite/agent/dev/tools/verify_tool.dart'
+import 'package:wangcai/agent/dev/safety.dart';
+import 'package:wangcai/agent/dev/tools/verify_tool.dart'
     show buildRunTestsCommand, cwdJailError;
 
 void main() {

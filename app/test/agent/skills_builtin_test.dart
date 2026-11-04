@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/skills/load_skill_tool.dart';
-import 'package:tongyi_lite/agent/skills/provider.dart';
-import 'package:tongyi_lite/agent/skills/skill.dart';
+import 'package:wangcai/agent/skills/load_skill_tool.dart';
+import 'package:wangcai/agent/skills/provider.dart';
+import 'package:wangcai/agent/skills/skill.dart';
 
 void main() {
   group('内置通用技能（2026-10-01 对齐官方规范重写正文）', () {

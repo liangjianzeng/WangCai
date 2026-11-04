@@ -11,10 +11,10 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart' hide EnginePhase;
-import 'package:tongyi_lite/engine/engine_status.dart' show EnginePhase;
-import 'package:tongyi_lite/engine/process_ledger.dart';
-import 'package:tongyi_lite/platform/local_server_inference.dart';
-import 'package:tongyi_lite/platform/wangcai_paths.dart';
+import 'package:wangcai/engine/engine_status.dart' show EnginePhase;
+import 'package:wangcai/engine/process_ledger.dart';
+import 'package:wangcai/platform/local_server_inference.dart';
+import 'package:wangcai/platform/wangcai_paths.dart';
 
 const _rounds = [
   ['介绍你自己，一句话', '你是谁？'],

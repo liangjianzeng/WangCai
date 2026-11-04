@@ -2,10 +2,10 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/dev/dev_context.dart';
-import 'package:tongyi_lite/agent/dev/task.dart';
-import 'package:tongyi_lite/agent/dev/workspace.dart';
-import 'package:tongyi_lite/agent/dev/workspace_store.dart';
+import 'package:wangcai/agent/dev/dev_context.dart';
+import 'package:wangcai/agent/dev/task.dart';
+import 'package:wangcai/agent/dev/workspace.dart';
+import 'package:wangcai/agent/dev/workspace_store.dart';
 
 void main() {
   late Directory tmp;

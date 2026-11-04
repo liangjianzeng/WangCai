@@ -4,11 +4,11 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/builtin_tools/builtin_tools.dart';
-import 'package:tongyi_lite/agent/dev/ssh/secret_store.dart';
-import 'package:tongyi_lite/agent/dev/ssh/ssh_credentials.dart';
-import 'package:tongyi_lite/agent/mcp/mcp_client.dart';
-import 'package:tongyi_lite/services/settings_service.dart';
+import 'package:wangcai/agent/builtin_tools/builtin_tools.dart';
+import 'package:wangcai/agent/dev/ssh/secret_store.dart';
+import 'package:wangcai/agent/dev/ssh/ssh_credentials.dart';
+import 'package:wangcai/agent/mcp/mcp_client.dart';
+import 'package:wangcai/services/settings_service.dart';
 
 void main() {
   group('P2-D3 SSH 密钥安全存储', () {

@@ -147,9 +147,7 @@ Future<DevWorkspace> createAndActivateWorkspace({
 
 /// 后端 → 图标/文案（设置页与聊天页共用，别各写一份）。
 String workspaceBackendLabel(WorkspaceBackend backend) => switch (backend) {
-      WorkspaceBackend.localApp => '本地沙盒',
-      WorkspaceBackend.embedded => '内嵌工具沙箱',
-      WorkspaceBackend.termux => 'Termux（手机 Linux）',
+      WorkspaceBackend.localApp => '本地目录',
       WorkspaceBackend.remotePc => '远程电脑',
     };
 
@@ -270,13 +268,11 @@ Future<({DevWorkspace? ws, String dir})> createWorkspaceOnActiveConnection(
   if (cfg == null || !ssh.isConnected) {
     return (
       ws: null,
-      dir: '还没有已连接的开发环境：先在 设置 → 开发者 里连上远程电脑/Termux'
-          '（远程电脑用账号密码就能连）'
+      dir: '还没有已连接的开发环境：先在 设置 → 开发者 里连上远程电脑'
+          '（用账号密码就能连）'
     );
   }
-  final backend = sshTargetKindOf(cfg) == SshTargetKind.termux
-      ? WorkspaceBackend.termux
-      : WorkspaceBackend.remotePc;
+  const backend = WorkspaceBackend.remotePc;
   final dir = await ensureRemoteProjectDir(trimmed);
   if (dir == null) {
     return (ws: null, dir: '建目录失败：远端连接可能已断开，重连后再试');

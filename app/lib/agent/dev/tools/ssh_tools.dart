@@ -22,7 +22,6 @@ import '../ssh/secret_store.dart' show resolveSshSecretsAll;
 import '../ssh/ssh_credentials.dart' show SshConfig;
 import '../ssh/ssh_diagnostics.dart';
 import '../ssh/ssh_environment.dart';
-import '../termux_intent.dart';
 import '../workspace.dart';
 import '../workspace_store.dart';
 
@@ -44,7 +43,7 @@ Future<({String root, DevWorkspace workspace})> resolveRemoteRoot(
     String? workspaceId) async {
   if (workspaceId == null || workspaceId == DevWorkspace.kDefaultId) {
     throw StateError('当前工作区是本地默认工作区，没有远端路径。'
-        '请先切换到 Termux/远程电脑工作区，或使用本地文件工具');
+        '请先切换到 远程电脑工作区，或使用本地文件工具');
   }
   final store = DevStore.resolve();
   final workspaces = await store.loadWorkspaces();
@@ -124,7 +123,7 @@ Future<String?> ensureSshConnectionFor(
       }
     }
     if (cfg == null) {
-      return 'SSH 未配置：请在「设置 → 开发者」中配置 Termux/远程电脑连接'
+      return 'SSH 未配置：请在「设置 → 开发者」中配置 远程电脑连接'
           '（远程电脑可用账号密码直接登录，不必装公钥）';
     }
   } else {
@@ -181,67 +180,6 @@ Future<String?> readRemoteAgentsMd(
   }
 }
 
-/// termux 后端：先试 RUN_COMMAND intent 免 SSH 通道（L2），不可用回落 SSH。
-///
-/// 回落条件 = 通道不可用（Termux 未装/未开 allow-external-apps）；
-/// 命令超时不回落（命令可能已在 Termux 侧执行，重复执行有副作用）。
-/// 返回 null = 走 SSH。
-Future<ToolResult?> _tryTermuxIntent(
-    DevWorkspace ws, String fullCommand, Duration timeout) async {
-  if (ws.backend != WorkspaceBackend.termux) return null;
-  try {
-    final res = await TermuxIntentService.instance.run(fullCommand,
-        timeout: timeout);
-    final out = res.output.trim();
-    final truncated = out.length > kShellOutputLimit
-        ? '${out.substring(0, kShellOutputLimit)}\n…（已截断）'
-        : out;
-    return ToolResult(
-        content: truncated.isEmpty ? '（无输出，exit=${res.exit}）' : truncated,
-        isError: !res.ok);
-  } on StateError catch (e) {
-    if (e.message.startsWith('Termux 通道不可用')) {
-      return null; // 回落 SSH
-    }
-    return ToolResult.error('[TERMUX] ${e.message}');
-  }
-}
-
-/// termux 后端：intent 读文件（免 SSH）。返回 null = 走 SSH。
-/// 读取截断语义与 ssh_read_file 一致（kSshReadFileLimit）。
-Future<ToolResult?> _termuxRead(DevWorkspace ws, String remotePath) async {
-  if (ws.backend != WorkspaceBackend.termux) return null;
-  try {
-    final content =
-        await TermuxIntentService.instance.readFile(remotePath);
-    if (content == null) {
-      return ToolResult.error('[TERMUX] 读取失败或文件不存在：$remotePath');
-    }
-    return ToolResult(
-      content: content.length <= kSshReadFileLimit
-          ? content
-          : '${content.substring(0, kSshReadFileLimit)}\n…（已截断）',
-    );
-  } on StateError catch (e) {
-    if (e.message.startsWith('Termux 通道不可用')) return null;
-    return ToolResult.error('[TERMUX] ${e.message}');
-  }
-}
-
-/// termux 后端：intent 写文件（免 SSH）。返回 null = 走 SSH。
-Future<ToolResult?> _termuxWrite(
-    DevWorkspace ws, String remotePath, String content) async {
-  if (ws.backend != WorkspaceBackend.termux) return null;
-  try {
-    final ok = await TermuxIntentService.instance.writeFile(remotePath, content);
-    return ok
-        ? ToolResult(content: '已写入 $remotePath（${content.length} 字符）')
-        : ToolResult.error('[TERMUX] 写入失败（内容过大或命令失败）');
-  } on StateError catch (e) {
-    if (e.message.startsWith('Termux 通道不可用')) return null;
-    return ToolResult.error('[TERMUX] ${e.message}');
-  }
-}
 
 /// 共享：在远端工作区执行命令（git/verify/ssh 工具共用）。
 ///
@@ -249,7 +187,7 @@ Future<ToolResult?> _termuxWrite(
 /// [dangerText]：**只送黑名单的文本**（模型原始命令段）。不传时回落 [buildCommand]
 /// 的结果 —— 但 `cd <remoteRoot> && ` 前缀含工作区名，旧版据此会把
 /// "工作区叫 mount-app" 的所有命令误杀，故调用方应尽量只传模型命令。
-/// 内部做：工作区解析 → intent 优先（Termux 免 SSH）→ 自动连接 → 断连重连重试 → 截断。
+/// 内部做：工作区解析 → 自动连接 → 断连重连重试 → 截断。
 Future<ToolResult> sshRunInWorkspace(
   Map<String, dynamic> args,
   String Function(String root) buildCommand, {
@@ -274,9 +212,6 @@ Future<ToolResult> sshRunInWorkspace(
   if (danger != null) {
     return ToolResult.error('危险命令被拒绝：$danger');
   }
-  // termux 后端：intent 优先（免 SSH）。
-  final intentResult = await _tryTermuxIntent(ws, fullCommand, timeout);
-  if (intentResult != null) return intentResult;
   final ssh = SshEnvironmentService.instance;
   final connError = await ensureSshConnectionFor(ssh, ws, sshConfigs);
   if (connError != null) {
@@ -317,7 +252,7 @@ ToolDefinition createSshExecTool({List<SshConfig> sshConfigs = const []}) {
     isConcurrencySafe: (_) => false, // 副作用工具：独占执行（P2-A）
     name: 'ssh_exec',
     description:
-        '在 SSH 开发环境（Termux/远程电脑）执行 shell 命令。'
+        '在 SSH 开发环境（远程电脑）执行 shell 命令。'
         '命令默认在工作区远端根目录下运行。输出截断到 ${kShellOutputLimit} 字符，超时 30s。'
         '需要完整文件系统访问时带 sandbox_permissions 请求用户批准。'
         '危险命令（rm -rf /、reboot、git push --force 等）会被拒绝。'
@@ -351,15 +286,6 @@ ToolDefinition createSshExecTool({List<SshConfig> sshConfigs = const []}) {
         fullCommand =
             '${remoteCdPrefix(toRemotePath(remote.root, cwd))} && $command';
         final ssh = SshEnvironmentService.instance;
-        // termux 后端：intent 优先（免 SSH）。
-        //
-        // 可用性评估 P1-15：旧版**先连 SSH 再试 intent**，连接失败即 return，
-        // 于是"没配 sshd 的 Termux"主打工具 ssh_exec 直接报连接失败 ——
-        // 号称的免 SSH 通道对 ssh_exec 完全失效（而 sshRunInWorkspace 是 intent
-        // 优先，造成"有的工具能用有的不能"）。现与共享执行器统一：intent 先行。
-        final intentResult = await _tryTermuxIntent(
-            remote.workspace, fullCommand, const Duration(seconds: 30));
-        if (intentResult != null) return intentResult;
         final connError =
             await ensureSshConnectionFor(ssh, remote.workspace, sshConfigs);
         if (connError != null) {
@@ -420,9 +346,6 @@ ToolDefinition createSshReadFileTool({List<SshConfig> sshConfigs = const []}) {
       } on StateError catch (e) {
         return ToolResult.error('${e.message}（ssh 工具需要远端工作区）');
       }
-      // termux 后端：intent 优先（免 SSH，base64 免截断）。
-      final termuxRead = await _termuxRead(ws, remotePath);
-      if (termuxRead != null) return termuxRead;
       final ssh = SshEnvironmentService.instance;
       final connError = await ensureSshConnectionFor(ssh, ws, sshConfigs);
       if (connError != null) {
@@ -482,9 +405,6 @@ ToolDefinition createSshWriteFileTool({List<SshConfig> sshConfigs = const []}) {
       } on StateError catch (e) {
         return ToolResult.error('${e.message}（ssh 工具需要远端工作区）');
       }
-      // termux 后端：intent 优先（免 SSH，base64 免换行截断）。
-      final termuxWrite = await _termuxWrite(ws, remotePath, content);
-      if (termuxWrite != null) return termuxWrite;
       final ssh = SshEnvironmentService.instance;
       final connError = await ensureSshConnectionFor(ssh, ws, sshConfigs);
       if (connError != null) {

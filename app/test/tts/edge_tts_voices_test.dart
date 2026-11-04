@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/tts/edge_tts_service.dart';
+import 'package:wangcai/tts/edge_tts_service.dart';
 
 TtsVoiceInfo v(String shortName, String locale, String gender) =>
     TtsVoiceInfo(shortName: shortName, localName: shortName, locale: locale,

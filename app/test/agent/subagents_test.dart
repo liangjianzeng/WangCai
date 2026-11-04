@@ -7,14 +7,14 @@ library;
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/builtin_tools/builtin_tools.dart';
-import 'package:tongyi_lite/agent/llm/adapter.dart';
-import 'package:tongyi_lite/agent/sandbox.dart';
-import 'package:tongyi_lite/agent/subagents/in_process.dart';
-import 'package:tongyi_lite/agent/subagents/provider.dart';
-import 'package:tongyi_lite/agent/subagents/subagent_tool.dart';
-import 'package:tongyi_lite/agent/session/session.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
+import 'package:wangcai/agent/builtin_tools/builtin_tools.dart';
+import 'package:wangcai/agent/llm/adapter.dart';
+import 'package:wangcai/agent/sandbox.dart';
+import 'package:wangcai/agent/subagents/in_process.dart';
+import 'package:wangcai/agent/subagents/provider.dart';
+import 'package:wangcai/agent/subagents/subagent_tool.dart';
+import 'package:wangcai/agent/session/session.dart';
+import 'package:wangcai/agent/tool_registry.dart';
 
 /// 覆写 [LlmAdapter.generate] 的桩：按轮次返回预设 [LlmResult]，并捕获
 /// 每次收到的消息历史（验证 fork 前缀/上下文）。

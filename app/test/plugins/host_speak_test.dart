@@ -5,7 +5,7 @@
 // 中英混排各走各的音色。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_sdk/plugin_sdk.dart';
-import 'package:tongyi_lite/plugins/host/host_speak.dart';
+import 'package:wangcai/plugins/host/host_speak.dart';
 
 class _FakePort implements TtsPlaybackPort {
   _FakePort({this.failOn = const {}, this.dieAfter = -1});

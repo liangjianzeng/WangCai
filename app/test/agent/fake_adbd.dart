@@ -12,7 +12,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/adb/adb_protocol.dart';
+import 'package:wangcai/agent/adb/adb_protocol.dart';
 
 /// 假 adbd 对一条 shell 命令的答复（真机口径：stdout/stderr/exit 分帧）。
 class FakeReply {

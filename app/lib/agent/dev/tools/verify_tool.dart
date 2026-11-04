@@ -1,8 +1,8 @@
 /// 验证循环工具（Dev Agent Phase C）—— 在工作区运行测试/构建。
 ///
-/// 分派（L1 扩展）：远端后端（termux/remotePc）走 ssh 共享执行器（原路径）；
-/// 本地后端（localApp/embedded/默认工作区）走内嵌沙箱执行器（dev_shell 同款，
-/// PATH 前插 nativeLibraryDir）。默认 60s 超时（构建类任务）；输出截断 4000。
+/// 分派：远端后端（remotePc）走 ssh 共享执行器（原路径）；
+/// 本地后端（localApp/默认工作区）走桌面本地执行器（系统 shell，
+/// local_exec.dart，在工作区目录内执行）。默认 60s 超时（构建类任务）；输出截断 4000。
 /// 失败 → 模型迭代修复 → 再跑；成功 → 接入层 tools/result hook 可推进计划。
 library;
 
@@ -11,7 +11,7 @@ import '../safety.dart';
 import '../ssh/ssh_credentials.dart' show SshConfig;
 import '../workspace.dart';
 import '../workspace_store.dart';
-import 'embedded_tools.dart' show devShellRoot, executeDevShell;
+import 'local_exec.dart' show devShellRoot, executeDevShell;
 import 'ssh_tools.dart' show sshRunInWorkspace;
 
 /// bash 单引号转义（cwd 安全入 `cd '…' && …`）。

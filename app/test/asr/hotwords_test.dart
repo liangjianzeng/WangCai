@@ -1,7 +1,7 @@
 // 热词词表扩容 + 分类差量编辑回归：effectiveCategoryWords /
 // diffCategoryWords 纯函数（设置页词表编辑 → 持久化 → loadHotwords 合并）。
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/asr/default_hotwords.dart';
+import 'package:wangcai/asr/default_hotwords.dart';
 
 void main() {
   test('默认分类覆盖既有 5 类 + 新增 4 类（应用/手机操作/生活/办公）', () {

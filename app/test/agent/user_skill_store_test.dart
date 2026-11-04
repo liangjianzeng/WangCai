@@ -2,8 +2,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/skills/provider.dart';
-import 'package:tongyi_lite/agent/skills/skill.dart';
+import 'package:wangcai/agent/skills/provider.dart';
+import 'package:wangcai/agent/skills/skill.dart';
 
 void main() {
   late Directory tmp;

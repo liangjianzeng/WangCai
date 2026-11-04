@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/agent.dart';
+import 'package:wangcai/agent/agent.dart';
 
 void main() {
   setUp(() {

@@ -8,7 +8,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/adb/adb_protocol.dart';
+import 'package:wangcai/agent/adb/adb_protocol.dart';
 
 /// 真机抓到的 AUTH 帧头（adbd 的 data_check 恒 0，见 adbTryDecode 注释）。
 const String kRealAuthHeader =

@@ -2,9 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/agent.dart';
-import 'package:tongyi_lite/models/agent_persona.dart';
-import 'package:tongyi_lite/services/settings_service.dart';
+import 'package:wangcai/agent/agent.dart';
+import 'package:wangcai/models/agent_persona.dart';
+import 'package:wangcai/services/settings_service.dart';
 
 void main() {
   ToolRegistry registry() {

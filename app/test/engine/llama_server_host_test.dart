@@ -6,12 +6,12 @@ import 'dart:io';
 
 // flutter_test 自带 EnginePhase（binding 内部用），hide 掉避免撞名。
 import 'package:flutter_test/flutter_test.dart' hide EnginePhase;
-import 'package:tongyi_lite/engine/bundled_manifests.dart';
-import 'package:tongyi_lite/engine/engine_config.dart';
-import 'package:tongyi_lite/engine/engine_host.dart';
-import 'package:tongyi_lite/engine/engine_paths.dart';
-import 'package:tongyi_lite/engine/engine_status.dart';
-import 'package:tongyi_lite/engine/llama_server_host.dart';
+import 'package:wangcai/engine/bundled_manifests.dart';
+import 'package:wangcai/engine/engine_config.dart';
+import 'package:wangcai/engine/engine_host.dart';
+import 'package:wangcai/engine/engine_paths.dart';
+import 'package:wangcai/engine/engine_status.dart';
+import 'package:wangcai/engine/llama_server_host.dart';
 
 class FakeProcess implements EngineProcess {
   final stdoutCtl = StreamController<List<int>>();

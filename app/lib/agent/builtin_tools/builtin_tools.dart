@@ -45,7 +45,6 @@ export '../dev/tools/git_tools.dart'
         createGitLogTool,
         createGitPushTool,
         createGitStatusTool;
-export '../dev/tools/embedded_tools.dart' show createDevShellTool;
 export '../dev/tools/plan_tools.dart'
     show
         createPlanCreateTool,
@@ -67,7 +66,6 @@ export '../adb/adb_targets.dart' show AdbTarget, AdbSecretStore;
 import '../adb/adb_targets.dart' show AdbSecretStore, AdbTarget;
 import '../adb/adb_tool.dart';
 import '../dev/ssh/ssh_credentials.dart' show SshConfig;
-import '../dev/tools/embedded_tools.dart';
 import '../dev/tools/git_tools.dart';
 import '../dev/tools/plan_tools.dart';
 import '../dev/tools/ssh_tools.dart';
@@ -185,7 +183,6 @@ List<ToolDefinition> createBuiltinTools({
       createPythonExecTool(),
       // Dev Agent 工具组（开发模式开启后由接入层过滤启用）。
       if (includeDevTools) ...[
-        createDevShellTool(),
         createGitStatusTool(sshConfigs: devSshConfigs),
         createGitDiffTool(sshConfigs: devSshConfigs),
         createGitLogTool(sshConfigs: devSshConfigs),

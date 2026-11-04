@@ -1,7 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/models/api_model.dart';
-import 'package:tongyi_lite/services/openai_service.dart';
+import 'package:wangcai/models/api_model.dart';
+import 'package:wangcai/services/openai_service.dart';
 
 /// 思考强度字段落到请求体后的**可用性防线**：族判错时不能让整条 API 智能体
 /// 不可用（严格端点对未知字段直接 400/422），必须能整组去掉重发。

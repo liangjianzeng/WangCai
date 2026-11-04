@@ -10,8 +10,8 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/adb/adb_rsa.dart';
-import 'package:tongyi_lite/agent/adb/adb_targets.dart';
+import 'package:wangcai/agent/adb/adb_rsa.dart';
+import 'package:wangcai/agent/adb/adb_targets.dart';
 
 /// 固定 2048 位测试私钥（仅单测生成，不属于任何真实设备）。
 final String kFixturePem = [

@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/agent.dart';
+import 'package:wangcai/agent/agent.dart';
 
 /// 模拟原生 tools 协议（测试用）。
 class _FakeNativeProtocol implements ToolProtocol {

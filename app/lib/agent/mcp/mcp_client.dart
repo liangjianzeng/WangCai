@@ -161,7 +161,7 @@ class McpClient {
     final res = await _request('initialize', {
       'protocolVersion': _protocolVersion,
       'capabilities': {},
-      'clientInfo': {'name': 'TongYi-Lite', 'version': '0.2.8'},
+      'clientInfo': {'name': 'WangCai', 'version': '0.0.3'},
     });
     if (res.error != null) {
       throw Exception('MCP initialize 失败: ${res.error}');

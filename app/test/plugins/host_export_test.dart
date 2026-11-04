@@ -9,7 +9,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_kernel/plugin_kernel.dart';
 import 'package:path/path.dart' as p;
-import 'package:tongyi_lite/plugins/host/host_export.dart';
+import 'package:wangcai/plugins/host/host_export.dart';
 
 void main() {
   late Directory docs;

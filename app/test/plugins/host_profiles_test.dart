@@ -10,9 +10,9 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_kernel/plugin_kernel.dart';
 import 'package:plugin_sdk/testing.dart';
-import 'package:tongyi_lite/plugins/builtin/en_dictation/en_dictation_plugin.dart';
-import 'package:tongyi_lite/plugins/builtin/hello/hello_plugin.dart';
-import 'package:tongyi_lite/plugins/host/host_profiles.dart';
+import 'package:wangcai/plugins/builtin/en_dictation/en_dictation_plugin.dart';
+import 'package:wangcai/plugins/builtin/hello/hello_plugin.dart';
+import 'package:wangcai/plugins/host/host_profiles.dart';
 
 Future<PluginService> buildService({HostProfiles? profiles}) async {
   final caps = CapabilityRegistry()

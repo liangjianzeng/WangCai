@@ -3,7 +3,7 @@ import 'dart:convert';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:fast_gbk/fast_gbk.dart' as gbk;
-import 'package:tongyi_lite/agent/builtin_tools/fetch_url_tool.dart';
+import 'package:wangcai/agent/builtin_tools/fetch_url_tool.dart';
 
 FetchHttpResponse _resp(String body,
         {int status = 200, String? contentType = 'text/html; charset=utf-8'}) =>

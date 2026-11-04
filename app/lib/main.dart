@@ -1,19 +1,19 @@
-import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'providers/agent_approval.dart'
     show sandboxApproverProvider, toolPreApproverProvider;
 import 'providers/settings_provider.dart' show settingsProvider;
 import 'screens/home_screen.dart';
 import 'platform/inference_gateway.dart';
-import 'services/measure_cmd.dart';
 import 'services/model_manager.dart';
 import 'asr/sherpa_streaming_asr.dart';
 
@@ -32,6 +32,15 @@ Future<void> _requestNotificationPermission() async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // 桌面端（Windows/Linux/macOS）：sqflite_common_ffi 必须在任何 DB 使用前
+  // 装好全局 databaseFactory，否则 HomeScreen 首帧 getDatabasesPath() 抛
+  // 「databaseFactory not initialized」→ _initConversation 挂 → 首页一直转圈。
+  // Android 由 sqflite 插件自装工厂，跳过即可。汪柴分叉：桌面条线平台差异。
+  if (!Platform.isAndroid && !Platform.isIOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
 
   // Android 13+ 通知运行时权限（审查 P1：清单已声明 POST_NOTIFICATIONS 但
   // 从未请求——前台推理进度通知对用户不可见）。fire-and-forget：拒绝不阻塞
@@ -133,13 +142,13 @@ Future<void> main() async {
           };
         }),
       ],
-      child: const TongYiLiteApp(),
+      child: const WangCaiApp(),
     ),
   );
 }
 
-class TongYiLiteApp extends ConsumerWidget {
-  const TongYiLiteApp({super.key});
+class WangCaiApp extends ConsumerWidget {
+  const WangCaiApp({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -170,36 +179,14 @@ class TongYiLiteApp extends ConsumerWidget {
             statusBarIconBrightness: barIcons,
             systemNavigationBarIconBrightness: barIcons,
           ),
-          child: MediaQuery(
-            data:
-                mq.copyWith(devicePixelRatio: mq.devicePixelRatio * uiScale),
-            // 测量通道（决策档 §12.17，仅 debug）：零尺寸挂件挂在 ProviderScope
-            // 之下，轮询 /storage/emulated/0/TongYiLite/measure_cmd.json 执行
-            // 「加载模型 + 发一条 prompt」，宿主机 adb 免点击取证（见
-            // services/measure_cmd.dart 的判读说明）。
-            // kDebugMode 是编译期常量：release 下这行折叠成与今天逐字一致的
-            // `child ?? const SizedBox.shrink()`，挂件本身也不起 Timer。
-            child: kDebugMode
-                ? Stack(
-                    // passthrough：非定位子节点沿用父级约束（根视图给的是紧约束），
-                    // 与今天「MediaQuery 直接套 Navigator」的布局逐像素一致。
-                    fit: StackFit.passthrough,
-                    children: [
-                      child ?? const SizedBox.shrink(),
-                      const Positioned(
-                        left: 0,
-                        top: 0,
-                        width: 0,
-                        height: 0,
-                        child: MeasureCmdProbe(),
-                      ),
-                    ],
-                  )
-                : (child ?? const SizedBox.shrink()),
-          ),
+            child: MediaQuery(
+              data:
+                  mq.copyWith(devicePixelRatio: mq.devicePixelRatio * uiScale),
+              child: child ?? const SizedBox.shrink(),
+            ),
         );
       },
-      title: 'TongYi-Lite',
+      title: '汪柴 WangCai',
       debugShowCheckedModeBanner: false,
       navigatorKey: appNavigatorKey,
       theme: ThemeData(

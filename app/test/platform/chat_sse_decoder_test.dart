@@ -4,7 +4,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/platform/local_server_inference.dart';
+import 'package:wangcai/platform/local_server_inference.dart';
 
 Map<String, dynamic> _chatChunk({String? content, String? reasoning}) => {
       'choices': [

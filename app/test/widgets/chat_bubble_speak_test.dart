@@ -4,7 +4,7 @@
 // 自用的 key 是 `content.hashCode`——两者不同。按钮要同时认「精确匹配」与
 //「本会话自动播报」，否则自动播报时图标不改停止态、点按反而重播。
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/widgets/chat_bubble.dart';
+import 'package:wangcai/widgets/chat_bubble.dart';
 
 void main() {
   group('isThisMessagePlaying 按钮正控判定', () {

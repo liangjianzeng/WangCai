@@ -1,6 +1,6 @@
 import 'dart:async';
 
-import 'package:tongyi_lite/agent/llm/adapter.dart';
+import 'package:wangcai/agent/llm/adapter.dart';
 
 /// 脚本化 LLM 测试桩（全测试共享，2026-09-30 审查 P0-3：此前 4 份复制且
 /// 行为漂移——本类统一）。

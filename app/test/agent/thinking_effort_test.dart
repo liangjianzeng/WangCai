@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/llm/thinking_effort.dart';
+import 'package:wangcai/agent/llm/thinking_effort.dart';
 
 void main() {
   group('思考强度 · 族探测（各家发各家认的字段，先具体后通用）', () {

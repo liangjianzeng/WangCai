@@ -11,15 +11,17 @@ import 'package:permission_handler/permission_handler.dart';
 class StoragePermissionService {
   /// 检查是否有外部存储访问权限
   static Future<bool> hasStoragePermission() async {
-    if (Platform.isAndroid) {
-      // Android 13+ 使用新的媒体权限
-      final mediaPermission = await Permission.mediaLibrary.status;
-      if (mediaPermission.isGranted) return true;
-      
-      // Android 12及以下使用传统存储权限
-      final storagePermission = await Permission.storage.status;
-      if (storagePermission.isGranted) return true;
-    }
+    // 桌面（Windows/Linux/macOS）没有 Android 的 scoped-storage /
+    // MANAGE_EXTERNAL_STORAGE 概念，文件系统访问本就开放，直接视为已授权。
+    // 否则 hasStoragePermission() 在非安卓恒 false → 启动误弹「需要存储权限」。
+    if (!Platform.isAndroid) return true;
+    // Android 13+ 使用新的媒体权限
+    final mediaPermission = await Permission.mediaLibrary.status;
+    if (mediaPermission.isGranted) return true;
+
+    // Android 12及以下使用传统存储权限
+    final storagePermission = await Permission.storage.status;
+    if (storagePermission.isGranted) return true;
     return false;
   }
 

@@ -5,8 +5,8 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/models/chat_message.dart';
-import 'package:tongyi_lite/services/openai_service.dart';
+import 'package:wangcai/models/chat_message.dart';
+import 'package:wangcai/services/openai_service.dart';
 
 void main() {
   late Directory tmp;

@@ -3,7 +3,7 @@
 // 本地引擎 KV 是单实例——快照只对刚测量完的会话有效。切会话/resetContext
 // 后必须清掉陈旧值，否则旧会话细条继续显示是误导。
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/providers/context_usage_provider.dart';
+import 'package:wangcai/providers/context_usage_provider.dart';
 
 void main() {
   test('update + usageFor：按会话存取', () {

@@ -1,9 +1,9 @@
-/// Git 工具组（Dev Agent Phase C，L1 扩展三后端分派）。
+/// Git 工具组（Dev Agent Phase C）。
 ///
 /// 分派规则（按工作区后端）：
-/// - 本地后端（localApp/embedded/默认工作区）→ JGit 进程内执行
-///   （embedded_git.dart，零 exec，W^X 安全）；
-/// - 远端后端（termux/remotePc）→ SSH 在远端执行 git 命令（原路径不变）。
+/// - 本地后端（localApp/默认工作区）→ 系统 git 进程执行（local_exec.dart，
+///   Git for Windows 在 PATH）；
+/// - 远端后端（remotePc）→ SSH 在远端执行 git 命令（原路径不变）。
 ///
 /// 安全：commit 本地操作默认允许；push 属"影响远端"操作，工具声明
 /// sandbox_permissions 升级字段，模型须带 justification 请求用户批准。
@@ -17,17 +17,17 @@ import '../../tool_definition.dart';
 import '../ssh/ssh_credentials.dart' show SshConfig;
 import '../workspace.dart';
 import '../workspace_store.dart';
-import 'embedded_git.dart' show LocalGit;
+import 'local_exec.dart' show LocalGit;
 import '../dev_workspace_actions.dart' show defaultRemoteProjectPathPlaceholder;
 import 'ssh_tools.dart' show remoteCdPrefix, sshRunInWorkspace;
 
 /// bash 单引号转义（message 安全入 `git commit -m '...'`）。
 String _singleQuote(String s) => "'${s.replaceAll("'", r"'\''")}'";
 
-/// 解析 git 工作根目录与执行面（本地 JGit / 远端 SSH）。
+/// 解析 git 工作根目录与执行面（本地系统 git / 远端 SSH）。
 ///
-/// - null/'default' → 默认工作区（documents/workspace，本地 JGit）；
-/// - 本地工作区（localApp/embedded）→ projects/<safe-id> 本地目录；
+/// - null/'default' → 默认工作区（documents/workspace，本地系统 git）；
+/// - 本地工作区（localApp）→ projects/<safe-id> 本地目录；
 /// - 远端工作区 → remotePath（SSH 执行）。
 Future<({bool remote, String root, DevWorkspace? ws})> _resolveGitRoot(
     Map<String, dynamic> args) async {
@@ -92,7 +92,7 @@ ToolDefinition createGitStatusTool({List<SshConfig> sshConfigs = const []}) {
         '查看 git 仓库状态：当前分支、改动文件、未跟踪文件。'
         '开发任务开始时先调用确认基线。'
         'path 可选：仓库在当前工作区下的相对子目录（如 git_clone 克隆出的 '
-        'TongYi-Lite/）；缺省 = 工作区根。',
+        'WangCai/）；缺省 = 工作区根。',
     parameters: {
       'type': 'object',
       'properties': {
@@ -317,7 +317,7 @@ ToolDefinition createGitCloneTool({List<SshConfig> sshConfigs = const []}) {
         '大仓库务必带 depth（浅克隆，如 depth=1 只拉最近一层提交）——'
         '只读代码/分析时推荐 depth=1，可大幅省流量与时间；浅克隆不能 push。'
         '需要凭据时带 username + token。'
-        '远端工作区（Termux/远程电脑）不支持本工具，请用 ssh_exec 执行 git clone。',
+        '远端工作区（远程电脑）不支持本工具，请用 ssh_exec 执行 git clone。',
     parameters: withEscalationFields({
       'type': 'object',
       'properties': {
@@ -346,7 +346,7 @@ ToolDefinition createGitCloneTool({List<SshConfig> sshConfigs = const []}) {
       if (url.startsWith('git@') || url.contains('ssh://')) {
         return Future.value(ToolResult.error(
             '本地工作区仅支持 https 克隆（ssh 协议不支持）。'
-            '请改用 https 地址，或切到 Termux/远程工作区用 ssh_exec'));
+            '请改用 https 地址，或切到远程工作区用 ssh_exec'));
       }
       return _gitTool(args, (remote, root) async {
         if (remote) {

@@ -357,6 +357,16 @@ class OpenAiAdapter extends BaseEngineAdapter {
   }) async {
     final openAi = _openAi!;
     final model = _apiModel!;
+    // 空 key 提前兜底：空 key 请求不带 Authorization 头，服务端以
+    // 401 Invalid API Key 拒且信息含糊。原生工具调用几乎必然要求鉴权，
+    // 这里抛明确中文指向配置，而不是让下游撞出一个误导性的 401。
+    if (model.apiKey.isEmpty) {
+      throw LlmFailure(
+        code: LlmFailureCode.invalidRequest,
+        message: '当前 API 模型未配置 API Key（apiKey 为空），无法发起工具调用；'
+            '请在 设置→模型 里补上该模型的密钥',
+      );
+    }
     final wireMessages = toOpenAiWireMessages(options.messages);
     // 视觉：带 imagePath 的 user 消息转 content-parts（visionCapable 才发）。
     if (model.visionCapable) {

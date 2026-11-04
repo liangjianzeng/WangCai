@@ -2,8 +2,8 @@
 // 无 IO、无真机，规则表逐格断言 + 改道建议。
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:tongyi_lite/engine/bindings_store.dart';
-import 'package:tongyi_lite/engine/routing_policy.dart';
+import 'package:wangcai/engine/bindings_store.dart';
+import 'package:wangcai/engine/routing_policy.dart';
 
 const npu = EngineCandidate(
     instanceId: 'wangcai-npu', kind: 'llamaServer', devices: ['NPU', 'CPU(OPENVINO0)']);

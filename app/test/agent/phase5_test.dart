@@ -3,15 +3,15 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/hooks/hooks.dart';
-import 'package:tongyi_lite/agent/llm/adapter.dart';
-import 'package:tongyi_lite/agent/loop/agent.dart';
-import 'package:tongyi_lite/agent/session/session.dart';
-import 'package:tongyi_lite/agent/skills/provider.dart';
-import 'package:tongyi_lite/agent/skills/skill.dart'
+import 'package:wangcai/agent/hooks/hooks.dart';
+import 'package:wangcai/agent/llm/adapter.dart';
+import 'package:wangcai/agent/loop/agent.dart';
+import 'package:wangcai/agent/session/session.dart';
+import 'package:wangcai/agent/skills/provider.dart';
+import 'package:wangcai/agent/skills/skill.dart'
     show Skill, kRankUser, kRankBuiltin, loadBuiltinSkills;
-import 'package:tongyi_lite/agent/tool_definition.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
+import 'package:wangcai/agent/tool_definition.dart';
+import 'package:wangcai/agent/tool_registry.dart';
 
 /// 覆写 [LlmAdapter.generate] 的桩。
 final class _FakeAdapter extends LlmAdapter {

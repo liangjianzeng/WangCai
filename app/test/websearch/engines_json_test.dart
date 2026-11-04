@@ -4,10 +4,10 @@ library;
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/websearch/src/search_engine.dart';
-import 'package:tongyi_lite/websearch/src/search_hit.dart';
-import 'package:tongyi_lite/websearch/src/engines/baidu_engine.dart';
-import 'package:tongyi_lite/websearch/src/engines/chinaso_engine.dart';
+import 'package:wangcai/websearch/src/search_engine.dart';
+import 'package:wangcai/websearch/src/search_hit.dart';
+import 'package:wangcai/websearch/src/engines/baidu_engine.dart';
+import 'package:wangcai/websearch/src/engines/chinaso_engine.dart';
 
 class _FakeFetch {
   final String Function(Uri url) respond;

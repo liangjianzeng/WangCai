@@ -1,6 +1,6 @@
 // TTS 文本预处理单测：markdown 清洗 + 句子分段。
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/tts/tts_text.dart';
+import 'package:wangcai/tts/tts_text.dart';
 
 void main() {
   group('cleanTextForTts markdown 清洗', () {

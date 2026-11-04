@@ -1166,7 +1166,10 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
         children: [
           // ---- Windows 引擎管理（WangCai 分叉 #8，见 UPSTREAM.md）----
           if (Platform.isWindows) const EngineManagerSection(),
-          // ---- GPU 加速设置卡片 ----
+          // ---- GPU 加速设置卡片（Android 端 llama.cpp 后端选择器）----
+          // 桌面由「引擎管理」（CUDA / Vulkan / 汪柴 NPU）统一接管，这张
+          // Adreno 向的 OpenCL/Vulkan/层数调优在 Windows 上是噪声，隐藏。
+          if (!Platform.isWindows)
           Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
@@ -3793,10 +3796,10 @@ class _buildAboutTab extends StatelessWidget {
 // About 页版本号：集中式常量，与 android/app/build.gradle.kts 的
 // versionName/versionCode 保持一致。离线沙箱无法下载 package_info_plus 的
 // AGP 依赖，故不引插件动态读取，直接用此常量。
-const _appVersion = '0.3.7';
+const _appVersion = '0.0.3';
 
 /// GitHub 项目主页地址（README 介绍与使用说明）。
-const _githubUrl = 'https://github.com/liangjianzeng/TongYi-Lite';
+const _githubUrl = 'https://github.com/liangjianzeng/WangCai';
 
 /// 通过系统外部浏览器打开 GitHub README 页面。
 Future<void> _openGithub(BuildContext context) async {
@@ -3822,12 +3825,12 @@ class AboutSettingsCard extends StatelessWidget {
             const Icon(Icons.auto_awesome, size: 64, color: Colors.indigo),
             const SizedBox(height: 10),
             const Text(
-              'TongYi-Lite',
+              '汪柴 WangCai',
               style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
             ),
             const SizedBox(height: 4),
             const Text(
-              '端侧离线 AI 智能体',
+              'Windows 桌面离线 AI 智能体',
               style: TextStyle(color: Colors.grey, fontSize: 14),
             ),
             const SizedBox(height: 10),
@@ -6834,15 +6837,7 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
                     items: const [
                       DropdownMenuItem(
                         value: WorkspaceBackend.localApp,
-                        child: Text('本地沙盒（app 内目录）'),
-                      ),
-                      DropdownMenuItem(
-                        value: WorkspaceBackend.embedded,
-                        child: Text('内嵌工具沙箱（本地执行，免配置）'),
-                      ),
-                      DropdownMenuItem(
-                        value: WorkspaceBackend.termux,
-                        child: Text('Termux（手机 Linux）'),
+                        child: Text('本地目录（本机文件夹）'),
                       ),
                       DropdownMenuItem(
                         value: WorkspaceBackend.remotePc,
@@ -6852,8 +6847,7 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
                     onChanged: (v) => setState(
                         () => backend = v ?? WorkspaceBackend.localApp),
                   ),
-                  if (backend == WorkspaceBackend.termux ||
-                      backend == WorkspaceBackend.remotePc) ...[
+                  if (backend == WorkspaceBackend.remotePc) ...[
                     const SizedBox(height: 12),
                     // 绑定连接配置。
                     DropdownButtonFormField<String?>(

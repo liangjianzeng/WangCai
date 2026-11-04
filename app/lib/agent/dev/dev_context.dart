@@ -40,9 +40,7 @@ Future<String> buildWorkspaceContextSection(
   final ws = await _loadWorkspace(workspaceId, store: store);
   if (ws == null) return '';
   final backendName = switch (ws.backend) {
-    WorkspaceBackend.localApp => '本地沙盒',
-    WorkspaceBackend.embedded => '内嵌工具沙箱（本地执行）',
-    WorkspaceBackend.termux => 'Termux（手机 Linux）',
+    WorkspaceBackend.localApp => '本地目录',
     WorkspaceBackend.remotePc => '远程电脑',
   };
   final buf = StringBuffer('<workspace:context>\n');
@@ -76,13 +74,11 @@ Future<String> buildWorkspaceContextSection(
   }
   buf.write('文件/命令类工具作用域为当前工作区。');
   buf.write(switch (ws.backend) {
-    WorkspaceBackend.termux || WorkspaceBackend.remotePc =>
-      '远端工作区用 ssh_exec / ssh_read_file / ssh_write_file 操作'
-          '（Termux 优先走 RUN_COMMAND 免 SSH 通道，自动回落 SSH）。',
-    WorkspaceBackend.embedded =>
-      '本地执行用 dev_shell / run_tests；git 用 git_* 工具（进程内，无需 git 命令）。',
+    WorkspaceBackend.remotePc =>
+      '远端工作区用 ssh_exec / ssh_read_file / ssh_write_file 操作。',
     WorkspaceBackend.localApp =>
-      '本地执行用 dev_shell / run_tests；git 用 git_* 工具（进程内）。',
+      '本地执行用 shell_exec / run_tests（系统 shell，工作目录内）；'
+          'git 用 git_* 工具（系统 git）。',
   });
   buf.write('\n</workspace:context>');
   final text = buf.toString();

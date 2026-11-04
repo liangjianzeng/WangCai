@@ -54,7 +54,7 @@ void main() {
       for (final f in files) {
         for (final imp in _importsOf(f)) {
           expect(imp.startsWith('package:flutter/'), isFalse, reason: '${f.path} 引入了 $imp');
-          expect(imp.startsWith('package:tongyi_lite/'), isFalse, reason: '${f.path} 引入了 $imp');
+          expect(imp.startsWith('package:wangcai/'), isFalse, reason: '${f.path} 引入了 $imp');
           expect(imp.contains('/lib/screens/'), isFalse, reason: '${f.path} 引入了 $imp');
         }
       }

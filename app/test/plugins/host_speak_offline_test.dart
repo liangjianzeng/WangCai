@@ -9,9 +9,9 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_kernel/plugin_kernel.dart';
-import 'package:tongyi_lite/plugins/host/host_speak.dart';
-import 'package:tongyi_lite/plugins/host/host_speak_offline.dart';
-import 'package:tongyi_lite/tts/offline_tts_service.dart';
+import 'package:wangcai/plugins/host/host_speak.dart';
+import 'package:wangcai/plugins/host/host_speak_offline.dart';
+import 'package:wangcai/tts/offline_tts_service.dart';
 
 /// 在线端口假件：负责播控 + 在线合成，所有调用留痕（"播放只有一份实现"就靠它验）。
 class _OnlinePort implements TtsPlaybackPort {

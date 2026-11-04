@@ -68,8 +68,15 @@ class OpenAiService {
   /// 实际生效的看门狗阈值（可注入缩短，供回归测试）。
   final Duration _stallIdle;
 
-  /// 当前流式请求的取消令牌，用于「停止生成」。
-  CancelToken? _cancelToken;
+  /// 当前所有在途流式请求的取消令牌集合。每个请求用**自取消**的独立令牌，
+  /// 互不 cancel；[stop] 一次性取消全部（用户点停止时要把主生成与并发的
+  /// 压缩摘要 / 后台子代理请求一起掐断）。
+  ///
+  /// 为什么是集合而非单个令牌：主 agent、压缩摘要、后台子代理都共用同一个
+  /// OpenAiService 并发发请求。旧版用单实例 `_cancelToken`、每个请求开头
+  /// `_cancelToken?.cancel()` 掐上一轮，结果并发请求被互相掐断，产生间歇性
+  /// 失败（本文件历史 bug）。
+  final Set<CancelToken> _activeTokens = {};
 
   /// 最近一次流式请求末尾的 usage（{prompt_tokens, completion_tokens, ...}）。
   /// 由底层 SSE 通道统一收集，供普通聊天路径（chatCompletion 只 yield 文本、
@@ -291,121 +298,131 @@ class OpenAiService {
     int? maxTokens,
     Map<String, dynamic>? extraBody,
   }) async* {
-    // 中断上一轮（若存在），并为本轮创建新令牌。
-    _cancelToken?.cancel();
-    _cancelToken = CancelToken();
-
-    final url = normalizeChatUrl(config.baseUrl);
-    final body = <String, dynamic>{
-      'model': config.model,
-      'messages': messages,
-      'stream': true,
-      // OpenAI 兼容标准：要求末块回 usage（prompt_tokens 等）。vLLM/SGLang 等
-      // 端点流式默认**不回 usage**，不带上它 lastUsage（顶部上下文占用条数据源）
-      // 永远为 null（2026-10-03 Bonsai2 端点实测实锤）。严格端点不认识该字段
-      // 时的 400/422 兜底重试见下方 catch。
-      'stream_options': const {'include_usage': true},
-      'temperature': temperature ?? config.effectiveTemperature,
-      'max_tokens': maxTokens ?? config.effectiveMaxTokens,
-      if (tools != null && tools.isNotEmpty) 'tools': tools,
-      // 思考强度档位等端点专属字段（一族一字段，见 thinking_effort.dart）；
-      // 族判错时由下方 400 兜底整组去掉重发。
-      if (extraBody != null) ...extraBody,
-    };
-
-    Future<Response<ResponseBody>> post(Map<String, dynamic> b) =>
-        _dio.post<ResponseBody>(
-          url,
-          data: b,
-          options: Options(
-            responseType: ResponseType.stream,
-            headers: _headers(config.apiKey),
-          ),
-          cancelToken: _cancelToken,
-        );
-
-    Response<ResponseBody> response;
+    // 为本轮创建独立令牌并登记入在途集合。不同请求源（主 agent/压缩摘要/
+    // 后台子代理）共用同一 OpenAiService 会并发发请求——各用自取消的令牌、
+    // 互不 cancel。旧版用单实例令牌、每请求开头 cancel 上一轮，导致并发请求
+    // 被互相掐断的间歇性失败（见 [_activeTokens]）。
+    final localToken = CancelToken();
+    _activeTokens.add(localToken);
     try {
-      response = await post(body);
-    } on DioException catch (e) {
-      final status = e.response?.statusCode;
-      final optionalFieldStatus = status == 400 || status == 404 || status == 422;
-      final detail = optionalFieldStatus ? await _describeApiError(e) : '';
-      // 端点不认可选字段（stream_options / 思考参数）→ 去掉再试一次：
-      // 宁可丢 usage、丢思考档位，也不能让整个请求失败。
-      final retryBody =
-          optionalFieldStatus ? bodyWithoutRejectedFields(body, detail) : null;
-      if (retryBody != null) {
-        try {
-          response = await post(retryBody);
-        } on DioException catch (e2) {
+      final url = normalizeChatUrl(config.baseUrl);
+      final body = <String, dynamic>{
+        'model': config.model,
+        'messages': messages,
+        'stream': true,
+        // OpenAI 兼容标准：要求末块回 usage（prompt_tokens 等）。vLLM/SGLang 等
+        // 端点流式默认**不回 usage**，不带上它 lastUsage（顶部上下文占用条数据源）
+        // 永远为 null（2026-10-03 Bonsai2 端点实测实锤）。严格端点不认识该字段
+        // 时的 400/422 兜底重试见下方 catch。
+        'stream_options': const {'include_usage': true},
+        'temperature': temperature ?? config.effectiveTemperature,
+        'max_tokens': maxTokens ?? config.effectiveMaxTokens,
+        if (tools != null && tools.isNotEmpty) 'tools': tools,
+        // 思考强度档位等端点专属字段（一族一字段，见 thinking_effort.dart）；
+        // 族判错时由下方 400 兜底整组去掉重发。
+        if (extraBody != null) ...extraBody,
+      };
+
+      Future<Response<ResponseBody>> post(Map<String, dynamic> b) =>
+          _dio.post<ResponseBody>(
+            url,
+            data: b,
+            options: Options(
+              responseType: ResponseType.stream,
+              headers: _headers(config.apiKey),
+            ),
+            cancelToken: localToken,
+          );
+
+      Response<ResponseBody> response;
+      try {
+        response = await post(body);
+      } on DioException catch (e) {
+        final status = e.response?.statusCode;
+        final optionalFieldStatus =
+            status == 400 || status == 404 || status == 422;
+        final detail = optionalFieldStatus ? await _describeApiError(e) : '';
+        // 端点不认可选字段（stream_options / 思考参数）→ 去掉再试一次：
+        // 宁可丢 usage、丢思考档位，也不能让整个请求失败。
+        final retryBody = optionalFieldStatus
+            ? bodyWithoutRejectedFields(body, detail)
+            : null;
+        if (retryBody != null) {
+          try {
+            response = await post(retryBody);
+          } on DioException catch (e2) {
+            throw OpenAiHttpException(
+              statusCode: e2.response?.statusCode,
+              message: await _describeApiError(e2),
+            );
+          }
+        } else if (optionalFieldStatus) {
+          throw OpenAiHttpException(statusCode: status, message: detail);
+        } else {
           throw OpenAiHttpException(
-            statusCode: e2.response?.statusCode,
-            message: await _describeApiError(e2),
+            statusCode: e.response?.statusCode,
+            message: await _describeApiError(e),
           );
         }
-      } else if (optionalFieldStatus) {
-        throw OpenAiHttpException(statusCode: status, message: detail);
-      } else {
+      }
+
+      if (response.statusCode != 200) {
         throw OpenAiHttpException(
-          statusCode: e.response?.statusCode,
-          message: await _describeApiError(e),
+          statusCode: response.statusCode,
+          message: 'API 请求失败：HTTP ${response.statusCode}',
         );
       }
-    }
 
-    if (response.statusCode != 200) {
-      throw OpenAiHttpException(
-        statusCode: response.statusCode,
-        message: 'API 请求失败：HTTP ${response.statusCode}',
+      // 逐行解析 SSE：data: {json} ... data: [DONE]
+      // dio 流式响应：response.data 是 ResponseBody，其 .stream 为字节流。
+      final byteStream =
+          response.data?.stream ?? const Stream<Uint8List>.empty();
+      final lines =
+          utf8.decoder.bind(byteStream).transform(const LineSplitter());
+      // 停摆看门狗：`Stream.timeout` 监听**两个事件之间**的静默时长，超限
+      // 即向流注入 [OpenAiStallException]（await for 处抛出、上游订阅随之
+      // 取消）。慢流合法——每个 chunk 到达都会重置计时；只拦"彻底没数据"。
+      final guarded = lines.timeout(
+        _stallIdle,
+        onTimeout: (sink) => sink.addError(OpenAiStallException(_stallIdle)),
       );
-    }
 
-    // 逐行解析 SSE：data: {json} ... data: [DONE]
-    // dio 流式响应：response.data 是 ResponseBody，其 .stream 为字节流。
-    final byteStream = response.data?.stream ?? const Stream<Uint8List>.empty();
-    final lines = utf8.decoder.bind(byteStream).transform(const LineSplitter());
-    // 停摆看门狗：`Stream.timeout` 监听**两个事件之间**的静默时长，超限
-    // 即向流注入 [OpenAiStallException]（await for 处抛出、上游订阅随之
-    // 取消）。慢流合法——每个 chunk 到达都会重置计时；只拦"彻底没数据"。
-    final guarded = lines.timeout(
-      _stallIdle,
-      onTimeout: (sink) => sink.addError(OpenAiStallException(_stallIdle)),
-    );
-
-    try {
-      await for (final rawLine in guarded) {
-      final line = rawLine.trim();
-      if (!line.startsWith('data:')) continue;
-      final payload = line.substring(5).trim();
-      if (payload.isEmpty) continue;
-      // 统一收集末块 usage（OpenAI/DeepSeek/llama.cpp 兼容端在末块携带），
-      // 供普通聊天路径读取上下文占用；无 usage 块则保持上次值。
-      if (payload != '[DONE]') {
-        try {
-          final parsed = jsonDecode(payload) as Map<String, dynamic>;
-          final usage = parsed['usage'];
-          if (usage is Map<String, dynamic>) {
-            lastUsage = usage;
-            assert(() {
-              // ignore: avoid_print
-              print('[SSE] usage captured: prompt_tokens='
-                  '${usage['prompt_tokens']}');
-              return true;
-            }());
+      try {
+        await for (final rawLine in guarded) {
+          final line = rawLine.trim();
+          if (!line.startsWith('data:')) continue;
+          final payload = line.substring(5).trim();
+          if (payload.isEmpty) continue;
+          // 统一收集末块 usage（OpenAI/DeepSeek/llama.cpp 兼容端在末块携带），
+          // 供普通聊天路径读取上下文占用；无 usage 块则保持上次值。
+          if (payload != '[DONE]') {
+            try {
+              final parsed = jsonDecode(payload) as Map<String, dynamic>;
+              final usage = parsed['usage'];
+              if (usage is Map<String, dynamic>) {
+                lastUsage = usage;
+                assert(() {
+                  // ignore: avoid_print
+                  print('[SSE] usage captured: prompt_tokens='
+                      '${usage['prompt_tokens']}');
+                  return true;
+                }());
+              }
+            } catch (_) {
+              // 非 JSON 载荷（心跳/注释）忽略。
+            }
           }
-        } catch (_) {
-          // 非 JSON 载荷（心跳/注释）忽略。
+          yield payload;
         }
+      } on OpenAiStallException {
+        // 主动掐断挂死的连接（上游订阅已随 await for 抛错取消，CancelToken
+        // 兜底确保底层 socket 关闭），异常原样上抛 → adapter 归一化为
+        // timeout 档 → 失败瀑布有界重试。
+        localToken.cancel('sse stall');
+        rethrow;
       }
-      yield payload;
-      }
-    } on OpenAiStallException {
-      // 主动掐断挂死的连接（上游订阅已随 await for 抛错取消，CancelToken
-      // 兜底确保底层 socket 关闭），异常原样上抛 → adapter 归一化为
-      // timeout 档 → 失败瀑布有界重试。
-      _cancelToken?.cancel('sse stall');
-      rethrow;
+    } finally {
+      _activeTokens.remove(localToken);
     }
   }
 
@@ -445,9 +462,16 @@ class OpenAiService {
     }
   }
 
-  /// 停止当前流式生成（中断 SSE 请求）。
+  /// 停止所有在途流式生成（中断 SSE 请求）。用户点停止时要掐掉主生成，
+  /// 以及并发的压缩摘要 / 后台子代理请求——所以取消**全部**在途令牌。
   void stop() {
-    _cancelToken?.cancel();
+    for (final token in _activeTokens) {
+      try {
+        token.cancel();
+      } catch (_) {
+        // 已结束的令牌取消会抛错，忽略。
+      }
+    }
   }
 
   /// 把聊天历史（含图片）构建成 OpenAI 消息数组。

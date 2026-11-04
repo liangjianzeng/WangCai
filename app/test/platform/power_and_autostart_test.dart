@@ -2,8 +2,8 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/platform/autostart_windows.dart';
-import 'package:tongyi_lite/platform/power_monitor.dart';
+import 'package:wangcai/platform/autostart_windows.dart';
+import 'package:wangcai/platform/power_monitor.dart';
 
 void main() {
   test(

@@ -6,7 +6,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_sdk/plugin_sdk.dart';
 import 'package:plugin_sdk/testing.dart';
-import 'package:tongyi_lite/plugins/builtin/en_dictation/en_dictation_plugin.dart';
+import 'package:wangcai/plugins/builtin/en_dictation/en_dictation_plugin.dart';
 
 const _threeWords = '{"items":[{"text":"apple","note":"苹果"},{"text":"banana","note":"香蕉"},{"text":"cherry","note":"樱桃"}]}';
 

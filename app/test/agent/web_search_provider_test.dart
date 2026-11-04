@@ -5,12 +5,12 @@ import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/builtin_tools/web_search_tool.dart';
-import 'package:tongyi_lite/agent/tool_definition.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
-import 'package:tongyi_lite/agent/tools/tool_executor.dart';
-import 'package:tongyi_lite/agent/web_search/web_search_seam.dart';
-import 'package:tongyi_lite/services/settings_service.dart';
+import 'package:wangcai/agent/builtin_tools/web_search_tool.dart';
+import 'package:wangcai/agent/tool_definition.dart';
+import 'package:wangcai/agent/tool_registry.dart';
+import 'package:wangcai/agent/tools/tool_executor.dart';
+import 'package:wangcai/agent/web_search/web_search_seam.dart';
+import 'package:wangcai/services/settings_service.dart';
 
 /// 可编程的假 HTTP 适配器：记录每次请求，按脚本返回响应/抛异常。
 class _MockAdapter implements HttpClientAdapter {

@@ -4,12 +4,12 @@ library;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/session/event.dart';
-import 'package:tongyi_lite/agent/session/log.dart';
-import 'package:tongyi_lite/models/chat_message.dart';
-import 'package:tongyi_lite/models/turn_trace.dart';
-import 'package:tongyi_lite/providers/agent_state_provider.dart';
-import 'package:tongyi_lite/widgets/agent_workflow.dart';
+import 'package:wangcai/agent/session/event.dart';
+import 'package:wangcai/agent/session/log.dart';
+import 'package:wangcai/models/chat_message.dart';
+import 'package:wangcai/models/turn_trace.dart';
+import 'package:wangcai/providers/agent_state_provider.dart';
+import 'package:wangcai/widgets/agent_workflow.dart';
 
 void main() {
   /// 测试消息工厂（分组/解析组共用）。

@@ -4,8 +4,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_sdk/plugin_sdk.dart';
-import 'package:tongyi_lite/plugins/host/host_llm.dart';
-import 'package:tongyi_lite/plugins/slot_outlet.dart';
+import 'package:wangcai/plugins/host/host_llm.dart';
+import 'package:wangcai/plugins/slot_outlet.dart';
 
 class _FakePort implements LlmTextPort {
   _FakePort({this.reply = '{"items":[{"text":"apple"}]}', this.routeResult, this.throws});

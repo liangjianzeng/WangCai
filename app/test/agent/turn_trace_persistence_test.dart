@@ -1,6 +1,6 @@
-import 'package:tongyi_lite/agent/session/session.dart';
-import 'package:tongyi_lite/models/chat_message.dart';
-import 'package:tongyi_lite/widgets/agent_workflow.dart'
+import 'package:wangcai/agent/session/session.dart';
+import 'package:wangcai/models/chat_message.dart';
+import 'package:wangcai/widgets/agent_workflow.dart'
     show parseToolActivity;
 import 'package:flutter_test/flutter_test.dart';
 

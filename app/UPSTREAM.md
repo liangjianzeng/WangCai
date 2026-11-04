@@ -1,6 +1,11 @@
 # Dart 同步账本（UPSTREAM）
 
-壳的 Dart 代码自 TongYi-Lite **同路径 vendored 导入**（设计 §1 D1）。本文件是唯一的同步真源：
+> **⚠️ 已独立（2026-11-04 用户定案）**：桌面条线脱离上游 TongYi-Lite，独立项目、独立演进。
+> `pubspec name` 已改 `wangcai`，包名对齐纪律不再适用；**不再向上游回流、不再按基线搬运**。
+> 本文件保留作导入历史与分叉清单（#1–#10）存档；「回流纪律」章节自本日起失效。
+> 独立化决策记录见 `docs/assistant-v0.0.2-design.md` §12（v0.0.3）。
+
+壳的 Dart 代码自 TongYi-Lite **同路径 vendored 导入**（设计 §1 D1）。历史同步纪律：
 搬运 = 按基线 commit 做 diff/cherry-pick，Windows 分叉一律记录在下方清单，禁止无痕改动。
 
 ## 基线

@@ -6,7 +6,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:plugin_kernel/plugin_kernel.dart';
 import 'package:plugin_sdk/testing.dart';
-import 'package:tongyi_lite/plugins/host/host_wiring.dart';
+import 'package:wangcai/plugins/host/host_wiring.dart';
 
 void main() {
   group('宿主注册能力：被拒必须留下声音', () {

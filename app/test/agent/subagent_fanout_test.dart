@@ -2,12 +2,12 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:tongyi_lite/agent/builtin_tools/builtin_tools.dart';
-import 'package:tongyi_lite/agent/llm/adapter.dart';
-import 'package:tongyi_lite/agent/subagents/in_process.dart';
-import 'package:tongyi_lite/agent/subagents/subagent_tool.dart';
-import 'package:tongyi_lite/agent/session/session.dart';
-import 'package:tongyi_lite/agent/tool_registry.dart';
+import 'package:wangcai/agent/builtin_tools/builtin_tools.dart';
+import 'package:wangcai/agent/llm/adapter.dart';
+import 'package:wangcai/agent/subagents/in_process.dart';
+import 'package:wangcai/agent/subagents/subagent_tool.dart';
+import 'package:wangcai/agent/session/session.dart';
+import 'package:wangcai/agent/tool_registry.dart';
 
 final class _FakeAdapter extends LlmAdapter {
   int _calls = 0;

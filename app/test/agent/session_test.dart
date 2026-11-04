@@ -1,9 +1,9 @@
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:tongyi_lite/agent/session/event.dart';
-import 'package:tongyi_lite/agent/session/log.dart';
-import 'package:tongyi_lite/agent/session/store.dart';
-import 'package:tongyi_lite/models/chat_message.dart';
+import 'package:wangcai/agent/session/event.dart';
+import 'package:wangcai/agent/session/log.dart';
+import 'package:wangcai/agent/session/store.dart';
+import 'package:wangcai/models/chat_message.dart';
 
 void main() {
   group('SessionEvent / 事件词表', () {

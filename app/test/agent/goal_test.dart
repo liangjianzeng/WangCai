@@ -1,9 +1,9 @@
 /// P1-A goal 无人值守续跑：存储 / 决策函数 / 工具组 / exit_plan 审批。
 import 'dart:io';
 
-import 'package:tongyi_lite/agent/builtin_tools/goal_tools.dart';
-import 'package:tongyi_lite/agent/goal/goal_store.dart';
-import 'package:tongyi_lite/agent/builtin_tools/goal_tools.dart'
+import 'package:wangcai/agent/builtin_tools/goal_tools.dart';
+import 'package:wangcai/agent/goal/goal_store.dart';
+import 'package:wangcai/agent/builtin_tools/goal_tools.dart'
     show createPlanStepUpdateTool;
 import 'package:flutter_test/flutter_test.dart';
 
