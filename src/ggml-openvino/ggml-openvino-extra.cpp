@@ -396,8 +396,16 @@ bool ggml_openvino_is_npu() {
 // P14e: un-chained host-side K/V row writes (see TranslateSession::kv_unchained_writes).
 // NPU-only: the payoff is the ScatterNDUpdate family and the level-sized cache output DMA
 // that NPUW schedules per step; other devices keep the chained translation untouched.
+// DEFAULT ON since the strict same-cache A/B (2026-11-05): tg128 8.89 (chained) -> 12.26
+// (un-chained) = +38% pure decode gain, prefill untouched, 1.7B dual-mode regression green.
+// The decoder's all-or-nothing build verdict keeps every non-eligible graph fully chained,
+// so the default only ever changes graphs that can carry it. GGML_OPENVINO_KV_HOST_WRITE=0
+// opts out explicitly (the extra_cfg blob key flips with the default -- one cold rebuild).
 bool ggml_openvino_kv_host_write_enabled() {
-    return ggml_openvino_is_npu() && ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE") != 0;
+    if (ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE") == 0) {
+        return false;  // explicit opt-out
+    }
+    return ggml_openvino_is_npu();
 }
 
 // P15: try the MoE fusion passes (FuseMoeRouter/FuseMoeCompressed/...FusedGateUp) on the NPU.

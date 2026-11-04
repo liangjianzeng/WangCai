@@ -58,9 +58,12 @@ rope Add 族 22%（launch-bound）+ 残余 Add 22%），主攻面是 launch/调�
       rope cos/sin 表侧链（4B decode 曾每图重建 ~570 个重复小节点）。1.7B 三轴 +92/+52/+61%。
 - [x] **f16-rope 与 MANUAL_GQA 两个 A/B 结案**（2026-11-04）：`ROPE_F16=1` 两模型全轴持平略负（默认保持
       OFF）；`MANUAL_GQA_ATTN=1` 在 NPU 被 VCL 拒编（不可行，该 lowering 面向 GPU）。
-- [ ] **P14e：KV 写图外置**（4B decode 主攻，已设计）：set_rows 从 ScatterNDUpdate 摘链、attention 用
+- [x] **P14e：KV 写图外置**（2026-11-05 完成，**转默认 ON**）：set_rows 从 ScatterNDUpdate 摘链、attention 用
       Concat 在 DPU 侧拼 cur 列、Kcur/Vcur 作图输出交 host 写行（含环形回绕），cache 不再作图输出——
-      目标消掉 kv-scatter 族（步时 25%）并把 cache 状态 DMA 减半。
+      **严格同 cache A/B 实锤：4B tg128 8.89 → 12.26 t/s（+38% 纯摘链增益；vs P11 基线 +78% 达标）**，
+      prefill 双向持平，1.7B 双向回归绿；混合 SWA 模型（Spark 3:1）只摘 full 层，SWA 环写保持链式。
+      同轮证伪：P15 MoE-NPU 融合（Spark 是 dense，pass 无对象）、P16 rope NegMul 消除（IR 少 72 节点但
+      时间无差，已被上游吸收）。
 - [ ] **针对解码形状的图做编译提示扫描**（`optimization-level`、funcall 粒度、weights-bank 策略），用
       `GGML_OPENVINO_NPU_COMPILE_OVERRIDES`，每格一个缓存目录。
 - [ ] **削减每步状态流量**：把 conv 状态写回批量化；索引已知处，用静态切片替换按运行期索引的 `Gather`。

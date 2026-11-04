@@ -26,6 +26,8 @@
 | `GGML_OPENVINO_STATEFUL_EXECUTION` | `0`/`1` | 基于 OV `Variable` 的缓存（无需每步重新绑定）。**仅限 CPU/GPU** —— 在 NPU 上会被强制关闭。 |
 | `GGML_OPENVINO_MANUAL_GQA_ATTN` | `0`/`1` | 绕过 `SDPA`，用基本算子（op）组合出 GQA 注意力。GPU 路径默认使用；**NPU 上不可行（P14c 定案，2026-11-04）**：VCL 编译器拒绝组合图（`ZE_RESULT_ERROR_INVALID_ARGUMENT`），4B A/B 四臂全灭于编译。 |
 | `GGML_OPENVINO_ROPE_F16` | `0`/`1`（默认 `0`） | **由 WangCai 新增（P14d）。** 无状态且 f16 的 rope 全链路在 f16 域计算（cos/sin 表在共享链内转一次），省掉被钉在 Shave 上的 f32 往返。**A/B 已证伪（2026-11-04）**：两模型全轴持平略负（4B tg 8.6 vs 8.96），默认保持 OFF；保留开关供 rope 相关实验复现。 |
+| `GGML_OPENVINO_KV_HOST_WRITE` | `0`/`1`（**默认开**，`0` 显式关闭） | **由 WangCai 新增（P14e，2026-11-05 转默认）。** 静态 NPU decode 图的 FULL-attention 层 KV 行写出图外：set_rows 摘掉 ScatterNDUpdate、attention 用 Concat 补当前列、执行器在 infer 后 memcpy 行到 cache（行号 = idx % rows）。**严格同 cache A/B 实锤（2026-11-05）**：4B tg128 8.89 → 12.26 t/s = **+38% 纯摘链增益**（vs P11 基线 6.89 = **+78%**），prefill 双向持平，1.7B 双向回归绿（混合 SWA 模型的 SWA 环写保持链式）。解码器 all-or-nothing 门控保证不合格图完全走链式。**默认翻转使 extra_cfg blob 键变化——旧编译缓存失效一次（冷编译）**。 |
+| `GGML_OPENVINO_MOE_NPU` | `0`/`1`（默认 `0`） | **由 WangCai 新增（P15）。** 在 NPU 上也注册 MoE 融合 pass（FuseMoeRouter/FuseMoeCompressed）。NPUW 能编译融合图（无崩溃），但 Spark-X2.6-4B 是 dense 模型（GGUF 无 expert 键），pass 无匹配对象——**当前模型集上为 no-op**，保留给真 MoE 模型。 |
 | `GGML_OPENVINO_NATIVE_SOFTPLUS` | `0`/`1` | 使用原生 `SoftPlus`，还是组合式实现。 |
 | `GGML_OPENVINO_DISABLE_REMOTE_OUTPUTS` | `0`/`1` | 停止通过 remote tensor 把输出别名到 ggml 缓冲区。 |
 | `GGML_OPENVINO_LOG_UNSUPPORTED_OPS` | `0`/`1` | 记录无法降级（lowering）的算子，而不是以晦涩的方式失败。 |

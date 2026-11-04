@@ -30,20 +30,20 @@ blob 缓存）再 `-r 3` 计时（**暖 blob 数字**，冷编译另列）；1.7
 bench 的 pp512 臂用 chunk256）；验收 = 三问贪心（`llama-cli -c 2048 -n 96 --temp 0 --seed 42 -st
 --no-warmup`）两模型各 3/3、零 ZE 错误。基线 = P11 时刻的默认配置表（FOLD 开、P14a/b 之前）。
 
-| 模型 | 测试 | 基线（P11 时刻） | 当前（P14b） | Δ |
+| 模型 | 测试 | 基线（P11 时刻） | 当前（P16，2026-11-05） | Δ |
 |---|---|---:|---:|---:|
 | LFM3-1.7B | `pp512`（ck256） | 406.5 t/s | **779.0 t/s** | **+92%** |
 | LFM3-1.7B | `pp2048`（ck256） | 283.7 t/s | **432.6 t/s** | **+52%** |
 | LFM3-1.7B | `tg128` | 14.07 t/s | **22.60 t/s** | **+61%** |
-| Spark-X2.6-4B | `pp2048`（ck128，生产档） | 42.8 t/s | **53.1 t/s** | +24% |
-| Spark-X2.6-4B | `pp512`（ck256，离线档） | 135.6 t/s | **192.3 t/s** | +42% |
-| Spark-X2.6-4B | `tg128` | 6.89 t/s | **8.96 t/s** | +30% |
+| Spark-X2.6-4B | `pp2048`（ck128，生产档） | 42.8 t/s | **52.5 t/s** | +22.7% |
+| Spark-X2.6-4B | `pp512`（ck256，离线档） | 135.6 t/s | **191.6 t/s** | +41.6% |
+| Spark-X2.6-4B | `tg128` | 6.89 t/s | **12.26 t/s** | **+78.0%** |
 
-1.7B 三个轴向全部 ≥+50% 达标；4B 未达标、循环继续。杠杆台账（HANDOFF 2026-11-04 P14）：**f16-rope
-A/B（`GGML_OPENVINO_ROPE_F16=1`）已证伪**——两模型全轴持平略负（4B pp2048 51.8 / tg 8.6 vs 默认档
-53.1 / 8.96），默认保持 OFF；**MANUAL_GQA A/B（`GGML_OPENVINO_MANUAL_GQA_ATTN=1`，4B）不可行**——
-NPU VCL 直接拒绝组合图编译（`ZE_RESULT_ERROR_INVALID_ARGUMENT`，无算子级信息；该 lowering 面向 GPU
-路径），4B 剩余主攻为 **P14e：host 侧 KV 行写出**（scatter 出图、attention Concat cur 列），推进中。
+1.7B 三个轴向全部 ≥+50% 达标；4B **decode 达标**（P14e 摘链转默认 ON，**严格同 cache A/B 实锤**：链式
+8.89 → 摘链 12.26 = +38% 纯增益）；4B prefill 两轴未达标——缺口为 DPU MatMul 计算域（54%）+ residual
+Add launch 界（27%，数学不可消）+ chunk 固定成本，translator 级杠杆已榨干。同轮证伪台账（HANDOFF
+2026-11-05）：**P15 MoE-NPU**（Spark 是 dense，pass 无匹配对象，0 MOECompressed；KvI→KvM 的 tg 差异为
+环境漂移 ~4%）；**P16 rope NegMul 消除**（IR 真省 72 节点，时间零差——被上游吸收）。
 
 瓶颈模型（P11 起，`GGML_OPENVINO_PROFILING=2` 逐节点剖析定案，P13/P14 复剖）：**decode 步时不是权重
 带宽受限**（Q8_0 权重字节 +67% 步时不变，证伪 P3 的"带宽界"定案），4B decode 步 = kv-scatter 族 25% +

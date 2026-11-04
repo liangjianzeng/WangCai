@@ -1084,3 +1084,41 @@ rope.cpp 的 op_case 映射（VISION→3）与绑定侧的多平面处理本身�
 LLM 侧图像 token 的 4 平面位置处理（音频路径已验证过 LLM 静态 + 单平面，图像 token 的
 mrope 位置是新领域），再对照 patch embeddings 级别找差异。VISROPE/WARMTRACE 插桩暂留
 （门控环境变量，精度缺陷关闭后统一拆除）。
+
+## 2026-11-05：P14e 转默认 + P15/P16 结案 + 严格 A/B 定案（4B decode 达标 +78%）
+
+### A/B 判决（本轮最重要成果）
+同一 cache 目录（KvN2）、同一二进制、同日两套 blob 集（KV_HOST_WRITE ON/OFF），llama-bench 暖 r3：
+- **tg128：链式 8.89 ± 0.01 vs 摘链 12.26 ± 0.03 = +38% 纯摘链增益**；链式 8.89 与 P14b 时代 8.96 闭环
+- pp512ck256：192.29 vs 191.57（持平——摘链不动 prefill，按设计）
+- vs P11 基线：4B tg 6.89 → 12.26 = **+78.0%，decode 轴超额达标**
+- **环境漂移带 ~4%**（同代码不同时段 run 互差）已定性——历史跨时段对比必须同 cache A/B
+- **KV_HOST_WRITE 转默认 ON**（`0` 显式关）：extra_cfg blob 键随默认翻转，旧缓存失效一次
+
+### P15 结案（MoE-NPU 融合 = no-op，归因修正）
+a5c39ca 的 commit message 有两处错误，在此修正：
+- **Spark-X2.6-4B 是 dense**——GGUF 无 expert_count（"experts" 字样来自 tokenizer 词表）；217 MatMul =
+  QKV 36 + attn_output 36 + attn_gate 36 + FFN 108 + head 1
+- 两个 dump 的 IR 里 **0 个 MOECompressed**——pass 无匹配对象；KvI→KvM 的 tg 差异是环境漂移
+- `MOE_NPU` 保留为无害 opt-in（NPUW 能编融合图不崩），给真 MoE 模型用
+
+### P16 结案（rope NegMul 消除 = IR 真省 72 节点，时间零差）
+NEOX rotate-half 的每节点 Multiply(x2,-1) 移进共享 swapped-sin 表（P14b memo 家族）。
+4B 三轴与 pre-P16 全持平（52.51/191.57/12.26）——72 个 NegMul 已被上游吸收（常量折叠或并行调度）。
+代码保留（bit-neutral，3/3 答案实证；图更净）。1.7B（NORMAL mode）双向回归绿。
+
+### 4B prefill 的物理画像（本轮两次 PROFILING 的定案）
+- **ck128 chunk（2.46s）**：MatMul 59% + Add 24%（180 个，launch 界 ~3ms/个）+ Multiply 6% + Transpose 6% + ScatterND 1.8%
+- **ck256 chunk（1.33s）**：MatMul 55% + Add 27%（token 翻倍 Add 时间不动 = 纯 launch）——residual 72 个占 Add 一半（数学不可消）
+- **217 MatMul 分解**：QKV 36 + O 36 + attn_gate 36 + FFN 108 + head 1（attn_gate 是 Spark 架构特性）
+- 1898 个 shape 节点（Reshape/Convert/Unsqueeze/Squeeze）不在 CSV top family = 已被 NPUW 吸收
+- **结论**：translator 级杠杆已榨干；突破需要 NPUW 调度粒度（subgraph 约束/tile 策略）级改动
+
+### 环境教训（本轮新增两条）
+- **D 盘满 → blob 写坏毒化**：写一半崩掉的 blob set 复用即 ZE_RESULT_ERROR_INVALID_NULL_HANDLE（0x78000005），
+  症状像"设备坏了"，实为缓存损坏——换 ArmTag 重编即愈。跑长任务前确认 ≥20 GB
+- **改 translate_session.h（类布局）必须全量重编**：ninja 增量漏编含旧布局的 TU → ODR 违例 →
+  0xC0000005 @ ggml-openvino.dll+0x49251（每个带 rope 的图必崩）——二分两轮才定位。
+  规则：`rm -rf build/ggml/src/ggml-openvino/CMakeFiles/ggml-openvino.dir` 后再 bld.bat
+- **`D:\llm\npu\bin` 是陈旧镜像**（手动拷贝，会落后）：p14_eval 用 `src\llama\build\bin` 是对的；
+  任何手跑前先 `cp build/bin/* bin/` 刷新
