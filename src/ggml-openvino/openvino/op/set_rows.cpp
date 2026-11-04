@@ -1,6 +1,7 @@
 #include "../node_context.h"
 #include "ggml-impl.h"
 #include "../op_table.h"
+#include "../translate_session.h"
 #include "../utils.h"
 
 #include <cassert>
@@ -88,12 +89,6 @@ OutputVector translate_set_rows(const NodeContext & context) {
         // ring wrap for the SWA destinations past it.
         const auto & idx_name = context.get_input_names().at(1);
         const auto dst_shape = context.get_input_shape(2);
-        if (context.is_static() && !context.is_prefill() && dst_shape[2].is_static() &&
-            (idx_name == "attn_inp_k_idxs" || idx_name == "attn_inp_v_idxs")) {
-            const auto dst_rows = dst_shape[2].get_length();
-            ind_squeezed = std::make_shared<ov::op::v1::Mod>(
-                ind_squeezed, ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {dst_rows}));
-        }
         auto data_reshaped = std::make_shared<ov::op::v1::Reshape>(
             data,
             ov::op::v0::Constant::create(ov::element::i64, {4},
@@ -119,19 +114,62 @@ OutputVector translate_set_rows(const NodeContext & context) {
             // BOS row at every decode step.
             const int64_t dst_rows = dst_shape[2].get_length();
             const int64_t d = dst_shape[3].get_length();
-            auto idx_i64 = std::make_shared<ov::op::v0::Convert>(ind_squeezed, ov::element::i64);
-            auto n_rows = std::make_shared<ov::op::v3::ShapeOf>(idx_i64, ov::element::i64);
-            auto two = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1}, {2});
-            auto prefix = std::make_shared<ov::op::v3::Broadcast>(
-                ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1, 2}, std::vector<int64_t>{0, 0}),
-                std::make_shared<ov::op::v0::Concat>(OutputVector{n_rows, two}, 0));
-            auto idx_col = std::make_shared<ov::op::v0::Unsqueeze>(idx_i64, ov::op::v0::Constant::create(ov::element::i64, {1}, {1}));
-            auto nd_idx = std::make_shared<ov::op::v0::Concat>(OutputVector{prefix, idx_col}, 1);
+            // The merged index parameter carries the full-attention cache's cell ids, which
+            // outgrow the SWA ring's row count once the sequence passes n_swa -- the exact
+            // out-of-bounds scatter this file used to crash on. Wrap the index in a Mod against
+            // the destination's row count: the identity for every id a decode step can hold
+            // (cells stay below -c), the ring wrap for the SWA destinations past it.
+            //
+            // P14 (2026-11-04): every K/V scatter in the graph rebuilt the identical index
+            // chain below -- 2*n_layer copies of ~8 small nodes that NPUW schedules per
+            // instance (4B decode: 72 scatters ~= 570 nodes, and the profiled Concat count
+            // matched them one-for-one, so the compiler's own CSE never merged them across
+            // subgraphs). The chain depends only on the indices output, the destination row
+            // count and whether the SWA-wrap Mod applies, so one instance per
+            // (indices node, dst_rows, mod) is shared per graph via the translate session.
+            const bool mod_applied = context.is_static() && !context.is_prefill() &&
+                                     (idx_name == "attn_inp_k_idxs" || idx_name == "attn_inp_v_idxs");
+            Output<Node> nd_idx;
+            auto session = context.get_translate_session();
+            bool shared_hit = false;
+            if (session) {
+                TranslateSession::ScatterIdxKey memo_key{indices.get_node(), dst_rows, mod_applied};
+                auto & memo = session->shared_scatter_idx_chain();
+                auto memo_it = memo.find(memo_key);
+                if (memo_it != memo.end()) {
+                    nd_idx = memo_it->second;
+                    shared_hit = true;
+                }
+            }
+            if (!shared_hit) {
+                auto squeezed = ind_squeezed;
+                if (mod_applied) {
+                    squeezed = std::make_shared<ov::op::v1::Mod>(
+                        squeezed, ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {dst_rows}));
+                }
+                auto idx_i64 = std::make_shared<ov::op::v0::Convert>(squeezed, ov::element::i64);
+                auto n_rows = std::make_shared<ov::op::v3::ShapeOf>(idx_i64, ov::element::i64);
+                auto two = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1}, {2});
+                auto prefix = std::make_shared<ov::op::v3::Broadcast>(
+                    ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1, 2}, std::vector<int64_t>{0, 0}),
+                    std::make_shared<ov::op::v0::Concat>(OutputVector{n_rows, two}, 0));
+                auto idx_col = std::make_shared<ov::op::v0::Unsqueeze>(idx_i64, ov::op::v0::Constant::create(ov::element::i64, {1}, {1}));
+                nd_idx = std::make_shared<ov::op::v0::Concat>(OutputVector{prefix, idx_col}, 1);
+                if (session) {
+                    TranslateSession::ScatterIdxKey memo_key{indices.get_node(), dst_rows, mod_applied};
+                    session->shared_scatter_idx_chain().emplace(memo_key, nd_idx);
+                }
+            }
             auto upd_flat = std::make_shared<ov::op::v1::Reshape>(
                 data_reshaped,
                 ov::op::v0::Constant::create(ov::element::i64, ov::Shape{2}, std::vector<int64_t>{-1, d}), false);
             res = std::make_shared<ov::op::v3::ScatterNDUpdate>(dst, nd_idx, upd_flat);
         } else {
+            // The merged-index SWA ring wrap (Mod) lives only in the ScatterND branch above:
+            // it fired for static decode destinations, which this branch can no longer reach
+            // (is_static + static dst_shape[2] always routes to ScatterND), and its old
+            // dynamic-dst placement would have thrown in get_length() before ever wrapping.
+            // Dynamic-path graphs (is_static() == false) never matched the old condition.
             res = std::make_shared<ov::op::v3::ScatterUpdate>(dst, ind_squeezed, data_reshaped, axes);
         }
     }

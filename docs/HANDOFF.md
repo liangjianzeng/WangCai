@@ -57,11 +57,33 @@
   编译（Model9_1/40_1 连环败）**——`--no-warmup` 是硬性要求（P1 的建议从"净赢 2.7 s"升级为
   "不加则 FOLD=NO 编译毒化"）；网关预热请求（P9）不受影响。
   另：funcall_for_all=NO 在 4B 上同样无叠加（50.8/8.97 vs FOLD 单独 50.6/8.88）。
-- [ ] **P14 decode 算子汤手术**（数据已齐，候选按杠杆排序）：① **KV scatter 融合**——4B 每层
-  K/V 两个 ScatterNDUpdate（n=72，19%）写 `cache_k_lN (view)`/`cache_v_lN (view)`，若两视图
-  同宿主可合并为单 scatter（ translator 侧检测同父 ScatterNDUpdate 对）；② rope 乘加链折叠
-  （1.7B prefill Multiply 27%、4B decode Add 里 rope 族）；③ conv 状态 Concat/Mod 环操作
-  （1.7B decode 专属）。全部为 translator 改造，工作量数小时/项。
+- [ ] **P14 decode 算子汤手术**（数据已齐，候选按杠杆排序）：
+  ① ' **ScatterND 索引链 per-graph 共享——已落地（2026-11-04，本 commit）**：4B 每层 K/V 两个
+  ScatterNDUpdate（n=72）各自重建的同一条 ~8 节点索引链（Squeeze/Convert/ShapeOf/Broadcast/
+  Concat/Unsqueeze/Mod）改为 translate-session memo（键 = indices 节点 + dst_rows + mod_applied），
+  ~570 小节点 → 4 实例；顺带删除动态分支的不可达 Mod 旧码（注释记录）。NPUW 的 CSE 从不跨子图
+  合并这些链（P13 profiled Concat 计数与 scatter 一一对应为证）。
+  **验收**：1.7B 三问 3/3 + 4B 三问 3/3（n=96，零 ZE）。**bench（暖 blob r3，对 P12 遗产）**：
+  1.7B pp512 746.8 / pp2048 426.7 / tg 20.7–21.9（同量级无回归）；4B pp2048ck128 52.4（50.6→）、
+  pp512ck256 191.4（192.2→）、tg 8.7（8.9→）——4B 噪声级。**对基线（P11 表）判定：1.7B
+  pp512 +84% / pp2048 +50.4% / tg +47~56%（贴线）；4B pp2048 +22% / pp512 +41% / tg +26%——
+  4B 两个轴都还没到 +50%，继续循环。**
+  ①  **KV scatter 融合**（未做）——两视图同宿主可合并为单 scatter（translator 侧检测同父对；
+  注意 K/V 是不同 ggml 缓冲，跨 Parameter 合并不可行，需先核实同宿主前提）；
+  ② **rope 乘加链折叠**（下一刀）——1.7B prefill Multiply 27%、4B decode Add 里 rope 族；
+  每个 rope 节点 ~10 节点中 cos_full/sin_full 双 Concat + decode head-tile 只依赖共享表，
+  照 ①' 模式做 session memo（键 = 表节点 + half + n_heads + tile 标志），两模式（NORMAL expand /
+  NEOX concat）都覆盖；
+  ③ conv 状态 Concat/Mod 环操作（1.7B decode 专属）；④ 现成旋钮 A/B（免代码）：
+  `GGML_OPENVINO_MANUAL_GQA_ATTN=1` 对 NPU decode——绕开 K/V 按头物化广播（tile_kv 的
+  Broadcast+Reshape ×72/图）。
+  **工具**：`ctrl/p14_eval.ps1 -Model 17b|4b`（三问 + bench r1暖+r3测，持久 cache_p14_*）、
+  `ctrl/p14_prof4b.ps1`（PROFILING=2 一次性缓存）。
+  **本轮两条硬教训**：(a) **内存预算**：NPU 冷编译（FOLD=NO ~10×）期间用户 GPU server 占 23 GB
+  → 剩 5.4 GB → 编译僵死；跑重型 NPU 实验前先清出 ≥25 GB 物理（HANDOFF 旧规"大 ctx 前先问"
+  的具体化）。(b) **磁盘预算升级**：4B FOLD=NO 盘缓存实测 **~19 GB/ctx 形状**（旧记 14 GB 低估），
+  两形状即写满 D: ——缓存写满后实验数字仍有效（编译在内存完成）但缓存作废全量重编；
+  复测前先 `df -h /d`，发布文档缓存预留改 **≥20 GB/模型/ctx 形状**。
 
 背景：~~decode 已贴权重带宽地板~~（P11 证伪）、prefill chunk256 甜点已交付、预算规则已定案。
 剩余性能空间按性价比排序，逐项执行、证伪也记录、每项独立 commit：
