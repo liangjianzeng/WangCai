@@ -49,6 +49,7 @@ import '../models/local_model.dart';
 import '../services/settings_service.dart';
 import '../services/storage_permission_service.dart';
 import '../widgets/agent_workflow.dart';
+import '../widgets/approval_card.dart';
 import '../widgets/chat_bubble.dart';
 import '../widgets/image_preview.dart';
 import '../widgets/rail/rail_scaffold.dart';
@@ -86,6 +87,12 @@ class _OpenSettingsIntent extends Intent {
 
 class _ClosePanelIntent extends Intent {
   const _ClosePanelIntent();
+}
+
+/// UI 缩放步进（delta>0 放大 / <0 缩小 / ==0 复位），Ctrl+= / Ctrl+- / Ctrl+0。
+class _UiScaleIntent extends Intent {
+  final double delta;
+  const _UiScaleIntent(this.delta);
 }
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -761,16 +768,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     await dev.init(
         preferredActiveId: ref.read(settingsProvider).devWorkspaceId);
     if (!mounted) return;
-    await showModalBottomSheet<void>(
+    // v0.0.4 Phase 4b：bottom sheet → Dialog（手机件清退，计划书 §5.1）。
+    await showDialog<void>(
       context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setSheet) => SafeArea(
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
+      builder: (ctx) => Dialog(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 560),
+          child: StatefulBuilder(
+            builder: (ctx, setSheet) => SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const Padding(
                   padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
@@ -811,6 +819,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
           ),
         ),
+      ),
       ),
     );
   }
@@ -939,14 +948,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // v0.0.4 Phase 3：桌面快捷键基础集（键事件自焦点冒泡至此；对话框等
     // 模态路由先消费 Esc，不冲突）。
     return Shortcuts(
-      shortcuts: const <ShortcutActivator, Intent>{
-        SingleActivator(LogicalKeyboardKey.keyN, control: true):
-            _NewSessionIntent(),
-        SingleActivator(LogicalKeyboardKey.keyF, control: true):
-            _SearchChatsIntent(),
-        SingleActivator(LogicalKeyboardKey.comma, control: true):
-            _OpenSettingsIntent(),
-        SingleActivator(LogicalKeyboardKey.escape): _ClosePanelIntent(),
+      shortcuts: <ShortcutActivator, Intent>{
+        const SingleActivator(LogicalKeyboardKey.keyN, control: true):
+            const _NewSessionIntent(),
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+            const _SearchChatsIntent(),
+        const SingleActivator(LogicalKeyboardKey.comma, control: true):
+            const _OpenSettingsIntent(),
+        const SingleActivator(LogicalKeyboardKey.escape):
+            const _ClosePanelIntent(),
+        // v0.0.4 Phase 4b：缩放 Ctrl+= / Ctrl+- / Ctrl+0（设备像素比方案，
+        // 与设置「更多 → UI 缩放」同源）。
+        const SingleActivator(LogicalKeyboardKey.equal, control: true):
+            const _UiScaleIntent(0.1),
+        const SingleActivator(LogicalKeyboardKey.minus, control: true):
+            const _UiScaleIntent(-0.1),
+        const SingleActivator(LogicalKeyboardKey.digit0, control: true):
+            const _UiScaleIntent(0),
       },
       child: Actions(
         actions: <Type, Action<Intent>>{
@@ -974,6 +992,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           _ClosePanelIntent: CallbackAction<_ClosePanelIntent>(
               onInvoke: (_) {
             _railPanel.close();
+            return null;
+          }),
+          _UiScaleIntent: CallbackAction<_UiScaleIntent>(
+              onInvoke: (intent) {
+            final cur = ref.read(settingsProvider).uiScale;
+            final next = intent.delta == 0
+                ? 1.0
+                : (cur + intent.delta).clamp(0.7, 2.0);
+            ref.read(settingsProvider.notifier).setUiScale(next);
             return null;
           }),
         },
@@ -1049,6 +1076,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ),
 
                 // 附件预览已并入 composer 卡片（chips 行，可单个删除）。
+                // v0.0.4 Phase 4b：审批 composer 接管——有挂起请求时渲染在
+                // 输入框上方，就地批准/拒绝（对齐 DSH ApprovalPanel）。
+                const ApprovalCard(),
                 _buildInputBar(isGenerating, modelState),
               ],
             ),
@@ -1796,13 +1826,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // (catalog, already cleaned) → modelId → fallback. Avoids "未知模型".
     final modelName = ms.modelName ?? (ms.modelId ?? '未知模型');
 
-    showModalBottomSheet(
+    // v0.0.4 Phase 4b：bottom sheet → Dialog（手机件清退，计划书 §5.1）。
+    // 内存面板 + 日志 + 卸载按钮都在内容里，内容自滚动。
+    showDialog(
       context: context,
-      backgroundColor: Colors.transparent,
-      // Sheet now carries a memory panel + logs + buttons; without
-      // isScrollControlled the default 9/16-screen cap clips the content.
-      isScrollControlled: true,
-      builder: (ctx) => _ModelStatusSheet(
+      builder: (ctx) => Dialog(
+        backgroundColor: Colors.transparent,
+        insetPadding: const EdgeInsets.symmetric(horizontal: 48, vertical: 32),
+        child: _ModelStatusSheet(
         phase: ms.phase,
         modelName: modelName,
         errorMessage: ms.errorMessage,
@@ -1841,6 +1872,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           Navigator.push(context,
               MaterialPageRoute(builder: (_) => const SettingsScreen()));
         },
+        ),
       ),
     );
   }
@@ -1976,7 +2008,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// 上下文 / KV 占用详情面板（输入框占用圈点开）：当前会话占用数字与来源、全部
   /// 会话快照、最近压缩记录（来自推理日志）、阈值图例。
-  void _showContextUsageSheet() {
+  Future<void> _showContextUsageSheet() async {
     final usageMap = ref.read(contextUsageProvider);
     final modelState = ref.read(modelManagerProvider);
     final settings = ref.read(settingsProvider);
@@ -1994,9 +2026,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         .take(8)
         .toList();
 
-    showModalBottomSheet<void>(
+    // v0.0.4 Phase 4b：bottom sheet → AlertDialog（手机件清退，计划书 §5.1）。
+    await showDialog<void>(
       context: context,
-      showDragHandle: true,
       builder: (sheetContext) {
         final theme = Theme.of(sheetContext);
         final current = usageMap[_currentConversationId];
@@ -2010,15 +2042,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             .where((e) => e.key != _currentConversationId && e.value.hasData)
             .toList();
 
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('上下文占用', style: theme.textTheme.titleMedium),
-                const SizedBox(height: 4),
+        return AlertDialog(
+          title: const Text('上下文占用'),
+          contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+          content: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 460, maxHeight: 520),
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                 Text(
                   engineName == null ? '当前无激活引擎' : '引擎：$engineName',
                   style: theme.textTheme.bodySmall
@@ -2139,6 +2172,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ],
             ),
           ),
+        ),
         );
       },
     );
@@ -3207,21 +3241,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   /// 项目面板：列表（会话计数/激活态）+ 新建 + 行内 重命名/打开目录/移除。
+  /// v0.0.4 Phase 4b：bottom sheet → Dialog（手机件清退，计划书 §5.1）。
   Future<void> _showProjectSheet() async {
     final notifier = ref.read(projectsProvider.notifier);
-    await showModalBottomSheet<void>(
+    await showDialog<void>(
       context: context,
-      showDragHandle: true,
-      isScrollControlled: true,
       builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx2, setSheet) {
-            final state = ref.read(projectsProvider);
-            return SafeArea(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Padding(
+        return Dialog(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 560, maxHeight: 580),
+            child: StatefulBuilder(
+              builder: (ctx2, setSheet) {
+                final state = ref.read(projectsProvider);
+                return SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Padding(
                     padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
                     child: Row(children: [
                       Expanded(
@@ -3357,9 +3393,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 ],
               ),
             );
-          },
+              }
+            ),
+          ),
         );
-      },
+      }
     );
   }
 
@@ -3639,7 +3677,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 }
               });
             }
-          : () => _switchConversation(c.id),
+          : () {
+              // v0.0.4 Phase 4b：Ctrl/Shift 点选 = 桌面多选（checklist 开关
+              // 保留为次入口）。Shift 暂按同 Ctrl 处理（区间选择需索引序）。
+              final hk = HardwareKeyboard.instance;
+              if (hk.isControlPressed || hk.isShiftPressed) {
+                setState(() {
+                  _conversationSelectionMode = true;
+                  if (!_selectedConversations.remove(c.id)) {
+                    _selectedConversations.add(c.id);
+                  }
+                });
+                return;
+              }
+              _switchConversation(c.id);
+            },
       onLongPress: selectionMode
           ? null
           : () {
@@ -3969,33 +4021,24 @@ class _ModelStatusSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = _sheetColorFor(phase);
+    // v0.0.4 Phase 4b：容器随弹层改 Dialog 形态（uniform 圆角、无把手、无 SafeArea）。
     return Container(
-      margin: const EdgeInsets.only(top: 8),
       decoration: BoxDecoration(
         color: Theme.of(context).colorScheme.surface,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+        borderRadius: const BorderRadius.all(Radius.circular(16)),
       ),
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(context).size.height * 0.85,
+        maxWidth: 560,
       ),
-      child: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Handle bar（弹层把手）
-              Container(
-                width: 40,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 16),
-                decoration: BoxDecoration(
-                    color: Colors.grey.shade400,
-                    borderRadius: BorderRadius.circular(2)),
-              ),
-              // Title + icon
-              Row(
-                children: [
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Title + icon
+            Row(
+              children: [
                   Icon(_sheetIconFor(phase), size: 28, color: color),
                   const SizedBox(width: 12),
                   Expanded(
@@ -4094,7 +4137,6 @@ class _ModelStatusSheet extends StatelessWidget {
             ],
           ),
         ),
-      ),
     );
   }
 

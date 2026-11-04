@@ -13,7 +13,10 @@ import 'package:window_manager/window_manager.dart';
 import 'agent/session/store.dart' show JsonlSessionStore;
 import 'project/migration.dart' show migrateLegacySessions;
 import 'providers/agent_approval.dart'
-    show sandboxApproverProvider, toolPreApproverProvider;
+    show
+        pendingApprovalsProvider,
+        sandboxApproverProvider,
+        toolPreApproverProvider;
 import 'providers/settings_provider.dart' show settingsProvider;
 import 'screens/home_screen.dart';
 import 'platform/inference_gateway.dart';
@@ -92,44 +95,26 @@ Future<void> main() async {
   runApp(
     ProviderScope(
       overrides: [
+        // v0.0.4 Phase 4b：审批走 composer 接管（pendingApprovalsProvider），
+        // 对话区输入框上方渲染 ApprovalCard 就地决议——不再弹全局对话框打断。
         sandboxApproverProvider.overrideWith((ref) {
           return (escalation, toolName) async {
             final settings = ref.read(settingsProvider);
             if (!settings.agentFullFileAccess) return false;
-            final navigator = appNavigatorKey.currentState;
-            if (navigator == null) return false;
-            final granted = await showDialog<bool>(
-              context: navigator.context,
-              barrierDismissible: false,
-              builder: (ctx) => AlertDialog(
-                title: const Text('智能体请求完整文件系统访问'),
-                content: Text(
-                  '工具：$toolName\n'
-                  '理由：${escalation.justification}\n\n'
-                  '沙箱默认只允许工作目录内读写；批准后本次调用可访问'
-                  '整台机器的文件系统（含工作目录之外）。仅本次调用生效。',
-                  style: const TextStyle(fontSize: 13),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx, false),
-                    child: const Text('拒绝'),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(ctx, true),
-                    child: const Text('批准'),
-                  ),
-                ],
-              ),
-            );
-            return granted == true;
+            return ref.read(pendingApprovalsProvider.notifier).enqueue(
+                  title: '智能体请求完整文件系统访问',
+                  detail: '工具：$toolName\n'
+                      '理由：${escalation.justification}\n\n'
+                      '沙箱默认只允许工作目录内读写；批准后本次调用可访问'
+                      '整台机器的文件系统（含工作目录之外）。仅本次调用生效。',
+                  allowLabel: '批准（仅本次）',
+                );
           };
         }),
-        // Phase 6：流水线 pre-execute `ask` 审批（ApprovalDialog，§12.3）。
+        // Phase 6：流水线 pre-execute `ask` 审批（§12.3）——
+        // v0.0.4 Phase 4b：同走 composer 接管。
         toolPreApproverProvider.overrideWith((ref) {
           return (call) async {
-            final navigator = appNavigatorKey.currentState;
-            if (navigator == null) return false;
             var argsText = '';
             try {
               argsText =
@@ -140,28 +125,11 @@ Future<void> main() async {
             if (argsText.length > 300) {
               argsText = '${argsText.substring(0, 300)}…';
             }
-            final granted = await showDialog<bool>(
-              context: navigator.context,
-              barrierDismissible: false,
-              builder: (ctx) => AlertDialog(
-                title: Text('允许调用工具「${call.name}」？'),
-                content: Text(
-                  '参数：$argsText',
-                  style: const TextStyle(fontSize: 13),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => Navigator.pop(ctx, false),
-                    child: const Text('拒绝'),
-                  ),
-                  FilledButton(
-                    onPressed: () => Navigator.pop(ctx, true),
-                    child: const Text('允许'),
-                  ),
-                ],
-              ),
-            );
-            return granted == true;
+            return ref.read(pendingApprovalsProvider.notifier).enqueue(
+                  title: '智能体请求执行工具「${call.name}」',
+                  detail: '参数：$argsText',
+                  allowLabel: '允许（仅本次）',
+                );
           };
         }),
       ],
