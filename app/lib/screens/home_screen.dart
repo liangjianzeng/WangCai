@@ -943,13 +943,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final modelState = ref.watch(modelManagerProvider);
     final slots = ref.watch(slotRegistryProvider);
     // v0.0.4：顶栏显示当前会话名（应用名在窗口标题栏，不重复占位）。
+    // 无会话名 → 顶栏留空（用户定案：无为空、有则显示，不造兜底文案）。
     final convTitle = ref
         .watch(conversationsProvider)
         .where((c) => c.id == _currentConversationId)
         .firstOrNull
         ?.title;
     final headerTitle =
-        (convTitle == null || convTitle.isEmpty) ? '新对话' : convTitle;
+        (convTitle == null || convTitle.isEmpty) ? '' : convTitle;
 
     // harness 布局：左栏（能力/配置入口）+ 主区（AppBar + 消息 + composer）。
     // 面板从左滑入、只盖主区（含 AppBar），rail 恒可见。
@@ -1063,14 +1064,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     )
                   : null,
               // v0.0.4（用户 2026-11-05）：顶栏放**当前会话名**——应用名在
-              // 窗口标题栏已经有了，主区顶栏不重复占位。
-              title: Text(
-                headerTitle,
-                style: const TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.w600),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
+              // 窗口标题栏已经有了，主区顶栏不重复占位；无为空、有则显示。
+              title: headerTitle.isEmpty
+                  ? null
+                  : Text(
+                      headerTitle,
+                      style: const TextStyle(
+                          fontSize: 16, fontWeight: FontWeight.w600),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
               actions: [
                 _buildDevWorkspaceChip(),
                 _buildModelStatusChip(modelState, isGenerating),
