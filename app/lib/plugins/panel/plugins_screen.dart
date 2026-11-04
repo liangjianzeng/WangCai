@@ -615,16 +615,21 @@ class _PluginTile extends StatelessWidget {
     );
   }
 
+  /// v0.0.4 Phase 4c：bottom sheet → Dialog（全仓 last one；手机件清退收官）。
   void _openDetail(BuildContext context) {
-    showModalBottomSheet<void>(
+    showDialog<void>(
       context: context,
-      isScrollControlled: true,
-      builder: (_) => _PluginDetailSheet(
-        service: service,
-        view: view,
-        onSaveParams: onSaveParams,
-        onResetParams: onResetParams,
-        onTrialParams: onTrialParams,
+      builder: (_) => Dialog(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 640, maxHeight: 640),
+          child: _PluginDetailSheet(
+            service: service,
+            view: view,
+            onSaveParams: onSaveParams,
+            onResetParams: onResetParams,
+            onTrialParams: onTrialParams,
+          ),
+        ),
       ),
     );
   }
@@ -749,24 +754,11 @@ class _PluginDetailSheetState extends ConsumerState<_PluginDetailSheet> {
     final runLog =
         (d['runLog'] as List? ?? const []).cast<Map<String, Object?>>();
 
-    return SafeArea(
-      child: DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: 0.85,
-        builder: (context, controller) => ListView(
-          controller: controller,
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-          children: [
-            Center(
-              child: Container(
-                width: 36,
-                height: 4,
-                margin: const EdgeInsets.only(bottom: 12),
-                decoration: BoxDecoration(
-                    color: Colors.grey.shade400,
-                    borderRadius: BorderRadius.circular(2)),
-              ),
-            ),
+    // v0.0.4 Phase 4c：sheet 专用 DraggableScrollableSheet → 普通滚动
+    // （弹层改 Dialog 形态，拖拽把手随之退役）。
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+      children: [
             Text(m.name, style: Theme.of(context).textTheme.titleLarge),
             Text('${m.id} · ${m.trust.name} · ${v.loaded.descriptor.location}',
                 style: Theme.of(context).textTheme.bodySmall),
@@ -845,10 +837,15 @@ class _PluginDetailSheetState extends ConsumerState<_PluginDetailSheet> {
                         ),
                     },
                   ),
+                // v0.0.4：弹层收窄为 Dialog 后此行会挤（RenderFlex overflow
+                // 25px）——按钮组允许换行（Wrap），窄窗不再溢出。
                 Align(
                   alignment: Alignment.centerRight,
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
+                  child: Wrap(
+                    alignment: WrapAlignment.end,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    spacing: 0,
+                    runSpacing: 4,
                     children: [
                       // 四层配置里最容易改坏的就是用户层；没有"退回默认"，用户只能凭记忆一条条打回去
                       // —— 那是把改错的代价转嫁给用户。内核 `resetConfig` 只清用户层，档与声明默认都留着。
@@ -949,8 +946,6 @@ class _PluginDetailSheetState extends ConsumerState<_PluginDetailSheet> {
               ),
             ]),
           ],
-        ),
-      ),
     );
   }
 

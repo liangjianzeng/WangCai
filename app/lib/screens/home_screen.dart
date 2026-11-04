@@ -1007,9 +1007,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         child: Scaffold(
       // 设计稿结构：状态栏条带 = 应用底色，左栏/画布从状态栏下开始——
       // 左栏背景不许捅进状态栏（此前 SafeArea 放在栏内部只挪了内容）。
-      body: SafeArea(
-        bottom: false,
-        child: RailPanelHost(
+      // v0.0.4 Phase 4c：SafeArea 清退（Windows 无系统 insets，padding 恒 0）。
+      body: RailPanelHost(
           controller: _railPanel,
           pages: _railPages(),
           rail: _buildRail(slots),
@@ -1085,7 +1084,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
         ),
       ),
-        ),
       ),
     );
   }
@@ -3406,10 +3404,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final conversations = ref.watch(conversationsProvider);
     final settings = ref.watch(settingsProvider);
     final pinned = settings.pinnedConversationIds.toSet();
-    return SafeArea(
-      right: false,
-      child: Column(
-        children: [
+    return Column(
+      children: [
           _buildProjectHeader(),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
@@ -3474,30 +3470,27 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           // 批量选择底部操作栏
           if (_conversationSelectionMode) ...[
             const Divider(height: 1),
-            SafeArea(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: Row(children: [
-                  Text('已选 ${_selectedConversations.length} 个'),
-                  const Spacer(),
-                  OutlinedButton.icon(
-                    onPressed: _selectedConversations.isEmpty
-                        ? null
-                        : _confirmBulkDelete,
-                    icon: const Icon(Icons.delete_outline, size: 18),
-                    label: Text('删除选中(${_selectedConversations.length})'),
-                    style: OutlinedButton.styleFrom(
-                      foregroundColor: Colors.red.shade700,
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                    ),
+            Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(children: [
+                Text('已选 ${_selectedConversations.length} 个'),
+                const Spacer(),
+                OutlinedButton.icon(
+                  onPressed: _selectedConversations.isEmpty
+                      ? null
+                      : _confirmBulkDelete,
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  label: Text('删除选中(${_selectedConversations.length})'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red.shade700,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
                   ),
-                ]),
-              ),
+                ),
+              ]),
             ),
           ],
         ],
-      ),
-    );
+      );
   }
 
   /// 按查询过滤 + 分组：置顶 / 今天 / 昨天 / 7 天内 / 更早。
@@ -4694,17 +4687,15 @@ class _PlanPanelSheetState extends State<_PlanPanelSheet> {
   @override
   Widget build(BuildContext context) {
     final plan = _plan;
-    return SafeArea(
-      child: Container(
-        constraints:
-            BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
-        padding: const EdgeInsets.all(16),
-        child: !_loaded
-            ? const Center(child: CircularProgressIndicator())
-            : plan == null
-                ? _buildEmpty(context)
-                : _buildPlan(context, plan),
-      ),
+    return Container(
+      constraints:
+          BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.7),
+      padding: const EdgeInsets.all(16),
+      child: !_loaded
+          ? const Center(child: CircularProgressIndicator())
+          : plan == null
+              ? _buildEmpty(context)
+              : _buildPlan(context, plan),
     );
   }
 
