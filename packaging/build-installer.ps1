@@ -1,10 +1,10 @@
-﻿# 汪柴 v0.0.2 打包脚本（M4）。
-#   产出 1（无需 Inno）：dist/WangCai-0.0.2-win-x64-portable.zip —— 解压即用
-#   产出 2（装了 Inno Setup 6 时）：dist/WangCai-0.0.2-win-x64-Setup.exe
+﻿# 汪柴 v0.0.3 打包脚本（M4）。
+#   产出 1（无需 Inno）：dist/WangCai-0.0.3-win-x64-portable.zip —— 解压即用
+#   产出 2（装了 Inno Setup 6 时）：dist/WangCai-0.0.3-win-x64-Setup.exe
 # 用法：powershell -ExecutionPolicy Bypass -File packaging/build-installer.ps1
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$ver = "0.0.2"
+$ver = "0.0.3"
 
 Write-Host "== 1/4 flutter build windows --release =="
 if (-not (Get-Command flutter -ErrorAction SilentlyContinue)) {
@@ -34,10 +34,18 @@ Get-ChildItem "$root\src\llama\build\bin" | Where-Object {
 } | ForEach-Object { Copy-Item $_.FullName "$stage\Engines\wangcai\" }
 Get-ChildItem "$root\src\llama\build\bin" -Filter "llama-server*.exe" |
     ForEach-Object { Copy-Item $_.FullName "$stage\Engines\wangcai\" }
-Copy-Item "$root\ov\openvino\libs\*" "$stage\Engines\wangcai\ovlibs\" -Recurse -Force
+# OV 运行时源解析（v0.0.3 修正）：仓库 vendored 副本优先，回落本机
+# E:\dev-tools 解压布局（注意双层 openvino 目录）。缺 openvino.dll 直接报错
+# —— 只打 ggml-openvino.dll 壳会导致 llama-server 起不来（缺 openvino.dll）。
+$ovSrc = @("$root\ov\openvino\libs", "E:\dev-tools\ov\openvino\openvino\libs") |
+    Where-Object { Test-Path "$_\openvino.dll" } | Select-Object -First 1
+if (-not $ovSrc) {
+    throw "OpenVINO 运行时未找到（找过 $root\ov\openvino\libs 与 E:\dev-tools\ov\openvino\openvino\libs）"
+}
+Copy-Item "$ovSrc\*" "$stage\Engines\wangcai\ovlibs\" -Recurse -Force
 # 便携包说明
 @'
-汪柴 v0.0.2 便携包：解压到任意目录后运行 App\WangCai.exe。
+汪柴 v0.0.3 便携包：解压到任意目录后运行 App\WangCai.exe。
 引擎位于 Engines\wangcai\（llama-server.exe + OpenVINO 运行时），
 首启自动被识别（安装器形态同布局）。模型库：%APPDATA%\WangCai\models
 （可用 WANGCAI_MODEL_DIR 指到别处）。

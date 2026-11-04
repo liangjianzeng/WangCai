@@ -1,6 +1,6 @@
-; 汪柴 v0.0.2 安装包（Inno Setup 6；设计 §8/§9 M4）。
+; 汪柴 v0.0.3 安装包（Inno Setup 6；设计 §8/§9 M4）。
 ; 每用户安装（无管理员权限；卸载清 HKCU\Software\WangCai 由 Uninstall 清理项覆盖）。
-; 产物：WangCai-0.0.2-win-x64-Setup.exe
+; 产物：WangCai-0.0.3-win-x64-Setup.exe
 ;
 ; 构建步骤（packaging/build-installer.ps1 自动化）：
 ;   1. cd app && flutter build windows --release
@@ -9,7 +9,7 @@
 
 #define MyAppName "汪柴"
 #define MyAppNameEn "WangCai"
-#define MyAppVersion "0.0.2"
+#define MyAppVersion "0.0.3"
 #define MyAppExe "WangCai.exe"
 
 [Setup]
@@ -43,7 +43,9 @@ Source: "..\src\llama\build\bin\*.dll"; DestDir: "{userappdata}\WangCai\engines\
 Source: "..\src\llama\build\bin\*.manifest"; DestDir: "{userappdata}\WangCai\engines\wangcai"; Flags: ignoreversion
 Source: "..\src\llama\build\bin\llama-server*.exe"; DestDir: "{userappdata}\WangCai\engines\wangcai"; Flags: ignoreversion
 ; 3) OpenVINO 运行时 DLL → {userappdata}\WangCai\engines\wangcai\ovlibs\
-Source: "..\ov\openvino\libs\*"; DestDir: "{userappdata}\WangCai\engines\wangcai\ovlibs"; Flags: recursesubdirs ignoreversion
+;    v0.0.3 修正：本机 runtime 在 E:\dev-tools 解压布局（双层 openvino）；
+;    仓库若补 vendored 副本可改回 ..\ov\openvino\libs\*
+Source: "E:\dev-tools\ov\openvino\openvino\libs\*"; DestDir: "{userappdata}\WangCai\engines\wangcai\ovlibs"; Flags: recursesubdirs ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExe}"
