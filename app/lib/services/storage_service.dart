@@ -21,7 +21,7 @@ class StorageService {
     final path = join(await getDatabasesPath(), 'tongyilite.db');
     return await openDatabase(
       path,
-      version: 6,
+      version: 7,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -84,6 +84,23 @@ class StorageService {
     if (!names.contains('noticeCode')) {
       await db.execute("ALTER TABLE messages ADD COLUMN noticeCode TEXT");
     }
+    // v7（v0.0.3 项目层级）：conversations 加 projectId 列（项目归属）。
+    // 与 messages 列同一套幂等纪律：列级检查，缺了才补，绝不撞 duplicate。
+    final convCols = await db.rawQuery('PRAGMA table_info(conversations)');
+    final convNames = convCols.map((c) => c['name'] as String).toSet();
+    if (!convNames.contains('projectId')) {
+      await db.execute(
+        "ALTER TABLE conversations ADD COLUMN projectId TEXT",
+      );
+    }
+    final idx = await db.rawQuery(
+      "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_conversations_project'",
+    );
+    if (idx.isEmpty) {
+      await db.execute(
+        'CREATE INDEX idx_conversations_project ON conversations(projectId)',
+      );
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
@@ -92,11 +109,16 @@ class StorageService {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL DEFAULT '新对话',
         modelId TEXT DEFAULT 'qwen3.5-2b-mtp-ud-q4_k_xl',
+        projectId TEXT,
         messageCount INTEGER DEFAULT 0,
         createdAt INTEGER NOT NULL,
         updatedAt INTEGER NOT NULL
       )
     ''');
+
+    await db.execute(
+      'CREATE INDEX idx_conversations_project ON conversations(projectId)',
+    );
 
     await db.execute('''
       CREATE TABLE messages (
@@ -126,7 +148,10 @@ class StorageService {
 
   // ----- Conversations -----
 
-  Future<Conversation> createConversation({String title = '新对话'}) async {
+  Future<Conversation> createConversation({
+    String title = '新对话',
+    String? projectId,
+  }) async {
     final db = await database;
     final id = DateTime.now().millisecondsSinceEpoch.toString();
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -134,27 +159,65 @@ class StorageService {
       'id': id,
       'title': title,
       'modelId': 'qwen3.5-2b-mtp-ud-q4_k_xl',
+      'projectId': projectId,
       'messageCount': 0,
       'createdAt': now,
       'updatedAt': now,
     });
-    return Conversation(id: id, title: title);
+    return Conversation(id: id, title: title, projectId: projectId);
   }
 
-  Future<List<Conversation>> getAllConversations() async {
+  /// 会话列表。传 [projectId] 则过滤到该项目：
+  /// - 查默认项目（`p_default`）时**含 projectId 为 NULL 的旧行**——
+  ///   迁移半途/迁移失败也不许把用户的旧会话变隐形（可见性优先）；
+  /// - 其他项目只认精确归属（NULL 不串门）。
+  Future<List<Conversation>> getAllConversations({String? projectId}) async {
     final db = await database;
     final rows = await db.query(
       'conversations',
+      where: switch (projectId) {
+        null => null,
+        'p_default' => "(projectId = ? OR projectId IS NULL)",
+        _ => "projectId = ?",
+      },
+      whereArgs: projectId == null ? null : [projectId],
       orderBy: 'updatedAt DESC',
     );
     return rows.map((r) => Conversation(
       id: r['id'] as String,
       title: r['title'] as String,
       modelId: r['modelId'] as String? ?? 'qwen3.5-2b-mtp-ud-q4_k_xl',
+      projectId: r['projectId'] as String?,
       messageCount: r['messageCount'] as int? ?? 0,
       createdAt: DateTime.fromMillisecondsSinceEpoch(r['createdAt'] as int),
       updatedAt: DateTime.fromMillisecondsSinceEpoch(r['updatedAt'] as int),
     )).toList();
+  }
+
+  /// 某会话归属的项目 id（无行/无列 → null = 默认项目语义）。
+  /// JSONL 会话树按项目分目录，工具层由此反查"这条会话在哪个项目干活"。
+  Future<String?> projectOfConversation(String conversationId) async {
+    final db = await database;
+    final rows = await db.query(
+      'conversations',
+      columns: ['projectId'],
+      where: 'id = ?',
+      whereArgs: [conversationId],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return rows.first['projectId'] as String?;
+  }
+
+  /// 迁移专用：把所有未归属（projectId IS NULL）的会话一次性归入 [projectId]。
+  /// 幂等（第二次跑匹配集为空）。返回受影响行数。
+  Future<int> assignNullProjectConversations(String projectId) async {
+    final db = await database;
+    return db.update(
+      'conversations',
+      {'projectId': projectId},
+      where: 'projectId IS NULL',
+    );
   }
 
   Future<void> deleteConversation(String id) async {

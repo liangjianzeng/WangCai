@@ -9,12 +9,15 @@ import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'agent/session/store.dart' show JsonlSessionStore;
+import 'project/migration.dart' show migrateLegacySessions;
 import 'providers/agent_approval.dart'
     show sandboxApproverProvider, toolPreApproverProvider;
 import 'providers/settings_provider.dart' show settingsProvider;
 import 'screens/home_screen.dart';
 import 'platform/inference_gateway.dart';
 import 'services/model_manager.dart';
+import 'services/storage_service.dart' show StorageService;
 import 'asr/sherpa_streaming_asr.dart';
 
 /// 全局导航 key：沙箱升级审批确认框经此弹出（ProviderScope 在 MaterialApp 之前，
@@ -40,6 +43,17 @@ Future<void> main() async {
   if (!Platform.isAndroid && !Platform.isIOS) {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
+  }
+
+  // v0.0.3 项目层级（设计 §12 Phase 1）：会话→项目解析器接线 +
+  // 旧平铺会话一次性幂等迁移。迁移失败绝不阻塞启动——读取侧本来就有
+  // 旧平铺双路径兜底，迁移只是"把家搬完"，不是功能开关。
+  JsonlSessionStore.projectIdResolver =
+      (convId) => StorageService().projectOfConversation(convId);
+  try {
+    await migrateLegacySessions();
+  } catch (e) {
+    debugPrint('[Project] 启动迁移异常（双路径兜底在，可忽略）: $e');
   }
 
   // Android 13+ 通知运行时权限（审查 P1：清单已声明 POST_NOTIFICATIONS 但

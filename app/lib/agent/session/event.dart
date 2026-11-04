@@ -116,29 +116,43 @@ final class SessionHeader {
   final String conversationId;
   final int createdAtMs;
 
+  /// v0.0.3 项目层级可选字段：会话创建时项目的工作目录与命令落点
+  /// （"在哪干活"的追溯线索）。DSH 规则：加可选属性 → 不升版本。
+  final String? workspacePath;
+  final String? cwd;
+
   SessionHeader({
     required this.version,
     required this.conversationId,
     required this.createdAtMs,
+    this.workspacePath,
+    this.cwd,
   });
 
-  String toJson() =>
-      '{"version":$version,"conversationId":"${_escape(conversationId)}","createdAt":$createdAtMs}';
+  String toJson() => jsonEncode({
+        'version': version,
+        'conversationId': conversationId,
+        'createdAt': createdAtMs,
+        if (workspacePath != null) 'workspacePath': workspacePath,
+        if (cwd != null) 'cwd': cwd,
+      });
 
   factory SessionHeader.fromJson(Map<String, dynamic> m) => SessionHeader(
         version: (m['version'] as num?)?.toInt() ?? kSessionFormatVersion,
         conversationId: (m['conversationId'] as String?) ?? '',
         createdAtMs: (m['createdAt'] as num?)?.toInt() ??
             DateTime.now().millisecondsSinceEpoch,
+        workspacePath: (m['workspacePath'] as String?)?.trim().isEmpty ?? true
+            ? null
+            : (m['workspacePath'] as String?)?.trim(),
+        cwd: (m['cwd'] as String?)?.trim().isEmpty ?? true
+            ? null
+            : (m['cwd'] as String?)?.trim(),
       );
 
   /// 当前 reader 能否完整读取该 header。
   bool canBeReadBy(int readerVersion) => version <= readerVersion;
 }
-
-/// 简单的 JSON 字符串转义（用于手写 header）。
-String _escape(String s) =>
-    s.replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('\n', '\\n').replaceAll('\r', '\\r');
 
 /// 一次会话事件的不可变信封（append-only 写入，永不原地改写）。
 final class SessionEvent {

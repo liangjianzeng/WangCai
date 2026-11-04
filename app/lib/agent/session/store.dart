@@ -5,14 +5,20 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../models/chat_message.dart' show ChatMessage, MessageRole;
+import '../../project/project.dart';
+import '../../project/project_store.dart';
 import 'event.dart';
 import 'log.dart';
 
-/// JSONL 会话存储（Phase 0）。
+/// JSONL 会话存储（Phase 0；v0.0.3 挂项目树）。
 ///
-/// 对照 DSH 持久化（Part 5）：每会话一个 JSONL 文件
-/// `ApplicationSupport/sessions/<conversationId>.jsonl`，首行 header，
-/// 后续每行一个事件。文件操作 append-only，加载时做崩溃修复（closeOpenTurns）。
+/// 对照 DSH 持久化（Part 5）：每会话一个 JSONL 文件，首行 header，后续每行
+/// 一个事件。文件操作 append-only，加载时做崩溃修复（closeOpenTurns）。
+///
+/// **路径真源（v0.0.3 项目层级）**：
+/// `%APPDATA%\WangCai\projects\<projectId>\sessions\<convId>.jsonl`；
+/// 旧平铺 `ApplicationSupport/sessions/` 只作**读兜底**（迁移半途不丢数据），
+/// 首次触达即整体复制进项目树（"有就用、没有就在项目树新建"）。
 ///
 /// 端侧设计决策：
 /// - 不压缩（JSONL 明文，文件小，读取简单）；
@@ -20,28 +26,53 @@ import 'log.dart';
 /// - 旧 SQLite 会话经 [importFromMessages] 一次性迁移（log-only 标记 imported）。
 
 final class JsonlSessionStore {
-  JsonlSessionStore();
+  JsonlSessionStore({ProjectStore? projects}) : _projects = projects;
 
-  /// 会话文件路径（相对 ApplicationSupport/sessions）。
-  Future<String> pathFor(String conversationId) async {
-    final base = await getApplicationSupportDirectory();
-    return p.join(base.path, 'sessions', '${_safe(conversationId)}.jsonl');
+  final ProjectStore? _projects;
+  ProjectStore get _store => _projects ?? ProjectStore.resolve();
+
+  /// 会话 → 项目 id 解析器（bootstrap 接线 StorageService.projectOfConversation）。
+  /// null 或未命中 = 默认项目语义。测试可直接替换（tearDown 还原 null）。
+  static Future<String?> Function(String conversationId)? projectIdResolver;
+
+  /// 测试注入：旧平铺目录的父目录（null = ApplicationSupport）。
+  static String? legacyBaseOverrideForTest;
+
+  Future<String?> _projectIdFor(String conversationId) async {
+    final r = projectIdResolver;
+    if (r == null) return null;
+    try {
+      return await r(conversationId);
+    } catch (_) {
+      return null;
+    }
   }
 
-  /// 确保 sessions 目录存在，返回目录路径。
-  Future<String> _ensureDir() async {
-    final base = await getApplicationSupportDirectory();
-    final dir = p.join(base.path, 'sessions');
-    if (!Directory(dir).existsSync()) {
-      Directory(dir).createSync();
-    }
-    return dir;
+  /// 会话文件路径（项目树；目录取即建）。
+  Future<String> pathFor(String conversationId) async {
+    final pid = await _projectIdFor(conversationId) ?? Project.kDefaultId;
+    return p.join(await _store.sessionsDir(pid), '${_safe(conversationId)}.jsonl');
+  }
+
+  /// 旧平铺路径（ApplicationSupport/sessions，只读兜底，不建目录）。
+  Future<String> legacyPathFor(String conversationId) async {
+    final base = legacyBaseOverrideForTest ??
+        (await getApplicationSupportDirectory()).path;
+    return p.join(base, 'sessions', '${_safe(conversationId)}.jsonl');
+  }
+
+  /// 读兜底解析：项目树优先，回落旧平铺；都不存在返回项目树路径（写入侧用）。
+  Future<File> _resolveFile(String conversationId) async {
+    final f = File(await pathFor(conversationId));
+    if (f.existsSync()) return f;
+    final legacy = File(await legacyPathFor(conversationId));
+    if (legacy.existsSync()) return legacy;
+    return f;
   }
 
   /// 读取会话日志（load + 崩溃修复 + 版本门）。
   Future<SessionLog> load(String conversationId) async {
-    final dirPath = await _ensureDir();
-    final file = File(p.join(dirPath, '${_safe(conversationId)}.jsonl'));
+    final file = await _resolveFile(conversationId);
     if (!file.existsSync()) {
       return SessionLog.fromEvents([]);
     }
@@ -66,30 +97,55 @@ final class JsonlSessionStore {
     return log;
   }
 
-  /// 追加事件到磁盘（append-only）。
-  Future<void> appendEvent(String conversationId, SessionEvent event) async {
-    final dirPath = await _ensureDir();
-    final file = File(p.join(dirPath, '${_safe(conversationId)}.jsonl'));
-    if (!file.existsSync()) {
-      final h = SessionHeader(
-        version: kSessionFormatVersion,
-        conversationId: conversationId,
-        createdAtMs: DateTime.now().millisecondsSinceEpoch,
-      );
-      await file.writeAsString('${h.toJson()}\n');
+  /// 新会话 header（workspacePath 未显式给出时从归属项目派生）。
+  Future<SessionHeader> _header(String conversationId,
+      {String? workspacePath, String? cwd}) async {
+    var wp = workspacePath;
+    if (wp == null) {
+      try {
+        final pid = await _projectIdFor(conversationId);
+        final prj = await _store.projectById(pid ?? Project.kDefaultId);
+        wp = prj?.workspacePath;
+      } catch (_) {}
     }
-    await file.writeAsString('${event.toJsonLine()}\n', mode: FileMode.append);
-  }
-
-  /// 完整重写日志文件（导入/迁移用）。
-  Future<void> rewrite(String conversationId, SessionLog log) async {
-    final dirPath = await _ensureDir();
-    final file = File(p.join(dirPath, '${_safe(conversationId)}.jsonl'));
-    final h = SessionHeader(
+    return SessionHeader(
       version: kSessionFormatVersion,
       conversationId: conversationId,
       createdAtMs: DateTime.now().millisecondsSinceEpoch,
+      workspacePath: wp,
+      cwd: cwd ?? wp,
     );
+  }
+
+  /// 追加事件到磁盘（append-only；落项目树）。
+  Future<void> appendEvent(String conversationId, SessionEvent event,
+      {String? workspacePath, String? cwd}) async {
+    final target = File(await pathFor(conversationId));
+    if (!target.existsSync()) {
+      final legacy = File(await legacyPathFor(conversationId));
+      if (legacy.existsSync()) {
+        // 迁移半途的首触达：把旧平铺文件**整体复制**进项目树再续写
+        // （旧文件留待迁移器统一清理）。若直接新建空文件追加，会话会被
+        // 劈成两半——历史在旧文件、增量在项目树，读哪边都缺。
+        await target.create(recursive: true);
+        await legacy.copy(target.path);
+      } else {
+        final h = await _header(conversationId,
+            workspacePath: workspacePath, cwd: cwd);
+        await target.create(recursive: true);
+        await target.writeAsString('${h.toJson()}\n');
+      }
+    }
+    await target.writeAsString('${event.toJsonLine()}\n', mode: FileMode.append);
+  }
+
+  /// 完整重写日志文件（导入/迁移用；总是写项目树）。
+  Future<void> rewrite(String conversationId, SessionLog log,
+      {String? workspacePath, String? cwd}) async {
+    final file = File(await pathFor(conversationId));
+    await file.create(recursive: true);
+    final h = await _header(conversationId,
+        workspacePath: workspacePath, cwd: cwd);
     final sb = StringBuffer();
     sb.writeln(h.toJson());
     for (final e in log.rawEvents) {
@@ -176,17 +232,20 @@ final class JsonlSessionStore {
     return log;
   }
 
-  /// 判断某会话是否已迁移（存在 .jsonl 文件）。
+  /// 判断某会话是否已迁移（项目树或旧平铺任一处存在 .jsonl 即算）。
   Future<bool> isMigrated(String conversationId) async {
-    final dirPath = await _ensureDir();
-    return File(p.join(dirPath, '${_safe(conversationId)}.jsonl')).existsSync();
+    return (await _resolveFile(conversationId)).existsSync();
   }
 
-  /// 删除会话文件。
+  /// 删除会话文件（项目树与旧平铺两处都清，绝不留幽灵副本）。
   Future<void> delete(String conversationId) async {
-    final dirPath = await _ensureDir();
-    final file = File(p.join(dirPath, '${_safe(conversationId)}.jsonl'));
-    if (file.existsSync()) await file.delete();
+    for (final path in [
+      await pathFor(conversationId),
+      await legacyPathFor(conversationId),
+    ]) {
+      final f = File(path);
+      if (f.existsSync()) await f.delete();
+    }
   }
 }
 

@@ -5,9 +5,9 @@ library;
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
 
-import '../dev/workspace.dart' show DevWorkspace, effectiveWorkspaceOf, sanitizeWorkspaceDirName;
+import '../dev/workspace.dart' show DevWorkspace, effectiveWorkspaceOf;
+import '../dev/workspace_store.dart' show DevStore;
 import '../sandbox.dart';
 import '../tool_definition.dart';
 
@@ -20,20 +20,22 @@ const int kWriteFileLimit = 65536;
 /// 搜索结果的单文件最大匹配数。
 const int kGrepPerFileLimit = 20;
 
-/// 解析工作区根目录（Dev Agent）：
+/// 解析工作区根目录（Dev Agent × v0.0.3 项目层级）：
 /// - null / 'default' → `documents/workspace`（旧行为零回归）；
-/// - 其他本地工作区 → `documents/workspace/projects/<safe-id>/`（本地镜像）。
+/// - 其他本地工作区 → `DevStore.workspaceRootFor`：**localMirror
+///   （项目工作目录）优先**，`projects/<safe-id>` 本地镜像兜底——与
+///   devShellRoot / git 工具同一真源，杜绝"文件写 A 目录、命令跑 B 目录"。
 Future<Directory> _workspaceDir([String? workspaceId]) async {
-  final docs = await getApplicationDocumentsDirectory();
-  final wsId = workspaceId == null || workspaceId == DevWorkspace.kDefaultId
-      ? null
-      : workspaceId;
-  final dir = Directory(p.join(docs.path, 'workspace',
-      wsId == null ? '' : p.join('projects', sanitizeWorkspaceDirName(wsId))));
-  if (!await dir.exists()) {
-    await dir.create(recursive: true);
+  final store = DevStore.resolve();
+  if (workspaceId == null || workspaceId == DevWorkspace.kDefaultId) {
+    return Directory(await store.defaultWorkspaceDir());
   }
-  return dir;
+  final workspaces = await store.loadWorkspaces();
+  final ws = workspaces.where((w) => w.id == workspaceId).firstOrNull;
+  if (ws == null) {
+    return Directory(await store.workspaceLocalMirror(workspaceId));
+  }
+  return Directory(await store.workspaceRootFor(ws));
 }
 
 /// 规范化路径并按沙箱模式限定作用域（对照 DSH fs 沙箱）。
