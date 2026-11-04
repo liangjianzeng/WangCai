@@ -130,7 +130,7 @@ void main() {
   group('task_create / task_list', () {
     test('创建任务绑定省略时用注入工作区；带 steps 一步建计划', () async {
       await store.saveWorkspace(const DevWorkspace(
-          id: 'ws_2', name: '项目二', backend: WorkspaceBackend.termux));
+          id: 'ws_2', name: '项目二', backend: WorkspaceBackend.remotePc));
       final tool = createTaskCreateTool(store: store);
       final result = await tool.execute({
         '_workspaceId': 'ws_2',
