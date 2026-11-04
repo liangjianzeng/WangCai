@@ -30,7 +30,7 @@ void main() {
       const ws = DevWorkspace(
         id: 'ws_1',
         name: 'TongYi-Lite',
-        backend: WorkspaceBackend.termux,
+        backend: WorkspaceBackend.remotePc,
         remotePath: '/data/data/com.termux/files/home/proj',
         gitManaged: true,
         repoUrl: 'https://example.com/r.git',
@@ -41,7 +41,7 @@ void main() {
       expect(restored, isNotNull);
       expect(restored!.id, 'ws_1');
       expect(restored.name, 'TongYi-Lite');
-      expect(restored.backend, WorkspaceBackend.termux);
+      expect(restored.backend, WorkspaceBackend.remotePc);
       expect(restored.remotePath, '/data/data/com.termux/files/home/proj');
       expect(restored.gitManaged, isTrue);
       expect(restored.currentBranch, 'main');
@@ -59,10 +59,17 @@ void main() {
       expect(ws.toJson().containsKey('sshConfigId'), isFalse);
       // 旧 JSON 无该键 → fromJson 不崩。
       final legacy = DevWorkspace.fromJson({
-        'id': 'ws_3', 'name': '旧', 'backend': 'termux',
+        'id': 'ws_3', 'name': '旧', 'backend': 'remotePc',
         'remotePath': '/home/x',
       });
       expect(legacy!.sshConfigId, isNull);
+      // 已下线后端（termux/embedded）的历史记录 → 整条丢弃（桌面独立版）。
+      expect(
+          DevWorkspace.fromJson({
+            'id': 'ws_4', 'name': '旧', 'backend': 'termux',
+            'remotePath': '/home/x',
+          }),
+          isNull);
     });
 
     test('copyWith 只改指定字段（含 sshConfigId 清除）', () {

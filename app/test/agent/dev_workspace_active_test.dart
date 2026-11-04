@@ -153,13 +153,13 @@ void main() {
     test('createAndActivateWorkspace：建完即激活、落盘、清掉空路径', () async {
       final ws = await createAndActivateWorkspace(
         name: '  博客项目  ',
-        backend: WorkspaceBackend.termux,
+        backend: WorkspaceBackend.remotePc,
         remotePath: '  ',
-        sshConfigId: 'termux',
+        sshConfigId: 'cfg_pc',
       );
       expect(ws.name, '博客项目');
       expect(ws.remotePath, isNull, reason: '空白路径不落库（否则工具层拿到空目录）');
-      expect(ws.sshConfigId, 'termux');
+      expect(ws.sshConfigId, 'cfg_pc');
       expect(ws.isRemote, isTrue);
       expect(DevSessionController.instance.activeWorkspaceId, ws.id);
 
@@ -169,7 +169,7 @@ void main() {
       expect(DevSessionController.instance.activeWorkspaceId, ws.id);
       expect(
           DevSessionController.instance.activeWorkspace.backend,
-          WorkspaceBackend.termux);
+          WorkspaceBackend.remotePc);
     });
 
     test('未连接时"在当前电脑上开工"给出可执行的下一步，而不是空失败', () async {
@@ -186,11 +186,9 @@ void main() {
       expect(r.dir, contains('名称'));
     });
 
-    test('后端文案四种都给（聊天页与设置页共用一套说法）', () {
+    test('后端文案两种都给（聊天页与设置页共用一套说法）', () {
       expect(workspaceBackendLabel(WorkspaceBackend.remotePc), '远程电脑');
-      expect(workspaceBackendLabel(WorkspaceBackend.termux), contains('Termux'));
-      expect(workspaceBackendLabel(WorkspaceBackend.localApp), '本地沙盒');
-      expect(workspaceBackendLabel(WorkspaceBackend.embedded), contains('沙箱'));
+      expect(workspaceBackendLabel(WorkspaceBackend.localApp), '本地目录');
     });
   });
 }

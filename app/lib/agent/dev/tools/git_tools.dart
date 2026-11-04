@@ -49,7 +49,8 @@ Future<({bool remote, String root, DevWorkspace? ws})> _resolveGitRoot(
       ws: ws
     );
   }
-  return (remote: false, root: await store.workspaceLocalMirror(wsId), ws: ws);
+  // localMirror（项目工作目录）优先，镜像目录兜底（与 devShellRoot 同一真源）。
+  return (remote: false, root: await store.workspaceRootFor(ws), ws: ws);
 }
 
 /// 统一错误包装（StateError → ToolResult.error）。

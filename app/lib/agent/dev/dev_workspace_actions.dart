@@ -15,7 +15,6 @@ import 'package:flutter/foundation.dart'
 
 import 'dev_controller.dart';
 import 'ssh/ssh_credentials.dart';
-import 'ssh/ssh_diagnostics.dart';
 import 'ssh/ssh_environment.dart';
 import 'workspace.dart';
 

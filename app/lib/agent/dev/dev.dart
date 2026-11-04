@@ -13,7 +13,6 @@ export 'dev_workspace_actions.dart'
         createAndActivateWorkspace,
         createWorkspaceOnActiveConnection,
         workspaceBackendLabel;
-export 'native_env.dart' show DevNativeEnv, DevNativeInfo;
 export 'safety.dart' show checkDangerousCommand, DangerousCommandPolicy;
 export 'tools/plan_tools.dart' show newDevTaskId, taskBelongsToWorkspace;
 export 'ssh/ssh_credentials.dart' show SshAuthType, SshConfig, SshKeyGen;

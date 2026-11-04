@@ -78,13 +78,17 @@ Future<DevShellResult> runLocalShell(
 }
 
 /// dev_shell 根目录（embedded 时代同名 API）：null/'default' = 默认工作区，
-/// 其余 = 工作区本地镜像（取目录即建目录）。
+/// 其余 = 工作区真实执行目录（v0.0.3 项目层级：`localMirror` 项目工作目录
+/// 优先，`projects/<id>` 本地镜像兜底；取目录即建目录）。
 Future<String> devShellRoot(String? workspaceId, {DevStore? store}) async {
   final s = DevStore.resolve(store);
   if (workspaceId == null || workspaceId == DevWorkspace.kDefaultId) {
     return s.defaultWorkspaceDir();
   }
-  return s.workspaceLocalMirror(workspaceId);
+  final workspaces = await s.loadWorkspaces();
+  final ws = workspaces.where((w) => w.id == workspaceId).firstOrNull;
+  if (ws == null) return s.workspaceLocalMirror(workspaceId);
+  return s.workspaceRootFor(ws);
 }
 
 /// 在 [root] 里执行命令并包成 ToolResult（verify_tool / 旧 dev_shell 同款收口）。

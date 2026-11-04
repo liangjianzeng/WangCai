@@ -21,10 +21,10 @@ void main() {
   });
 
   group('buildWorkspaceContextSection', () {
-    test('默认工作区（无 IO）：本地沙盒段', () async {
+    test('默认工作区（无 IO）：本地目录段', () async {
       final text = await buildWorkspaceContextSection();
       expect(text, contains('<workspace:context>'));
-      expect(text, contains('本地沙盒'));
+      expect(text, contains('本地目录'));
       expect(text, contains('「默认工作区」'));
     });
 
@@ -32,15 +32,15 @@ void main() {
       await store.saveWorkspace(const DevWorkspace(
         id: 'ws_1',
         name: '博客项目',
-        backend: WorkspaceBackend.termux,
-        remotePath: '/data/data/com.termux/files/home/blog',
+        backend: WorkspaceBackend.remotePc,
+        remotePath: '/home/dev/blog',
         currentBranch: 'dev',
       ));
       final text = await buildWorkspaceContextSection(
           workspaceId: 'ws_1', store: store);
       expect(text, contains('博客项目'));
-      expect(text, contains('Termux'));
-      expect(text, contains('/data/data/com.termux/files/home/blog'));
+      expect(text, contains('远程电脑'));
+      expect(text, contains('/home/dev/blog'));
       expect(text, contains('分支 dev'));
     });
 

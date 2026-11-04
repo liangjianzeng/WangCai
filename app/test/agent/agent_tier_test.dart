@@ -195,7 +195,7 @@ void main() {
         personaName: '写作助手',
         personaPrompt: '简洁、克制。',
       );
-      expect(compact, contains('你是「写作助手」——TongYi-Lite 智能体'));
+      expect(compact, contains('你是「写作助手」——汪柴智能体'));
       expect(compact, contains('【人格设定】\n简洁、克制。'));
     });
   });

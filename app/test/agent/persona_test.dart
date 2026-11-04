@@ -26,8 +26,8 @@ void main() {
         protocol: PromptJsonProtocol(),
         modelId: 'qwen-test',
       );
-      expect(prompt, contains('你是 TongYi-Lite 智能体，由 qwen-test 模型驱动。'));
-      expect(prompt, isNot(contains('——TongYi-Lite 智能体')));
+      expect(prompt, contains('你是 汪柴智能体，由 qwen-test 模型驱动。'));
+      expect(prompt, isNot(contains('——汪柴智能体')));
       expect(prompt, isNot(contains('【人格设定】')));
       // 工具纪律仍完整。
       expect(prompt, contains('【工具调用规则】'));

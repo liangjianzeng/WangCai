@@ -142,6 +142,21 @@ final class DevStore {
     return dir;
   }
 
+  /// 本地工作区的**真实执行目录**（dev_shell / 本地 git 共用的唯一入口）。
+  ///
+  /// v0.0.3 项目层级：项目工作区是用户任选的文件夹（存进
+  /// [DevWorkspace.localMirror]），不再被困在 `projects/<id>` 镜像目录里；
+  /// 未设 localMirror 的旧工作区维持原语义（镜像/默认区）。
+  Future<String> workspaceRootFor(DevWorkspace ws) async {
+    if (ws.isDefault) return defaultWorkspaceDir();
+    final mirror = (ws.localMirror ?? '').trim();
+    if (mirror.isNotEmpty) {
+      await _ensureDir(mirror);
+      return mirror;
+    }
+    return workspaceLocalMirror(ws.id);
+  }
+
   /// 默认工作区根目录（documents/workspace；测试 override 下 = <override>/workspace）。
   /// 同 [workspaceLocalMirror]：取目录即建目录，dev_shell 才不会一进门就撞空目录。
   Future<String> defaultWorkspaceDir() async {
