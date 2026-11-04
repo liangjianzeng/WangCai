@@ -1122,3 +1122,17 @@ NEOX rotate-half 的每节点 Multiply(x2,-1) 移进共享 swapped-sin 表（P14
   规则：`rm -rf build/ggml/src/ggml-openvino/CMakeFiles/ggml-openvino.dir` 后再 bld.bat
 - **`D:\llm\npu\bin` 是陈旧镜像**（手动拷贝，会落后）：p14_eval 用 `src\llama\build\bin` 是对的；
   任何手跑前先 `cp build/bin/* bin/` 刷新
+
+### P17：编译旋钮扫描收档（DQ 家族 = decode 专属，prefill 无解）
+正确方法学（llama-bench vs llama-bench，`-r 1` 同日直连）两格：
+- `NPU_COMPILER_DYNAMIC_QUANTIZATION=NO`：pp2048 52.27 / pp512 192.29（持平）/ **tg 8.86（-29%）**；
+  3 题答案仍正确（f16 激活数值上没问题）——但 decode 的动态量化收益是真金白银，证伪
+- `NPUW_DQ_FULL=YES`：pp2048 52.67（持平）/ **tg 8.73（-29%）**，同签名，证伪
+- **方法学教训**：初判"44.3 t/s = prefill 4×"是拿无 PROFILING 的 run 对 PROFILING=2 的 run——
+  4B prefill 图上 profiling 开销 ~4×；粗筛必须 bench 对 bench，否则白跑一轮
+
+4B prefill 缺口（+22.7%/+41.6% vs +50% 目标）的当前定案：translator 级杠杆全部测完
+（P15 MoE 无对象 / P16 NegMul 被吸收 / P14e 只管 decode / 索引链共享在 decode 侧），
+NPUW 编译旋钮面（FOLD/DQ/DQ_FULL/FUNCALL/WEIGHTS_BANK）也无 prefill 增益——
+剩余差距 = DPU MatMul 计算域（54%）+ residual Add launch 界（27%，数学不可消）+ chunk 固定成本。
+**下一步需要 NPUW 内部调度改动（subgraph 粒度 / tile 策略），不是 translator 工作。**
