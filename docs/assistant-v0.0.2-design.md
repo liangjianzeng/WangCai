@@ -392,3 +392,45 @@ Dart 自 TongYi-Lite 同路径 vendored 导入（§1 D1 与仓库内布局）。
 
 1. **M2 是否含 Vulkan 核显线**：5060 Ti 在场时 Intel iGPU 的实际价值待实测，可先降级为"探测到才显示"。
 2. **音频理解**（mtmd audio on NPU）要不要挤进 v0.0.2 尾巴——取决于引擎侧端到端验收进度，建议不做。
+
+---
+
+## 12. v0.0.3 桌面独立化（2026-11-04 定案）
+
+**决策**：Windows 分叉与手机端差异过大，**脱离上游 TongYI-Lite 独立演进**，
+`app/UPSTREAM.md` 转为历史账本（不再回流），包名 `tongyi_lite` → **`wangcai`**，
+品牌统一「汪柴 WangCai」（标题/问候语/MCP clientInfo/UA/关于卡；
+`agent_prompt.dart` 身份段与 frozen 字节一致副本同步改写）。
+
+**手机端死代码清除**（含关联测试）：Termux 意图通道（`termux_intent.dart`）、
+内嵌沙箱（`embedded_tools/embedded_git`）、`measure_cmd`、手机 APK 安装器
+（`native_env.dart`）、`WorkspaceBackend` 收敛为 **{localApp, remotePc}** 二值、
+设置页 Termux 连接向导。替代：`agent/dev/tools/local_exec.dart` —— 系统 shell
+（`cmd.exe /d /c`）+ 系统 git 的本地执行层（超时 kill、测试注入口、凭据注入推送），
+`git_tools/verify_tool` 无感切换。
+
+**明确保留**（桌面功能，不是死代码）：**ADB 全线**（用户明令"adb也需要"，桌面经
+ADB 控制 Android 设备）、SSH 远程电脑工作区、语音（sherpa ASR + edge TTS）、
+MTP/dspark（Phase 4 降级为模型级参数 `LocalModelConfig.draftPath`）。
+
+**三大整改**（详见 `docs/DESKTOP-REFACTOR-HANDOFF.md` §3 五阶段计划）：
+
+1. **会话 = 项目层级**：新 `lib/project/`（Project{id,name,workspacePath,…}，
+   `%APPDATA%\WangCai\projects.json` + `active_project.json`）；SQLite v7 给
+   conversations 加 `projectId`；JSONL 真相源迁
+   `%APPDATA%\WangCai\projects\<id>\sessions\<convId>.jsonl`（header 带
+   workspacePath/cwd），旧平铺一次性幂等迁移入"默认项目"（备份 `sessions.backup/`）；
+   左栏项目选择器与会话面板、Dev 工作区胶囊统一为**单一工作目录真源**。
+2. **模型管理桌面化**：`localModels: List<LocalModelConfig>`（照 `apiModels` 三件套
+   先例）取代手机端下载目录 UI；NPU 预置区自动列绑定的 gguf（LFM3-1.7B、Qwen3-4B、
+   Spark-X2.6-4B、LFM3-Omni-2B，后者两条须带 `PREFILL_CHUNK_SIZE=128` +
+   `DISABLE_DECODE_LEVELS=1`）；「添加本地模型」file_picker 选 `.gguf`。
+3. **引擎 = 内置 + 按需 + 参数体系**：NPU 引擎随 Inno Setup 内置
+   （`%APPDATA%\WangCai\engines\wangcai\`），CUDA/Vulkan 按需从官方地址下载到
+   默认/用户指定目录（sha256 白名单 + 镜像 + 本地包安装兜底）；
+   参数优先级 **模型 `customArgs` > 引擎 `defaultConfig`（可编辑保存）>
+   manifest 模板/preset**；`{devArg=OPENVINO3}` 硬编码改 OpenVINO 设备探测
+   （失败回退 OPENVINO2，本机实测值）。
+
+**不变量**：`flutter analyze --no-pub lib test tool` 零 error；测试对齐既有基线
+（thinking_runaway×2、model_catalog×1、agent_stream_processor×1 为上游遗留失败）。

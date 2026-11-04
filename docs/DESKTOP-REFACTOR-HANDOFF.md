@@ -2,7 +2,7 @@
 
 > **日期**：2026-11-04 · **ZCode 会话**：`sess_f30a1ff0-3b6b-4eeb-b0de-970751a79d68`
 > **分支**：`feat/desktop-standalone-v0.0.3`（基于 `main` = `origin/main` @ `4216cd9`）
-> **状态**：**Phase 0 进行中（约 80%）**，Phase 1–4 未动。工作区含大量未提交改动，本文档随改动一起提交。
+> **状态**：**Phase 0/1/2/3/4 ✅（代码+测试完成，未提交）**，五阶段编码全部收尾，仅剩桌面冒烟（§5.1 第 1 条）。工作区含大量未提交改动（用户令"先不提交"），本文档随后续改动一起提交。
 > **接手人请先通读 §1（速览）→ §5（立即待办）→ §2/§3（计划全文）。**
 
 ---
@@ -14,16 +14,16 @@
 | 包名改名 `tongyi_lite` → `wangcai`（123 文件 + pubspec + 版本号 0.0.3+1） | ✅ 完成 |
 | 品牌独立（App 标题/问候语/MCP clientInfo/UA/关于卡/GitHub URL） | ✅ 完成 |
 | UPSTREAM.md 独立声明 | ✅ 完成 |
-| 设计文档 §12（v0.0.3 独立化章节） | ⬜ **欠着** |
-| 手机端死代码删除（termux/embedded/measure_cmd） | 🔄 **差最后一块**：settings_screen 的 Termux 向导未删完（当前编译报错就在这） |
+| 设计文档 §12（v0.0.3 独立化章节） | ✅ 完成（`docs/assistant-v0.0.2-design.md` 末尾 v0.0.3 章节） |
+| 手机端死代码删除（termux/embedded/measure_cmd） | ✅ 完成（settings_screen Termux 向导 ~600 行已删；`native_env.dart` 删除；测试枚举/断言同步） |
 | ADB | ✅ **保留**（用户明确"adb也需要"，已恢复我误删的文件） |
-| 手机执行沙箱 → 桌面执行替换（`local_exec.dart`） | ✅ 新增完成（未验证测试） |
-| `flutter analyze --no-pub lib test tool` | 🔄 **13 个 error**（全部为本次重构引入，清单见 §5.1），零 error 是 Phase 0 出口 |
-| `flutter test` | ⬜ 本次未跑（基线债务见 §6.4） |
-| Phase 1 会话/项目重构 | ⬜ 未开始 |
-| Phase 2 模型管理 | ⬜ 未开始 |
-| Phase 3 引擎管理 | ⬜ 未开始 |
-| Phase 4 手机端配置清理 | ⬜ 未开始 |
+| 手机执行沙箱 → 桌面执行替换（`local_exec.dart`） | ✅ 新增完成 |
+| `flutter analyze --no-pub lib test tool` | ✅ **0 error**（~280 条 pre-existing info/warning 为上游噪音） |
+| `flutter test` | ✅ **1238 passed / 18 skipped / 3 failed = 上游基线债务**（thinking_runaway×2 + agent_stream_processor×1，见 §6.4），零新增失败（Phase 4 删掉 2 个手机端旧用例：GPU 防闪纹 / n_ubatch+vkNoSubgroup） |
+| Phase 1 会话/项目重构 | ✅ **代码+测试完成**（`lib/project/` 三件套 + SQLite v7 + JSONL 项目树 + 迁移 + 左栏项目选择器 + 真源统一；`test/project/project_layer_test.dart` 8 测试绿）。**冒烟未做**（见 §5.1 第 4 条） |
+| Phase 2 模型管理 | ✅ **代码+测试完成**（LocalModelConfig+localModels 持久化、4 条 NPU preset、loadModelByLocalConfig、ModelManagementBody 重写、自动加载三分支；全量 1215 绿） |
+| Phase 3 引擎管理 | ✅ **代码+测试完成**（3a OPENVINO 探测 / 3b 参数体系 / 3c 按需下载闭环 / 3d 打包核对，见 §3 Phase 3 完成明细；新增测试 chain 10 + install 5 + routing 5 + settings 2 + paths 1） |
+| Phase 4 手机端配置清理 | ✅ **代码+测试完成**（settings 字段/setter、卡片 515 行、JNI 三件套、device_info 链、app_bridge 整体删除；见 §3 Phase 4 完成明细） |
 
 **当前 git**：`main` 与 `origin/main` 同步；本次全部改动为未提交工作区改动 + 2 个未跟踪新文件（`app/lib/agent/dev/tools/local_exec.dart`、`app/test/enter_send_focus_test.dart`——后者是早前会话遗留的合法回归测试，一并提交）。`models/*.gguf`、`packaging/dist` 均已被 .gitignore 排除，仓库无大文件风险。
 
@@ -41,14 +41,33 @@
 
 ## §3 已批准的五阶段计划（全文，接手即按此执行）
 
-### Phase 0 — 独立项目（解耦上游）　🔄 约 80%
+### Phase 0 — 独立项目（解耦上游）　✅ 完成
 
 1. `pubspec.yaml` name `tongyi_lite`→`wangcai`；全仓 import `package:tongyi_lite/`→`package:wangcai/`（含 test/、tool/、eval/、packages/）。 ✅
-2. UPSTREAM.md 顶部"已独立，不再回流"声明；`docs/assistant-v0.0.2-design.md` 追加 v0.0.3 独立化章节。 ✅ / ⬜（§12 欠）
-3. 删手机端死代码：termux_intent、embedded 工具链、measure_cmd 等。 🔄（差 settings_screen 向导）；**adb 例外保留**。third_party/dartssh2、edge_tts、sherpa 与 ASR/TTS **保留**。
-4. 出口：`flutter analyze --no-pub lib test tool` 零 error + `flutter test` 对齐基线。 ⬜
+2. UPSTREAM.md 顶部"已独立，不再回流"声明；`docs/assistant-v0.0.2-design.md` 追加 v0.0.3 独立化章节。 ✅✅
+3. 删手机端死代码：termux_intent、embedded 工具链、measure_cmd、settings_screen Termux 向导（~600 行 sed 自底向上删除）、`native_env.dart`。 ✅；**adb 例外保留**。third_party/dartssh2、edge_tts、sherpa 与 ASR/TTS **保留**。
+4. 出口：`flutter analyze --no-pub lib test tool` 零 error + `flutter test` 对齐基线。 ✅（1210 passed / 3 failed = §6.4 基线）
 
-### Phase 1 — 会话管理重构（项目 × 工作空间）
+### Phase 1 — 会话管理重构（项目 × 工作空间）　✅ 代码+测试完成（2026-11-04）
+
+**Phase 1 完成清单（已实现，测绿）**：
+- `lib/project/project.dart`：`Project{id,name,workspacePath,sshConfigId?,createdAt,lastOpenedAt}`，`kDefaultId='p_default'`，`newProjectId()`=`p_<ms>_<rand8hex>`（**随机尾缀不可省**：Windows 时钟毫秒粒度，纯时间戳同循环撞车，测试实锤），`safeProjectDirName`。
+- `lib/project/project_store.dart`：`projects.json` + `active_project.json`（落 `WangCaiPaths.dataRoot()`）；CRUD/active/默认项目保护/坏条目容错；`projectDir/sessionsDir/projectSubDir`（create-on-get，**subDir 是给 goals/traces/metrics 预留的 API，尚未接线**）。
+- `lib/project/migration.dart`：`migrateLegacySessions` 幂等——ensureDefault → 旧 sessions 目录整目录备份 `.backup`（备份失败即中止搬运）→ move *.jsonl → `assignNullProjectConversations(p_default)`；`main.dart` 首启调用（异常仅 debugPrint，双读兜底在）。
+- SQLite v7：`conversations.projectId` 列+索引（列级幂等 PRAGMA 检查）；`createConversation({projectId})`、`getAllConversations({projectId})`（**`p_default` 查询含 NULL**——未归户旧会话在默认项目可见；其他项目不串门）、`projectOfConversation`、`assignNullProjectConversations`。
+- JSONL 项目树：`JsonlSessionStore.pathFor` → `projects/<pid>/sessions/<convId>.jsonl`；静态 `projectIdResolver`（main.dart 接 `StorageService().projectOfConversation`）；legacy 平铺双读兜底 + 首触达整体复制（"绝不劈成两半"）+ delete 清两处；SessionHeader 增可选 `workspacePath/cwd`（DSH 纪律：可选字段不 bump 版本）。
+- Provider 层：`lib/providers/project_provider.dart`（`ProjectsNotifier`：load/create/rename/remove/setActive；**激活项目时派生 DevWorkspace `ws_<projectId>`**（localMirror=workspacePath）经 DevSessionController 切换——工作目录唯一真源）；`conversationsProvider` watch `activeProjectIdProvider` 自动重建。
+- 真源统一：`DevStore.workspaceRootFor(ws)`（localMirror 优先）被 file_tools `_workspaceDir` / local_exec `devShellRoot` / git_tools `_resolveGitRoot` 共用；chat_provider 的 workspaceResolver 不再 devMode 门控，且 agentEnabled 时注入 `buildWorkspaceContextSection`；会话删除联动删 JSONL。
+- UI：home_screen 左栏头部项目选择器（名+工作目录+面板：列表含会话计数/新建（FilePicker 选目录）/重命名/移除确认/打开所在文件夹）。
+- 测试：`test/project/project_layer_test.dart` 8 项全绿（CRUD/id 形态/树写/header 字段/双读复制/迁移幂等/SQLite v7 过滤语义）。
+
+**Phase 1 欠账（已知、故意留后）**：
+1. **JSONL 写路径生产未接线**（上游遗留）：全仓只有 `chat_provider.dart:1597` 用 `importFromMessages` 纯函数；`appendEvent/load/rewrite/delete` 无生产消费者。存储层+迁移已就绪，等会话事件流真正接入时即插即用。冒烟时"新建项目→发消息→agent 建文件"验证的是**工作目录真源**，不是 JSONL 落盘。
+2. **goals/metrics/traces 未挂项目目录**：`ProjectStore.projectSubDir(id)` API 已备好，`chat_provider.dart` :381/:1902/:1912 三处仍用全局基目录。
+3. **桌面冒烟未做**（§9 出口清单里的 `flutter run -d windows` 序列）。
+4. 会话面板"按 active 项目过滤"已通过 conversationsProvider 重建实现，但未做真机视觉核对。
+
+（以下为**已批准计划书原文**，仅作依据备查，均已按上表落实：）
 
 **数据层（新 `lib/project/`）**
 - `Project` 模型：`id`(uuid)、`name`、`workspacePath`（本地目录，必需）、`sshConfigId?`（可选远程，复用 DevWorkspace remotePc 语义）、`createdAt/lastOpenedAt`。
@@ -63,7 +82,19 @@
 - 会话面板主体（`home_screen.dart` :3084 抽屉）按 active 项目过滤；新建会话自动归属当前项目；**Dev 工作区胶囊与项目选择器合一**（消灭双真源，呼应 `chat_provider.dart` :232 "真源唯一"注释纪律）。
 - 会话链路关键锚点：`ConversationsNotifier.create/delete` = `chat_provider.dart` :185-230；`JsonlSessionStore` 唯一消费点 :337；`SessionLog`（`session/log.dart`，DSH 风格 shadow ranges/deriveModelMessages/closeOpenTurns）。
 
-### Phase 2 — 模型管理桌面形态
+### Phase 2 — 模型管理桌面形态　✅ 代码+测试完成（2026-11-04）
+
+**Phase 2 完成清单**：
+- `lib/models/local_model.dart` 新：`LocalModelConfig{id,name,modelPath,engineId?,customArgs?,mmprojPath?,draftPath?,ctx?,chunk?,gpuLayers?}`（防御性 fromJson：任何脏值丢条目不炸设置）；共享件 `kLocalModelIdPrefix='lm_'`、`kNpuPresetIdPrefix='npu:'`、`newLocalModelId()`（随机尾缀纪律同 project）、`presetGlobToRegExp`（与加载侧 `_matchPreset` 同形态、case-insensitive）、`resolveNpuPresetConfig(name)`（modelsRoot 扫 glob → 虚拟条目）。
+- `settings_service.dart`：`localModels` 持久化照抄 apiModels 三件套（字段/ctor/copyWith/toMap/fromMap/`_parseLocalModels` 坏条目静默丢弃）；`SettingsNotifier.addLocalModel/updateLocalModel/deleteLocalModel`（删除**不碰磁盘文件**、删默认连带清星标）。
+- **bundled_manifests wangcai-npu 新增两 preset**：spark-x2.6-4b（glob `Spark-X2.6-4B*.gguf`，ctx512/chunk128/paramsB4.0）与 lfm3-omni-2b（glob `LFM3-Omni-2B*.gguf`，ctx512/chunk128/paramsB2.0），**都带 extraEnv `GGML_OPENVINO_DISABLE_DECODE_LEVELS=1`**（实测必需，spark-npu-accept.ps1/HANDOFF 对表）。顺带修断链：`local_server_inference.loadModel` 此前**没把 `preset.extraEnv` 传进 EngineConfig**（host 侧 :178 早已支持合并+profileId 指纹），已补一行。
+- `ModelManagerNotifier.loadModelByLocalConfig(cfg)`：本地模型直接吃路径加载（文件存在校验/换载停旧/进度日志），手机链路（MoE/MTP 全局开关/oom 守卫/KV 精度推送）不进；`engineId`/`customArgs` **只存不接**（Phase 3 参数优先级链地盘，抢跑会和路由改动打架）。
+- `ModelManagementBody` 整块重写（settings_screen :92 起 ~560 行，替换 ~965 行）：catalog 下载/续传/暂停/校验/删除弹层**全删**（`_scanModels/_startDownloadAndRescan/_modelMetaLine/_buildExpandArea` 等 helper 一并清；`_appLaunchScanDone` 死标志删除；`model_manager.dart` import 移除）。新结构=NPU 预置区（4 preset 扫描命中/缺文件指引+星标+加载）／本地模型区（FilePicker .gguf→编辑卡[mmproj/draft/ctx/chunk/-ngl/引擎下拉/自定义尾参多行]；行内星标/加载/卸载/编辑/移除登记）／StorageInfoWidget 保留。加载流沿用旧 `_handleLoadModel` 骨架（切换确认→停回合→进度弹窗→播报）。
+- `home_screen._initAutoLoadDefaultModel` 三分支：`npu:` → resolveNpuPresetConfig（缺文件静默跳）；`lm_` → localModels 查条目+文件存在校验；其余 → 旧 catalog 链路原样。
+- 测试：settings_service_test 新增「本地模型登记」5 例（JSON 往返/不落 null 键/坏条目/clear 标记/id 形态）34/34 绿；engine+platform 77/77 绿（extraEnv 断链修复无回归）。`app_npu_flow_test` 真机门控未扩（NPU 冒烟清单一起验）。
+- **未做**：spark .tmp 断点续传提示（下表遗留项照旧）；桌面冒烟（与 Phase 1 冒烟合并）。
+
+（以下为计划书原文备查：）
 
 - `settings_service.dart` 新增 `localModels: List<LocalModelConfig>` —— **照抄 `apiModels` 三件套先例**（字段声明 :96 / toMap :944 / fromMap :1062）：`modelPath`、`name`、`engineId?`（空=Auto 路由）、`customArgs?`（模型级自定义参数，见 Phase 3）、`mmprojPath?`、`draftPath?`(MTP/dspark)、ctx/chunk/gpuLayers 覆盖项。
 - `ModelManagementBody`（settings_screen.dart :102，home_screen.dart :1524 复用）重写：
@@ -83,10 +114,37 @@
   - **优先级：模型 `customArgs`（LocalModelConfig）> 引擎 `defaultConfig` > manifest 模板/preset**。`_matchPreset`(:335) 保留为出厂档，preset 命中值作 defaultConfig 初值展示。
 - **手机参数链删**：`InferenceBackend.loadModel` 签名砍 gpuBackend/vkNoSubgroup/nUbatch/moe*/enableGpu 等（`inference_backend.dart`、`local_server_inference.dart` :354、`inference_service.dart` 同步）；`model_provider.dart` :520 调用点改从 LocalModelConfig/NPU preset 取值。
 
+#### Phase 3 完成明细（2026-11-04）
+
+| 子项 | 落点 | 要点 |
+|---|---|---|
+| 3a OPENVINO 探测 | `lib/engine/openvino_probe.dart`（新）+ `llama_server_host.dart._launch` | `llama-server --list-devices` 解析 `(OPENVINO\d+).*GGML_OPENVINO_DEVICE=NPU`；**env 组装移到 args 渲染前**（探测需与真启动同构的 PATH）；只接管 NPU 目标（显式 CPU/GPU/OPENVINO{n} 是用户意图不覆盖）；失败回退 `kOpenvinoNpuFallbackDevArg='OPENVINO2'`；per-exe 缓存 + `probeRunnerForTest` 注入。测试 `llama_server_host_test.dart` 注入假枚举（本机 OPENVINO2 / 开发机 OPENVINO3 / 失败回退三态） |
+| 3b 参数体系 | `engine_registry.dart` `EngineDefaults`（新）；`engine_config.dart` `extraArgs`（进 profileId 指纹 `'a'` 键）；`llama_server_host.dart` 模板后 `args.addAll(extraArgs)`；`local_server_inference.loadModel` 优先级链 | **模型级（loadModel 参数，来自 LocalModelConfig）> 引擎 defaultConfig（engines.json）> manifest preset/模板**；customArgs 非空**整档替换** dc.args（非合并）；extraEnv 是**合并**（dc 同键覆盖 preset）；ctx 收敛纪律保留（preset 实测上限压过一切显式值）；草稿头经 `--model-draft` 尾参入场（用户尾参排最后天然覆盖）。UI：`engine_manager_section.dart` 每实例「默认启动参数 ✓」编辑弹层（ctx/chunk/ngl/device/extraEnv KEY=VALUE/尾参）。测试 `test/platform/engine_defaults_chain_test.dart` 10 用例 |
+| 3c 按需下载 | `routing_policy.dart` `RoutingDecision.needInstall` + `suggestInstallVariant`；`local_server_inference.installEngine` + `lastInstallSuggestion`；`engine_store.dart` `enginesDirOverride`/`enginesRoot`；settings `enginesDir`/`engineMirror` 三件套 + `SettingsNotifier.setEnginesDir/setEngineMirror`（clear 标记）；`settings_screen._runLoad` 失败分支 → `_EngineInstallDialog`（进度条、自动开跑、失败可重试）→ 重试 load；`engine_manager_section` 安装目录选择（file_picker）+ 镜像输入 | 无本地候选且 cuda/vulkan 已启用未装 → needInstall（cuda 快道优先）；远端可用时优先兜底不发下载信号；installEngine = 白名单 latest → EngineStore.install（镜像+sha256）→ `reg.upsert` binaryPath+enabled → save。测试 `on_demand_install_test.dart` 5 用例（假 EngineStore 子类注入 `engineStoreForTest`）+ routing_policy_test 5 用例 + settings_service_test 2 用例 |
+| 3d 打包核对 | `packaging/wangcai-setup.iss`/`build-installer.ps1` 版本串 → 0.0.3；`wangcai_paths.dart` **便携形态缺口修复**：`bundledEngineDirs()` 双候选（exe 邻侧 `Engines\wangcai\` 优先 → %APPDATA% 装机位），`wangcaiServerExe/ovLibsDirs` 全走候选链 | v0.0.2 便携包 README 声称「首启自动识别」但代码无 exe 邻侧分支（引擎只在 %APPDATA% 找）—— 真装机用户 portable 形态会找不到引擎。Inno 侧本就正确（dll `*.dll` 全量 glob + ovlibs 子目录，历史 0xC0000135 教训已固化）。测试 `wangcai_paths_test.dart` +1 候选序用例 |
+| 3e 签名瘦身 | `inference_backend.dart` 新签名 `{nCtx,chunk,gpuLayers,mmprojPath,draftPath,customArgs,engineId}`（全可空=null 走回落链）；`inference_service.dart`（Android JNI 死路径）对齐签名、MethodChannel 字典填历史默认值（原生协议不动）；`local_server_inference.loadModel` 重写 + `_route(engineId:)` **钉选**（命中直通+admission 仍查、未命中留痕回落 Auto）；`model_provider` catalog 路径 815→561 行（MTP/dspark 全局开关、split-MoE 路由、oomGuard/KV/FA 推送整段退场，含 `_readMemAvailableMb/_moeManifestBankGeo` 死 helper） | `loadModelByLocalConfig` 不再兜底手机端全局（contextSize/gpuLayers），未表态项让位 defaultConfig/preset |
+
 ### Phase 4 — 手机端引擎配置清理
 
 - `settings_service.dart` 删字段与 JSON 兼容读取：gpuBackend、enableGpu、vkNoSubgroup、MoE offload 组、oomGuard、MTP/dspark 全局开关（能力移 `LocalModelConfig.draftPath`）、Dimensity 逻辑。**adbEnabled/adbTargets/adbKeyStore 保留**。`settings_screen.dart` 删对应卡片（:1172 Android GPU 卡整块、:1308/:1328 全局开关、turnip/MoE 卡、:1514 oomGuard）。fromJson 对遗留 key 静默忽略（老 JSON 不炸）。
 - 全局搜删残留：`/sdcard`、`/data/local`、`termux`、`arm64-v8a`。**`adb` 关键字不清**（保留功能）。`ssh_diagnostics.dart` 里 `SshTargetKind.termux` 分类可作为错误提示保留或顺手清理，不影响编译。
+
+#### Phase 4 完成明细（2026-11-04）
+
+| 文件 | 改动 |
+|---|---|
+| `app/lib/services/settings_service.dart` | 删 16 字段 + 3 方法：enableGpu/gpuBackend/gpuNUbatch/vkNoSubgroup/smartMoeEnabled/moeBankOverrideByModel/oomGuardEnabled/oomPre-PostHeadroomMb/enableMtpFeature/mtpEnabledByModel/enableDsparkFeature/dsparkEnabledByModel/inferenceLimitRefreshRate/kvCacheType/flashAttn + `mtpEnabled()/dsparkEnabled()/moeBankOverride()`；fromJson 遗留 key **静默忽略**（老 JSON 不炸）；copyWith/toMap 同步；孤儿 doc 块清理。**保留**：gpuLayers/contextSize/enableThinking/visionEnabledByModel/autoLoadMmproj/**adbEnabled/adbTargets**/enginesDir/engineMirror/localModels |
+| `app/lib/providers/settings_provider.dart` | 删 16 个对应 setter（150 行）；Phase 3c 的 setEnginesDir/setEngineMirror 不受影响 |
+| `app/lib/screens/settings_screen.dart` | 删 **515 行**（锚定 python splice）：Android GPU 卡（`if (!Platform.isWindows)` 整卡含后端选择器+层数滑条）、MTP/dspark 全局开关卡、防闪纹卡、GPU 稳定性卡（n_ubatch/vkNoSubgroup/智能MoE/专家池）、OOM 守卫卡、KV 精度卡、Flash Attention 卡 + `_isDimensitySoC/_gpuBackendHint/_gpuLayersEditable/_gpuLayersHint/_buildHeadroomSlider` 辅助 + 天玑 postFrame 自动切后端逻辑。保留卡：思考模式/上下文大小/视觉投影器/引擎状态 |
+| `app/lib/providers/chat_provider.dart` | 删 `_updateInferenceRefreshRate`（小米13 防闪纹锁 60Hz）+ `_rateLimitEngaged` + AppBridge import |
+| `app/lib/services/app_bridge.dart` | **整文件删**（Termux 拉起/零粘贴/刷新率 MethodChannel 桥，AppBridge 全仓零消费者） |
+| JNI 三件套 | `inference_backend.dart` 接口 + `local_server_inference.dart`（no-op 实现 + `_kvType/_flashAttn` 字段）+ `inference_service.dart`（MethodChannel 推送）删 `setOomGuard/setKvCacheType/setFlashAttn`；桌面语义 = manifest admission + 引擎参数链 |
+| `app/lib/services/inference_service.dart` | loadModel 请求体仍填 enableGpu/gpuBackend 等**常量默认**（Android 原生契约形状，字段本身已不在 Dart 侧暴露） |
+| device_info 链 | `getDeviceInfo`（接口+两实现）+ `deviceInfoProvider`（shared_providers）+ index.dart 导出删除——唯一消费者是已删的天玑禁用 OpenCL 判定（android/ 构建目标已不存在） |
+| 全局搜删 | `/data/local` 命中全在 adb（保留）；`/sdcard` 仅 safety.dart 历史注释；`arm64-v8a` 零命中；termux 命中全部属于**保留的 SSH 远程工作区**（SshTargetKind.termux 诊断话术、ssh_credentials termuxTemplate、测试"历史后端丢弃"回归），非手机端残留 |
+| `app/test/services/settings_service_test.dart` | 删「GPU 防闪纹」「GPU 稳定性调优」两用例；「旧配置（无 agent 字段）加载」保留（enableGpu/gpuBackend 作遗留 key 的静默兼容回归） |
+
+**出口**：analyze 0 error（280 issues，较 285 基线净减 5）；全量 test 1238 passed / 18 skipped / 3 failed（= §6.4 基线三件套，零新增）。
 
 ### 验收（全阶段完成后）
 
@@ -143,56 +201,21 @@
 
 ---
 
-## §5 立即待办（Phase 0 收尾清单，按序执行）
+## §5 当前待办（2026-11-04 更新：Phase 0/1 已收尾，原 Phase 0 清单全部完成）
 
-### 5.1 现存 13 个编译错误（2026-11-04 analyze 实录，`flutter analyze --no-pub lib test tool` 全量 305 issues 中的 error 行）
+> 原 §5.1–5.4（13 个编译错误清单、Termux 向导删除行位表、测试枚举修复、Phase 0 欠账）**已全部完成**：
+> analyze 0 error；Termux 向导 ~600 行删除（含 `_probeSshd/_readSharedUserName/_buildTermuxInstallCommand/_SshdProbe`，`native_env.dart` 整文件删，`ssh_diagnostics` unused import 清）；
+> 4 个测试文件枚举改 remotePc/localApp；设计文档 §12 已追加；品牌断言（agent_tier/persona → 汪柴智能体）已同步。
 
-```
-error - Undefined name 'TermuxIntentService' - lib\screens\settings_screen.dart:5545:49
-error - Undefined name 'TermuxIntentService' - lib\screens\settings_screen.dart:6015:53
-error - Invalid constant value - test\agent\dev_context_test.dart:35:18
-error - There's no constant named 'termux' in 'WorkspaceBackend' - test\agent\dev_context_test.dart:35:35
-error - There's no constant named 'termux' in 'WorkspaceBackend' - test\agent\dev_workspace_active_test.dart:156:35
-error - There's no constant named 'termux' in 'WorkspaceBackend' - test\agent\dev_workspace_active_test.dart:172:28
-error - There's no constant named 'termux' in 'WorkspaceBackend' - test\agent\dev_workspace_active_test.dart:191:53
-error - There's no constant named 'embedded' in 'WorkspaceBackend' - test\agent\dev_workspace_active_test.dart:193:53
-error - Invalid constant value - test\agent\dev_workspace_test.dart:33:18
-error - There's no constant named 'termux' in 'WorkspaceBackend' - test\agent\dev_workspace_test.dart:33:35
-error - There's no constant named 'termux' in 'WorkspaceBackend' - test\agent\dev_workspace_test.dart:44:49
-error - Invalid constant value - test\agent\plan_tools_test.dart:133:45
-error - There's no constant named 'termux' in 'WorkspaceBackend' - test\agent\plan_tools_test.dart:133:62
-```
-
-### 5.2 删 settings_screen 的 Termux 向导（消掉前 2 个 error）
-
-行号为删除前快照（`app/lib/screens/settings_screen.dart`，改动后会漂移，用符号定位更稳）：
-
-| 位置 | 内容 | 处置 |
-|---|---|---|
-| ~:26 | import 的 `show` 列表中 `DevNativeEnv,` 及 `native_env.dart` import 本身 | 向导删完且确认无其他使用者后移除 |
-| :97 | `enum _SshdProbe { listening, refused, timeout }` | **先查** `_probeSshd`（:6409，被向导内在 :5859 调用）是否也被 `_showRemotePcSetupDialog`（:6122 起）使用；只有 termux 用才连 `_probeSshd` 一起删，否则保留给远程电脑向导 |
-| :4975-4986 | `_DevSettingsBodyState` 字段 `_testingIntent/_downloadingTermux/_intentTestResult/_intentTestOk` | 删 |
-| :5500-5516 | `Wrap` 里 `📱 连接 Termux`（`_showTermuxSetupDialog`）按钮 | 删按钮及其 Wrap 子项；**保留 `💻 连接远程电脑`（`_showRemotePcSetupDialog`）** |
-| :5518-5523 | 提及 Termux key 流程的提示文案 | 改写为远程电脑语义 |
-| :5524-5646 | 免 SSH 通道测试 TextButton（`TermuxIntentService.instance.run 'echo ok'`，**:5545 报错点**）、下载 Termux 按钮（`DevNativeEnv.downloadTermuxApk` + `/storage/emulated/0/Download/TongYi-Lite/termux.apk` 轮询 + installApk）、`_intentTestResult` 展示块 | 整段删 |
-| :5829-6121 | `Future<void> _showTermuxSetupDialog(BuildContext, SettingsNotifier)` 整个方法（**:6015 报错点**；下一成员 `_showRemotePcSetupDialog` 起于 :6122） | 整删（含内部 `_probeSshd` 调用） |
-| :6464+ | `String _buildTermuxInstallCommand(String publicKey)` | 删 |
-
-删除后回归检查：`flutter analyze` 关注新增 unused_import（`DevNativeEnv`、可能的 `AppBridge`）；`lib/agent/dev/native_env.dart`（DevNativeEnv，手机 APK 下载器）若再无使用者可整文件删——先 grep 确认。
-
-### 5.3 修 4 个测试文件的已删枚举用例（消掉其余 11 个 error）
-- `test/agent/dev_context_test.dart:35` —— termux 后端注入断言：改为 localApp/remotePc 或删除该 case。
-- `test/agent/dev_workspace_active_test.dart:156/172/191`（termux）、`:193`（embedded）——同理；`:191/:193` 是一对（termux/embedded 判定），改断言到 remotePc/localApp。
-- `test/agent/dev_workspace_test.dart:33/44`。
-- `test/agent/plan_tools_test.dart:133`。
-
-### 5.4 欠账
-1. `docs/assistant-v0.0.2-design.md` 追加 **§12 v0.0.3 桌面独立化**（记录：独立决策、改名、后端二值化、adb 保留、local_exec 替换 embedded、五阶段计划指针）。UPSTREAM.md 已指向它。
-2. 复跑 analyze 至**零 error** → `flutter test` 对齐基线（§6.4）→ 提交 "Phase 0 complete"。
-3. grep 清扫可删未用引用：`dev_workspace_actions.dart` 是否残留 `sshTargetKindOf/SshTargetKind` unused import（analyze 会报，届时清）。
-
-### 5.5 Phase 0 出口后
-依次 Phase 1 → 2 → 3 → 4（每阶段独立可编译、独立提交；改名类机械改动单独 commit 的纪律保持）。
+### 5.1 现在立即要做的（2026-11-04 第三次更新：Phase 4 完成 ✅ + 便携包已打出，见下）
+0. **打包 ✅（2026-11-04）**：`packaging/dist/WangCai-0.0.3-win-x64-portable.zip`（107.9 MB）已产出并自检通过——解压至空目录后 `Engines\wangcai\llama-server.exe --list-devices` 完整枚举 CPU/iGPU/NPU 3720（OPENVINO2=NPU，OV 链由 ovlibs 加载成功），App\WangCai.exe 就位。**打包脚本路径修正**：build-installer.ps1 与 wangcai-setup.iss 原写死的 `ov\openvino\libs`（仓库根，不存在）已改为候选链（仓库 vendored 副本优先 → `E:\dev-tools\ov\openvino\openvino\libs`，注意双层 openvino）。**Setup.exe 未产出**：本机未装 Inno Setup 6（ISCC 查无），装后重跑脚本即出；.iss 已修好同路径问题。注意：打包前须杀掉运行中的 WangCai.exe（LNK1104 实案）。
+1. **桌面冒烟欠账（唯一剩余事项，Phase 1/2/3/4 合并验证清单）**：`flutter run -d windows` → 新建项目选目录 → 新会话发消息（NPU 默认模型路径）→ agent 项目目录建文件 → 切项目验证过滤与真源 → 模型管理页添加本地模型+星标 → 引擎默认参数改后日志核对命令行（含「启动命令」弹层看 extraArgs 尾参）→ 卸 `engines/llamacpp-vulkan-*` 触发按需下载弹层（settings 改 enginesDir/engineMirror 各验一次）→ `tools/accept-smoke.ps1`。
+   Phase 4 冒烟追加两点：① 设置页「推理引擎」tab 肉眼确认只剩 思考模式/上下文/视觉投影器/引擎状态/引擎管理 几卡（手机卡已全删不炸布局）；② 用旧版 `inference_settings.json`（含 gpuBackend/oomGuardEnabled 等遗留 key）启动，确认静默忽略不弹错。
+2. **易用性整改（用户反馈 2026-11-04 晚，"很多地方也是差不多，为用户考虑多一点"）**：
+   - ① 引擎获取易用性 ✅ **已完成**（第二轮反馈"cuda/vulkan 怎么选/一键下载/目录识别干了么"）：引擎管理页新增「获取引擎」卡 —— 每变体一行（CUDA/Vulkan · b12034）**一键下载**按钮（共享 `EngineInstallDialog`，从 settings_screen 抽到 `engine_install_dialog.dart`）+ **扫描识别**按钮（`EngineStore.discoverEngineExes`：扫安装目录 ≤2 层找 llama-server.exe，目录名含 cuda/vulkan 即认领 → 写 engines.json，保留已有 defaultConfig）；`on_demand_install_test` +2 用例。模型选引擎 = 模型卡「引擎绑定」下拉（已有）或留空 Auto。
+   - ② 模型库目录不可选（第一轮反馈直接诱因）：NPU preset 只认 `modelsRoot()`，设置页无「模型库目录」——照 enginesDir 先例补 FilePicker + 持久化 + 「恢复默认」，`WANGCAI_MODEL_DIR` 降级为高级逃生门。**待做**。
+   - ③ 全仓审计其他"只认默认/写死位置"的点逐个补可选入口：工作区默认目录（documents/workspace）、SSH 配置、NPU cache 目录、模型默认下载位置等；交付前自问"普通用户不读文档能不能改到这个位置"。**待做**。
+3. 冒烟通过后按 §3 验收收尾并提交（分支已有 ~50 文件未提交改动，建议按 Phase 分组 commit；提交前 `git status` 核对 models/*.gguf、packaging/dist 未混入）。
 
 ---
 
@@ -238,7 +261,7 @@ UPSTREAM.md 记录：`thinking_runaway_test` ×2、`model_catalog` ×1、`agent_
 | 引擎 | `app/lib/engine/engine_manifest.dart`（renderArgsTemplate `{name}/{name?}/{name=default}`、Preset、AdmissionRule）、`bundled_manifests.dart`、`engine_store.dart`（StoreCatalog.verified、镜像、Dio、sha256File、`_downloader`/`CmdRunner` 注入口）、`engine_registry.dart`（engines.json、`EngineRegistry.dev()`）、`engine_config.dart`（profileId sha1 → per-profile OV cache）、`bindings_store.dart`（bindings.db）、`routing_policy.dart`、`llama_server_host.dart`（:172 组命令行）、`process_ledger.dart`（孤儿清扫）、`remote_openai_host.dart` |
 | 推理路由 | `app/lib/platform/local_server_inference.dart`（`_route()` :272、`_matchPreset()` :335、`loadModel()` :354 手机参数残留处、ChatSseDecoder、routing.json tier/idleUnloadMinutes）、`inference_service.dart`、`inference_backend.dart`、`app/lib/providers/model_provider.dart`（:520 loadModel 调用点） |
 | 路径 | `app/lib/platform/wangcai_paths.dart`（dataRoot=%APPDATA%\WangCai、modelsRoot/WANGCAI_MODEL_DIR、modelSearchDirs、repoRoot 标记 `tools\chat-npu.ps1`、bundledEngineDir、wangcaiServerExe/WANGCAI_SERVER_EXE、ovLibsDirs） |
-| 设置 | `app/lib/services/settings_service.dart`（apiModels 三件套 :96/:944/:1062 = LocalModelConfig 模板；35 处手机引擎字段待 Phase 4）、`app/lib/screens/settings_screen.dart`（ModelManagementBody :102、GPU 卡 :1172、开关 :1308/:1328、oomGuard :1514、EngineManagerSection 已挂载） |
+| 设置 | `app/lib/services/settings_service.dart`（apiModels 三件套 :96/:944/:1062 = LocalModelConfig 模板；手机端引擎字段已于 Phase 4 全删）、`app/lib/screens/settings_screen.dart`（ModelManagementBody、推理引擎 tab 只剩 思考模式/上下文/视觉投影器/引擎状态 + EngineManagerSection） |
 | UI | `app/lib/screens/home_screen.dart`（左栏抽屉 :3084、标题 :1036、问候 :2220、工作区胶囊 :729-930、模型管理复用 :1524、默认模型自动加载 :204）、`app/lib/widgets/rail/rail_scaffold.dart` |
 
 ---
@@ -254,16 +277,17 @@ git checkout feat/desktop-standalone-v0.0.3
 #    Flutter 3.27.4 → E:\dev-tools\flutter（不在 PATH，用全路径调 flutter.bat）
 #    需要：VS2022 C++ 工作负载（MSVC 可在 C 盘）、Git for Windows、NPU 侧 OpenVINO ovlibs
 
-# 3. 恢复现场（当前 13 error 应原样复现）
+# 3. 恢复现场（应复现：0 error，~280 条既有噪音；test 1238 绿 / 基线 3 败）
 cd app
 E:/dev-tools/flutter/bin/flutter.bat pub get
-E:/dev-tools/flutter/bin/flutter.bat analyze --no-pub lib test tool   # 305 issues，13 error（§5.1）
+E:/dev-tools/flutter/bin/flutter.bat analyze --no-pub lib test tool
+E:/dev-tools/flutter/bin/flutter.bat test
 
-# 4. 按 §5 清单收尾 Phase 0 → 提交 → 依次 Phase 1-4
+# 4. 按 §5.1 做桌面冒烟 → accept-smoke.ps1 → 分组提交
 ```
 
 **红线复述**：adb 不删；`package:wangcai` 已是唯一包名；frozen prompt 副本同步改；数据目录统一 `%APPDATA%\WangCai`；分析只跑 `--no-pub lib test tool`；GitHub 依赖要有镜像/离线兜底。
 
 ---
 
-*本文档由 ZCode 会话 sess_f30a1ff0 生成于 2026-11-04，随 Phase 0 半成品一同入库。完成 Phase 0 后请更新本文档状态表并把已完成项打 ✅。*
+*本文档由 ZCode 会话 sess_f30a1ff0 生成并于 2026-11-04 随 Phase 0–4 全部编码完成更新。五阶段编码收尾，剩 §5.1 冒烟 + 提交。*
