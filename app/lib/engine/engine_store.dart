@@ -136,17 +136,58 @@ class EngineStore {
     Dio? dio,
     Downloader? downloader,
     CmdRunner? runner,
+    Directory? enginesDirOverride,
   })  : _dio = dio ?? Dio(BaseOptions(connectTimeout: const Duration(seconds: 8))),
         _downloader = downloader,
-        _runner = runner ?? _realRunner;
+        _runner = runner ?? _realRunner,
+        _enginesDirOverride = enginesDirOverride;
 
   final EnginePaths paths;
   final Dio _dio;
   final Downloader? _downloader;
   final CmdRunner _runner;
 
+  /// 安装根目录覆写（Phase 3c）：settings `enginesDir` 用户自选目录；
+  /// null = 默认 paths.enginesDir（数据区之下）。
+  final Directory? _enginesDirOverride;
+  Directory get enginesRoot => _enginesDirOverride ?? paths.enginesDir;
+
   Directory dirFor(StoreRelease r) => Directory(
-      '${paths.enginesDir.path}${Platform.pathSeparator}${r.installDirName}');
+      '${enginesRoot.path}${Platform.pathSeparator}${r.installDirName}');
+
+  /// 扫描目录识别现成 llama.cpp 引擎（v0.0.3 用户反馈：用户自选目录里的
+  /// 引擎要能被自动认出来，而不是只有商店装的才算数）。
+  /// 在 [root] 下 ≤[maxDepth] 层找 llama-server.exe，按**所在目录名**推断
+  /// 变体（含 'cuda'→cuda、'vulkan'→vulkan，大小写不敏感）；同名变体取
+  /// 先遇到的；识别不了的目录跳过（商店目录名 llamacpp-<ver>-<variant>
+  /// 天然命中）。返回 变体 id → exe 绝对路径。
+  static Map<String, String> discoverEngineExes(Directory root,
+      {int maxDepth = 2}) {
+    final out = <String, String>{};
+    if (!root.existsSync()) return out;
+    void walk(Directory dir, int depth) {
+      if (depth > maxDepth) return;
+      for (final e in dir.listSync(followLinks: false)) {
+        if (e is File && e.path.endsWith('llama-server.exe')) {
+          final segs = dir.path.split(Platform.pathSeparator);
+          final name = segs.isEmpty ? '' : segs.last.toLowerCase();
+          final variant = name.contains('cuda')
+              ? 'cuda'
+              : name.contains('vulkan')
+                  ? 'vulkan'
+                  : null;
+          if (variant != null && !out.containsKey(variant)) {
+            out[variant] = e.path;
+          }
+        } else if (e is Directory) {
+          walk(e, depth + 1);
+        }
+      }
+    }
+
+    walk(root, 0);
+    return out;
+  }
 
   /// llama-server.exe 在解包目录里（官方 zip 顶层平铺 exe+dll；防变体递归找）。
   String? findServerExe(Directory dir) {

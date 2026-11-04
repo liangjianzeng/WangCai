@@ -66,14 +66,32 @@ class EngineCandidate {
 }
 
 class RoutingDecision {
-  const RoutingDecision({this.instanceId, required this.reason, this.suggestion});
-  const RoutingDecision.none(this.reason, [this.suggestion]) : instanceId = null;
+  const RoutingDecision(
+      {this.instanceId, required this.reason, this.suggestion, this.needInstall});
+  const RoutingDecision.none(this.reason, [this.suggestion])
+      : instanceId = null,
+        needInstall = null;
 
   final String? instanceId;
   final String reason;
 
   /// 给用户的改道建议（admission 违例/档位不可满足时非空，§4.1 语义）。
   final String? suggestion;
+
+  /// 按需下载信号（Phase 3c）：本地无可选引擎但有「已启用未安装」的
+  /// cuda/vulkan 实例时 = 建议安装的 variant（'cuda'|'vulkan'）。UI 层据此
+  /// 弹「下载引擎」（EngineStore.install 进度）→ 装完重试加载。
+  final String? needInstall;
+}
+
+/// 缺失引擎的下载建议（Phase 3c）：已启用未安装的 llamacpp 变体，
+/// CUDA（快道）优先于 Vulkan（通解）；无候选 = null。
+String? suggestInstallVariant(List<EngineCandidate> candidates) {
+  final missing =
+      candidates.where((c) => !c.isRemote && c.enabled && !c.installed);
+  if (missing.any((c) => c.instanceId.contains('cuda'))) return 'cuda';
+  if (missing.any((c) => c.instanceId.contains('vulkan'))) return 'vulkan';
+  return null;
 }
 
 /// 选路输入。[blocked]：engineId → admission/探测拒绝文案（调用方算好传入；
@@ -196,6 +214,16 @@ RoutingDecision chooseEngine(RoutingRequest req) {
     return RoutingDecision(instanceId: remote.instanceId, reason: '远端兜底');
   }
   final blockedNote = req.blocked.values.join('；');
+  // 本地全空/全被拦且无远端：若存在已启用未装的 cuda/vulkan 实例，
+  // 给出按需下载信号（Phase 3c 闭环的起点，UI 弹层消费）。
+  final needInstall = suggestInstallVariant(req.candidates);
+  if (blockedNote.isEmpty && needInstall != null) {
+    return RoutingDecision(
+      reason: '无可用引擎（$needInstall 未安装）',
+      suggestion: '可下载官方 llama.cpp $needInstall 引擎',
+      needInstall: needInstall,
+    );
+  }
   return RoutingDecision.none('无可用引擎',
       blockedNote.isEmpty ? '请在 设置→推理引擎 安装/启用一个引擎' : blockedNote);
 }

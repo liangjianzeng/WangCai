@@ -165,6 +165,69 @@ void main() {
     });
   });
 
+  group('按需下载信号（Phase 3c needInstall）', () {
+    const npuMissing = EngineCandidate(
+        instanceId: 'wangcai-npu', kind: 'llamaServer', devices: ['NPU'], installed: false);
+    const cudaMissing = EngineCandidate(
+        instanceId: 'llamacpp-cuda', kind: 'llamaServer', devices: ['CUDA'], installed: false);
+    const vulkanMissing = EngineCandidate(
+        instanceId: 'llamacpp-vulkan', kind: 'llamaServer', devices: ['Vulkan'], installed: false);
+
+    test('本地全未装且 cuda/vulkan 启用 → needInstall=cuda（快道优先）', () {
+      final d = chooseEngine(RoutingRequest(
+        tier: RoutingTier.speedFirst,
+        candidates: const [npuMissing, cudaMissing, vulkanMissing],
+      ));
+      expect(d.instanceId, isNull);
+      expect(d.needInstall, 'cuda');
+      expect(d.suggestion, contains('下载'));
+    });
+
+    test('缺 cuda 已装 vulkan 时不触发下载（vulkan 直接胜出）', () {
+      final d = chooseEngine(RoutingRequest(
+        tier: RoutingTier.speedFirst,
+        candidates: const [npuMissing, cudaMissing, vulkan],
+      ));
+      expect(d.instanceId, 'llamacpp-vulkan');
+      expect(d.needInstall, isNull);
+    });
+
+    test('仅 vulkan 未装（候选里无 cuda）→ needInstall=vulkan', () {
+      final d = chooseEngine(RoutingRequest(
+        tier: RoutingTier.speedFirst,
+        candidates: const [npuMissing, vulkanMissing],
+      ));
+      expect(d.needInstall, 'vulkan');
+    });
+
+    test('未装且未启用 → 不作下载建议（用户明确不要它）', () {
+      final d = chooseEngine(RoutingRequest(
+        tier: RoutingTier.speedFirst,
+        candidates: const [
+          EngineCandidate(
+              instanceId: 'wangcai-npu', kind: 'llamaServer', devices: ['NPU'], installed: false),
+          EngineCandidate(
+              instanceId: 'llamacpp-cuda',
+              kind: 'llamaServer',
+              devices: ['CUDA'],
+              installed: false,
+              enabled: false),
+        ],
+      ));
+      expect(d.instanceId, isNull);
+      expect(d.needInstall, isNull);
+    });
+
+    test('远端可用时优先兜底，不发下载信号', () {
+      final d = chooseEngine(RoutingRequest(
+        tier: RoutingTier.speedFirst,
+        candidates: const [npuMissing, cudaMissing, remote],
+      ));
+      expect(d.instanceId, 'openai-remote');
+      expect(d.needInstall, isNull);
+    });
+  });
+
   group('BindingsStore 回写（§7.2）', () {
     setUpAll(() {
       sqfliteFfiInit();

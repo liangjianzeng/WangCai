@@ -8,7 +8,7 @@ const String wangcaiNpuManifestJson = '''
   "display": "汪柴 · Intel NPU",
   "kind": "llamaServer",
   "argsTemplate": ["-m","{model}","--mmproj","{mmproj?}","-c","{ctx}","--temp","0",
-                   "-np","1","-fa","1","-dev","{devArg=OPENVINO3}","--jinja",
+                   "-np","1","-fa","1","-dev","{devArg=OPENVINO3}","--jinja","--no-warmup",
                    "--host","127.0.0.1","--port","{port}"],
   "envTemplate": {
     "GGML_OPENVINO_DEVICE": "{device=NPU}",
@@ -22,7 +22,20 @@ const String wangcaiNpuManifestJson = '''
      "paramsB": 1.7, "device": "NPU"},
     {"name": "qwen3-4b", "modelGlob": "Qwen3-4B*.gguf", "ctx": 512, "chunk": 128,
      "paramsB": 4.0, "device": "NPU",
-     "note": "副靶配置 chunk128（status.md 3/3）；compile overrides 串在 M2 对齐 spark-npu-accept.ps1"}
+     "note": "副靶配置 chunk128（status.md 3/3）；compile overrides 串在 M2 对齐 spark-npu-accept.ps1"},
+    {"name": "spark-x2.6-4b", "modelGlob": "Spark-X2.6-4B*.gguf", "ctx": 512, "chunk": 128,
+     "paramsB": 4.0, "device": "NPU",
+     "extraEnv": {"GGML_OPENVINO_DISABLE_DECODE_LEVELS": "1"},
+     "note": "副靶（讯飞 Spark-X2.6-4B Q4_K_M）：chunk128 + 关 decode level 必需（spark-npu-accept.ps1 3/3、HANDOFF 2026-11-01）"},
+    {"name": "lfm3-omni-2b", "modelGlob": "LFM3-Omni-2B*.gguf", "ctx": 512, "chunk": 128,
+     "paramsB": 2.0, "device": "NPU",
+     "extraEnv": {"GGML_OPENVINO_DISABLE_DECODE_LEVELS": "1"},
+     "note": "Omni-2B 文本线（chunk128 实测口径）；视觉塔走 cuda/vulkan —— NPU mtmd 有缺陷，见 defect-npu-mtmd.md"},
+    {"name": "minicpm5-2b", "modelGlob": "MiniCPM5-2B*.gguf", "ctx": 512, "chunk": 256,
+     "paramsB": 2.6, "device": "NPU",
+     "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：默认臂 1.7B-like "
+         "chunk256+decode levels；OOM 回落 spark 臂（chunk128+DISABLE_DECODE_LEVELS）——tools/minicpm5-npu-accept.ps1；"
+         "thinking 模型 CoT 预算 n≥192"}
   ],
   "admission": [
     {"ifCtxGt": 512, "ifParamsBAtLeast": 3.5,
@@ -40,7 +53,7 @@ const String llamacppVulkanManifestJson = '''
   "display": "llama.cpp · Vulkan（核显/N 卡）",
   "kind": "llamaServer",
   "argsTemplate": ["-m","{model}","--mmproj","{mmproj?}","-c","{ctx}","--temp","0",
-                   "-ngl","{gpuLayers=99}","--device","{gpuDevice?}","--jinja",
+                   "-ngl","{gpuLayers=99}","--device","{gpuDevice?}","--jinja","--no-warmup",
                    "--host","127.0.0.1","--port","{port}"],
   "envTemplate": {},
   "capabilities": {"nativeToolCall": true, "vision": true, "audio": false,
@@ -61,7 +74,7 @@ const String llamacppCudaManifestJson = '''
   "display": "llama.cpp · CUDA（RTX 快速通道）",
   "kind": "llamaServer",
   "argsTemplate": ["-m","{model}","--mmproj","{mmproj?}","-c","{ctx}","--temp","0",
-                   "-ngl","{gpuLayers=99}","--jinja",
+                   "-ngl","{gpuLayers=99}","--jinja","--no-warmup",
                    "--host","127.0.0.1","--port","{port}"],
   "envTemplate": {},
   "capabilities": {"nativeToolCall": true, "vision": true, "audio": false,

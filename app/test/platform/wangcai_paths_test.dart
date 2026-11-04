@@ -48,6 +48,16 @@ void main() {
     }
   });
 
+  test('便携形态：exe 邻侧 Engines\\wangcai 候选排在装机位之前（v0.0.3 补齐）', () {
+    final dirs = WangCaiPaths.bundledEngineDirs();
+    expect(dirs, hasLength(2));
+    expect(dirs.first.path, endsWith('Engines${Platform.pathSeparator}wangcai'),
+        reason: '便携包 staging 布局（build-installer.ps1）必须被解析链看到');
+    expect(dirs.last.path, WangCaiPaths.bundledEngineDir().path,
+        reason: '装机位（%APPDATA%）仍是写侧/管理侧真源');
+    expect(dirs.last.path, contains('engines'));
+  });
+
   test('bundled 优先于 repo（安装器覆盖开发机产物）', () {
     final eng = Directory(
         '${WangCaiPaths.dataRoot().path}${Platform.pathSeparator}engines'

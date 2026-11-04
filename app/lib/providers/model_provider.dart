@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
@@ -6,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/model_info.dart';
 import '../models/model_catalog.dart';
+import '../models/local_model.dart';
 import '../platform/inference_backend.dart';
 import '../services/model_storage_service.dart';
 import 'settings_provider.dart';
@@ -294,245 +294,34 @@ class ModelManagerNotifier extends StateNotifier<ModelState> {
         );
       }
 
-      // 5. Call native inference engine to load the model.
+      // 5. Call inference engine to load the model.
       //    直接从持久化文件读取设置，避免 settingsProvider 异步 _load 完成前
-      //    读到默认 enableGpu=false，导致启动后直接加载模型时 GPU 未生效。
+      //    读到默认值，导致启动后直接加载模型时配置未生效。
+      //    （v0.0.3 Phase 3：手机端参数链路——MTP/dspark 全局开关、split-MoE
+      //    路由、oom 守卫/KV 精度/FA 推送——已整体退场；这些是 Android JNI
+      //    线的遗产，桌面 llama-server 由 manifest/引擎配置接管。）
       final gpu = settingsAll; // 同文件 load() 幂等，复用步骤 4 已读实例
-      // 全局 MTP 总开关关闭时，即使某模型曾配置开启也强制不启用（可见可用控制）。
-      final mtp = gpu.enableMtpFeature && gpu.mtpEnabled(modelId);
-      // dspark 投机草稿头：全局开关 + 该模型开关都开启、目录声明且文件完整时
-      // 才带上（MTP 启用时忽略，原生层二选一互斥）。任一环节不满足时给出
-      // 明确原因写进推理日志，避免静默失败（此前用户开了开关却看不到生效）。
-      String? draftPath;
-      String? draftSkipReason;
-      final dsparkConfig = config?.dspark;
-      if (dsparkConfig == null) {
-        draftSkipReason = '该模型目录未声明 dspark 草稿头';
-      } else if (mtp) {
-        draftSkipReason = 'MTP 已启用（与 dspark 互斥，原生层二选一）';
-      } else if (!gpu.enableDsparkFeature) {
-        draftSkipReason = '全局 dspark 开关未开启（设置→推理引擎→⚡dspark 加速）';
-      } else if (!gpu.dsparkEnabled(modelId)) {
-        draftSkipReason = '该模型 dspark 开关未开启（模型列表卡片）';
-      } else {
-        final storage = ModelStorageService();
-        final dsparkFile = await storage.getDsparkPath(modelId);
-        if (!File(dsparkFile).existsSync()) {
-          draftSkipReason = '草稿文件不存在（${dsparkFile}）';
-        } else {
-          final dsSize = await File(dsparkFile).length();
-          if (dsSize <= 0 ||
-              dsSize < (dsparkConfig.sizeBytes * 0.99).round()) {
-            final dsMb = (dsSize / (1024 * 1024)).toStringAsFixed(0);
-            draftSkipReason =
-                '草稿文件不完整（${dsMb}MB < 声明 ${dsparkConfig.sizeMB}MB）';
-          } else {
-            draftPath = dsparkFile;
-          }
-        }
-      }
       debugPrint('[ModelManager] Calling loadModel(path=$path, '
-          'enableGpu=${gpu.enableGpu}, gpuLayers=${gpu.gpuLayers}, '
-          'gpuBackend=${gpu.gpuBackend}, contextSize=${gpu.contextSize}, '
-          'enableMtp($modelId)=$mtp, draft=$draftPath, skip=$draftSkipReason)');
-      // ---- 智能 MoE 加载路由（超大 MoE 统一架构，2026-10-14）----------
-      // 拆分 MoE 模型（splitMoe 目录声明）：开关开启时走专家 slot 动态加载
-      // （dense 常驻 + 专家按需 preadv 流式读入）；关闭时走整包全加载——
-      // 但 -les 剥离版主文件不含专家张量，预期失败，加载日志明示原因。
-      String? moeManifest;
-      int moeBank = 0;
-      int moeSlotBytes = 0; // 每层每专家字节（packed=geo.perLayer；in-place=全层和旧口径）
-// [守卫常驻口径 2026-10-30 · 决策档 §12.18] 守卫只算 bank×perLayer 会漏掉 decode 窗口
-// （预取配方 8+6/层 × n_moe_layers ⇒ 14×层数 个槽），11 GB 档机型上因此放过载、真机放机过。
-// 常驻由知道 manifest 几何的 Dart 侧算准后显式传给 JNI（JNI 预检时拿不到层数），
-// 口径 = (bank + 14×层数) × perLayer，与 K90 实测峰值 RSS 2812 MB 对表（估 2.85 GB，差 1.5 %）。
-      int moeResidentBytes = 0; // split-MoE 常驻（bank 槽 + decode 窗口），0=交回 JNI 旧公式
-      int moeExpertsBytes = 0; // in-place 整包：gguf 内专家区字节（oom 预检扣减）
-      String smartMoeLog = '';
-      final sm = config?.splitMoe;
-      if (sm != null) {
-        if (gpu.smartMoeEnabled) {
-          // 形态判定：inplaceFullGguf（方案 C）= 官方整包原地读，无分片子目录；
-          // 否则为 packed-bins（MiniCPM 生产形态）= manifest + N 分片。
-          final storage = ModelStorageService();
-          final expertsDir = await storage.getExpertsDir(modelId);
-          final mf = File('${expertsDir.path}/manifest.json');
-          var binsOk = sm.inplaceFullGguf; // 原地形态：整包文件本身即专家表
-          if (!sm.inplaceFullGguf) {
-            // 加载前快检：manifest + 全部分片存在且非空（下载器已做精确字节
-            // 校验，这里只防「文件被用户清理/传输中断」的残缺包进原生层）。
-            binsOk = await mf.exists() && await mf.length() > 0;
-            if (binsOk) {
-              for (var i = 0; i < sm.layerBinCount && binsOk; i++) {
-                final name = sm.layerBinRelativePath(i).split('/').last;
-                final bf = File('${expertsDir.path}/$name');
-                binsOk = await bf.exists() && await bf.length() > 0;
-              }
-            }
-          }
-          if (binsOk) {
-            moeManifest = sm.inplaceFullGguf ? path : mf.path;
-            // ---- 内存自适应热专家 bank（2026-10-15，方案 P3；15:5x 小米13 修正）----
-            // bank 是 GPU pinned（UMA 直接扣 MemAvailable，不可回收），且主权重/
-            // draft 加载同样吃掉可用内存——小米13 实测 bank=39 加载后 MemAvail
-            // 掉到 580MB 被 lmkd 杀（OomAdj=200）。公式按"加载后仍留 1.5G 安全
-            // 线"倒推：
-            // bank = clamp(8, floor(0.8 × budget / slot_bytes), 32)
-            //   budget = MemAvailable − 安全线(1.5G) − 主权重(常驻×0.95)
-            //            − KV(contextSize×0.03MB/tok) − dspark 在机 − mmproj 在机
-            // slot_bytes：packed 从 manifest 求和；in-place 用目录元数据。
-            // 常驻主权重：packed = -les 主文件；in-place = 整包 − 专家区。
-            final memAvailMb = _readMemAvailableMb();
-            final geo = sm.inplaceFullGguf ? null : await _moeManifestBankGeo(mf);
-            // [守卫口径修正 2026-10-30 · 决策档 §12.9/§12.17] JNI 的 oom-guard 公式是
-            // `bank × moe_slot_bytes`，其缺省常量 1351680（1.289 MiB）= **每层每专家**字节
-            // ⇒ 它要的是 perLayer。这里曾传 total（全层和；35B-A3B = 40×1.29MB ≈ 51.6MB），
-            // 于是 bank=256 时权重估算被抬到 14.69 GB（真值 ≈ dense 1.55GB + 256×1.29MB
-            // + 0.25GB ≈ 2.12GB），740（MemAvailable 6.0GB）**被自己的守卫拒绝加载 35B**。
-            // 与下方 :427「用 perLayer 判定形态，不能用 total」是同一颗雷，只是没修到守卫这路。
-            // bank 选取本来就用 geo.perLayer（见下），故此改动不影响 bank，只修守卫读数。
-            // in-place 整包形态维持旧口径（原地读专家区，见 :417 else 分支注释）。
-            final slotBytes = sm.inplaceFullGguf
-                ? (sm.slotBytesAllLayers > 0 ? sm.slotBytesAllLayers : null)
-                : (geo != null && geo.perLayer > 0 ? geo.perLayer : geo?.total);
-            moeSlotBytes = slotBytes ?? 0;
-            moeExpertsBytes = sm.inplaceFullGguf ? sm.expertsBytes : 0;
-            var autoBank = 16; // 兜底：读不到内存/manifest 时维持旧稳态值
-            var bankLog = '自动(兜底16)';
-            if (memAvailMb != null && slotBytes != null && slotBytes > 0) {
-              final slotMb = slotBytes / (1024 * 1024);
-              final kvMb = (gpu.contextSize * 30 / 1000).round();
-              final residentBytes =
-                  ((config?.sizeBytes ?? 0) - moeExpertsBytes).clamp(0, 1 << 62);
-              final mainWeightMb = (residentBytes * 0.95) / (1024 * 1024);
-              double budgetMb = (memAvailMb - 1536 - kvMb).toDouble() - mainWeightMb;
-              if (draftPath != null) {
-                budgetMb -= (await File(draftPath).length()) / (1024 * 1024);
-              }
-              if (mmprojPath != null) {
-                budgetMb -= (await File(mmprojPath).length()) / (1024 * 1024);
-              }
-              // 物理内存模型（2026-10-16 查案修正）：slot base 按（family×bpe）
-              // 分组、prefill 段组内共享（virtualize 实测 656 slots=282MiB，
-              // 旧「54MB×bank」是按每层独立复制的错误口径）。bank 的边际成本
-              // = 每层每专家字节（packed ~1.29MB）；decode 窗口（JNI 预取配方
-              // 8+6/层 × n_moe_layers）是与 bank 无关的固定成本，一并预留。
-              // bank=256(=n_expert) 时 JNI 不再 clamp prefill ubatch →
-              // 单遍专家流（每层 unique ≤ 256 恒成立，prefill 冷读 ≈ 地板）。
-              if (geo != null && geo.perLayer > 0) {
-                final bpeLayerMb = geo.perLayer / (1024 * 1024);
-                budgetMb -= 14.0 * geo.layers * bpeLayerMb; // decode 窗口固定成本
-                autoBank = (0.8 * budgetMb / bpeLayerMb).floor().clamp(8, 256);
-                bankLog =
-                    '自动(MemAvailable ${memAvailMb}MB, 预算 ${budgetMb.round()}MB, '
-                    'slot/层 ${bpeLayerMb.toStringAsFixed(2)}MB × ${geo.layers}层, 上限256)';
-              } else {
-                // in-place 形态（slotBytesAllLayers 口径）保守沿用旧公式。
-                final bankCap = slotMb <= 4 ? 256 : 32;
-                autoBank = (0.8 * budgetMb / slotMb).floor().clamp(8, bankCap);
-                bankLog =
-                    '自动(MemAvailable ${memAvailMb}MB, 预算 ${budgetMb.round()}MB, slot ${slotMb.toStringAsFixed(1)}MB, 上限$bankCap)';
-              }
-            }
-            // 手动覆写仅对 packed-bins（MiniCPM，slot/层~1.29MB）有意义；
-            // in-place 整包口径庞大，沿用内存自适应 autoBank。小槽手动上限
-            // 256（=n_expert，再大纯属浪费：每层 unique ≤ 256 恒成立）。
-            // 注意口径：用 perLayer（1.29MB）判定形态，不能用 total（54MB，
-            // 是全层和，会把 packed 误判成大槽锁死 64——2026-10-16 实测踩坑）。
-            final perLayerMb = geo?.perLayer != null && geo!.perLayer > 0
-                ? geo.perLayer / (1024 * 1024)
-                : (slotBytes ?? 0) / (1024 * 1024);
-            final manualCap = perLayerMb > 0 && perLayerMb <= 4 ? 256 : 64;
-            final manual = sm.inplaceFullGguf ? null : gpu.moeBankOverride(modelId);
-            moeBank = (manual != null && manual >= 8 && manual <= manualCap)
-                ? manual
-                : autoBank;
-            if (geo != null && geo.perLayer > 0) {
-              moeResidentBytes = (moeBank + 14 * geo.layers) * geo.perLayer;
-            }
-            smartMoeLog = sm.inplaceFullGguf
-                ? '智能 MoE 加载: 开启 ✓（官方整包原地读专家 '
-                    '${SplitMoeConfig.formatBytes(sm.expertsBytes)}，bank=$moeBank ${manual != null ? '手动覆写' : bankLog}）'
-                : '智能 MoE 加载: 开启 ✓（专家分片 ${sm.layerBinCount} 片完整，bank=$moeBank ${manual != null ? '手动覆写' : bankLog}）';
-          } else {
-            debugPrint('[ModelManager] splitMoe bins incomplete for $modelId');
-            state = ModelState.error(
-              message: '专家分片不完整，请在模型管理页重新下载该模型（智能 MoE 加载需要 manifest + 全部专家分片）',
-              modelId: modelId,
-              modelName: displayName,
-            );
-            return false;
-          }
-        } else {
-          smartMoeLog =
-              '智能 MoE 加载: 关闭 — 将尝试整包全加载（-les 剥离版主文件不含专家张量，'
-              '预期失败；如失败请在设置→推理引擎开启「智能 MoE 加载」后重试）';
-        }
-        debugPrint('[ModelManager] splitMoe: manifest=$moeManifest bank=$moeBank');
-      }
-      // 把 MTP/dspark 实际启用状态写进推理日志（loadingLogs），让「推理引擎
-      // 日志」页与启动日志都能确认该模型加载时投机加速是否真的生效——此前只
-      // debugPrint 到 logcat，App 内查看不到。
-      final mtpLogs = List<String>.from(state.loadingLogs);
+          'contextSize=${gpu.contextSize}, gpuLayers=${gpu.gpuLayers})');
+      final logs = List<String>.from(state.loadingLogs);
       // 把模型实际加载的绝对路径作为第一条日志输出，方便在「推理日志」页直接看到
-      // 模型从哪个目录加载（外部存储 vs 内部 vs app-docs），定位缓存位置。
-      mtpLogs.insert(0, '模型加载地址: $path');
+      // 模型从哪个目录加载，定位缓存位置。
+      logs.insert(0, '模型加载地址: $path');
       if (mmprojPath != null) {
-        mtpLogs.insert(1, '投影器地址: $mmprojPath');
-      }
-      if (draftPath != null) {
-        mtpLogs.insert(1, '投机草稿地址: $draftPath');
-      }
-      if (mtp) {
-        mtpLogs.add('MTP 加速: 开启 ✓');
-      } else if (draftPath != null) {
-        mtpLogs.add('dspark 投机加速: 开启 ✓');
-      } else {
-        mtpLogs.add('投机加速: 关闭 — $draftSkipReason');
-      }
-      // OOM 内存守卫设置（设置→推理引擎→内存守卫）：每次加载前推送到原生层，
-      // 原生侧在预检/加载后判定时读取。关闭守卫时日志里明示风险。
-      await _inference.setOomGuard(
-        enabled: gpu.oomGuardEnabled,
-        preHeadroomMb: gpu.oomPreHeadroomMb,
-        postHeadroomMb: gpu.oomPostHeadroomMb,
-      );
-      mtpLogs.add(gpu.oomGuardEnabled
-          ? '内存守卫: 开启（预检余量 ${gpu.oomPreHeadroomMb}MB，加载后余量 ${gpu.oomPostHeadroomMb}MB）'
-          : '内存守卫: 关闭 ⚠️（超大模型可强行加载，内存不足时可能整机死机）');
-      // KV 缓存精度（设置→推理引擎→KV 精度）：每次加载前推送到原生层。
-      // 默认 Q4；f16 = 不量化（混合架构 GPU 卸载需 K 为 F16，否则注意力链
-      // 被踢回 CPU）；FA 关闭时 V 恒 F16，FA 开启时 V 跟随 K 的量化格式。
-      await _inference.setKvCacheType(gpu.kvCacheType);
-      mtpLogs.add('KV 精度: ${gpu.kvCacheType == 'q8_0' ? 'Q8' : (gpu.kvCacheType == 'f16' ? 'F16（K 不量化）' : 'Q4')}'
-          '（K ${gpu.kvCacheType == 'f16' ? 'F16' : '量化'} / V 为 ${gpu.flashAttn ? '同 K（FA 开）' : 'F16'}）');
-      // flash attention（设置→推理引擎）：默认关。hybrid 架构原生层会强制关闭。
-      await _inference.setFlashAttn(gpu.flashAttn);
-      if (smartMoeLog.isNotEmpty) {
-        mtpLogs.add(smartMoeLog);
+        logs.insert(1, '投影器地址: $mmprojPath');
       }
       state = ModelState(
         phase: ModelLifecyclePhase.loading,
         modelId: modelId,
         modelName: displayName,
-        loadingLogs: mtpLogs,
+        loadingLogs: logs,
       );
       final ok = await _inference.loadModel(
         path,
-        enableGpu: gpu.enableGpu,
-        gpuLayers: gpu.gpuLayers,
-        gpuBackend: gpu.gpuBackend,
         nCtx: gpu.contextSize,
-        enableMtp: mtp,
-        mmprojPath: mmprojPath, // null = 单文件自包含 VL；两文件形态由原生 mtmd_init 加载
-        draftPath: draftPath,
-        nUbatch: gpu.gpuNUbatch, // 0=自动（统一512）；>0 拆小 prefill burst
-        vkNoSubgroup: gpu.vkNoSubgroup,
-        moeManifest: moeManifest,
-        moeBank: moeBank,
-        moeSlotBytes: moeSlotBytes,
-        moeExpertsBytes: moeExpertsBytes,
-        moeResidentBytes: moeResidentBytes,
+        gpuLayers: gpu.gpuLayers,
+        // null = 单文件自包含 VL 或文本模型（视觉塔在 llama-server 侧成对入场）
+        mmprojPath: mmprojPath,
       );
 
       if (ok) {
@@ -583,6 +372,101 @@ class ModelManagerNotifier extends StateNotifier<ModelState> {
       // _isBusy 不在 ModelState 里：复位为 false 不会自动通知 UI 重建，
       // 导致「卸载 / 加载到内存」等按钮停留在禁用态（模型加载完成后
       // 按钮"显示但不可点击"）。复制当前状态触发一次重建，恢复可用。
+      state = ModelState(
+        phase: state.phase,
+        modelId: state.modelId,
+        modelName: state.modelName,
+        errorMessage: state.errorMessage,
+        loadingLogs: List<String>.from(state.loadingLogs),
+      );
+    }
+  }
+
+  /// 桌面本地模型加载通道（v0.0.3 Phase 2）：直接吃 [LocalModelConfig]
+  /// （用户登记的 .gguf 绝对路径），不经过下载目录 catalog 解析。
+  ///
+  /// 与 [loadModel]（catalog id 版）的差异：
+  /// · 手机端专属链路全部不进（MoE 路由 / MTP 全局开关 / oom 守卫推送 /
+  ///   KV 精度——桌面 NPU/llama-server 线用不上）；
+  /// · Phase 3 已接线：`cfg.engineId` → 路由钉选（不可用回落 Auto），
+  ///   `cfg.customArgs` → 自定义尾参（优先级链模型级档位），ctx/chunk/
+  ///   gpuLayers 覆盖项透传给后端走 **模型级 > 引擎 defaultConfig >
+  ///   manifest preset** 回落；preset 命中时仍按实测上限收敛 ctx（纪律不动）。
+  ///   模型未表态的项不再兜底手机端全局（contextSize/gpuLayers），让位
+  ///   引擎默认与出厂 preset。
+  Future<bool> loadModelByLocalConfig(LocalModelConfig cfg) async {
+    if (_isBusy) return false;
+    final cur = state.modelId;
+    if (cur == cfg.id && state.isLoaded) return true;
+
+    _isBusy = true;
+    try {
+      if (_currentModelId != null && _currentModelId != cfg.id) {
+        await unloadModel();
+      }
+      final file = File(cfg.modelPath);
+      if (!await file.exists() || await file.length() == 0) {
+        state = ModelState.error(
+          message: '模型文件不存在或为空：${cfg.modelPath}',
+          modelId: cfg.id,
+          modelName: cfg.displayName,
+        );
+        return false;
+      }
+      final settingsAll = await _ref.read(settingsServiceProvider).load();
+      final logs = <String>['模型加载地址: ${cfg.modelPath}'];
+      if (cfg.hasMmproj) logs.add('投影器地址: ${cfg.mmprojPath}');
+      if (cfg.hasDraft) logs.add('投机草稿地址: ${cfg.draftPath}');
+      if (cfg.hasEngine) {
+        logs.add('指定引擎: ${cfg.engineId}（钉选；不可用时自动回落 Auto）');
+      }
+      if (cfg.customArgsList.isNotEmpty) {
+        logs.add('自定义尾参: ${cfg.customArgsList.join(' ')}');
+      }
+      state = ModelState(
+        phase: ModelLifecyclePhase.loading,
+        modelId: cfg.id,
+        modelName: cfg.displayName,
+        loadingLogs: logs,
+      );
+      final ok = await _inference.loadModel(
+        cfg.modelPath,
+        // 未表态项传 null → local_server_inference 走
+        // defaultConfig > preset 回落（不再兜底手机端全局参数）。
+        nCtx: cfg.ctx,
+        chunk: cfg.chunk,
+        gpuLayers: cfg.gpuLayers,
+        mmprojPath: cfg.hasMmproj ? cfg.mmprojPath : null,
+        draftPath: cfg.hasDraft ? cfg.draftPath : null,
+        customArgs: cfg.customArgsList.isNotEmpty ? cfg.customArgsList : null,
+        engineId: cfg.hasEngine ? cfg.engineId : null,
+      );
+      if (ok) {
+        state = ModelState(
+          phase: ModelLifecyclePhase.loaded,
+          modelId: cfg.id,
+          modelName: cfg.displayName,
+          loadingLogs: List<String>.from(state.loadingLogs),
+        );
+        await _inference.setEnableThinking(settingsAll.enableThinking);
+        return true;
+      }
+      state = ModelState.error(
+        message: '模型加载失败，最后一步日志：${state.latestLog ?? '（无）'}',
+        modelId: cfg.id,
+        modelName: cfg.displayName,
+      );
+      return false;
+    } on Exception catch (e, st) {
+      state = ModelState.error(
+        message: '加载异常: $e',
+        modelId: cfg.id,
+        modelName: cfg.displayName,
+      );
+      debugPrint('[ModelManager] LocalConfig load failed: $e\n$st');
+      return false;
+    } finally {
+      _isBusy = false;
       state = ModelState(
         phase: state.phase,
         modelId: state.modelId,
@@ -673,45 +557,3 @@ final modelManagerProvider = StateNotifierProvider<ModelManagerNotifier, ModelSt
   final inference = ref.read(inferenceServiceProvider);
   return ModelManagerNotifier(inference, ref);
 });
-
-/// 读 /proc/meminfo 的 MemAvailable（MB）。非 Android 环境或读取失败返回 null
-/// （单测/桌面），由调用方兜底。Android 上该文件 world-readable，无需权限。
-int? _readMemAvailableMb() {
-  if (!Platform.isAndroid) return null;
-  try {
-    final txt = File('/proc/meminfo').readAsStringSync();
-    final m = RegExp(r'MemAvailable:\s+(\d+)\s+kB').firstMatch(txt);
-    return m == null ? null : int.parse(m.group(1)!) ~/ 1024;
-  } catch (_) {
-    return null;
-  }
-}
-
-/// 从 split-MoE manifest.json 求「单专家全层驻留字节」：Σ entries[].bytes_per_expert
-/// （entries = 层 × tensor family，同一专家在所有层/投影上的 slot 总大小）。
-/// 解析失败返回 null，由调用方兜底。
-/// manifest bank 几何信息：total = Σ 全部 entries bytes_per_expert（= 单专家
-/// 全层全族驻留字节，旧口径）；perLayer = 单专家单层全族字节（bank 的真实
-/// 边际内存成本——slot base 按 (family×bpe) 分组、prefill 段组内共享，见
-/// llama-model-loader::virtualize_expert_tensor 实测 656 slots = 282MiB）；
-/// layers = MoE 层数。
-Future<({int total, int perLayer, int layers})?> _moeManifestBankGeo(
-    File manifest) async {
-  try {
-    final j = jsonDecode(await manifest.readAsString());
-    if (j is! Map || j['entries'] is! List) return null;
-    int sum = 0;
-    final layers = <int>{};
-    for (final e in (j['entries'] as List)) {
-      final b = e is Map ? e['bytes_per_expert'] : null;
-      if (b is! int || b <= 0) return null;
-      sum += b;
-      final l = e is Map ? e['layer'] : null;
-      if (l is int) layers.add(l);
-    }
-    if (sum <= 0 || layers.isEmpty) return null;
-    return (total: sum, perLayer: sum ~/ layers.length, layers: layers.length);
-  } catch (_) {
-    return null;
-  }
-}

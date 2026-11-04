@@ -16,6 +16,7 @@ class EngineConfig {
     this.gpuLayers, // llama.cpp -ngl
     this.presetName,
     this.extraEnv = const {},
+    this.extraArgs = const [],
     this.paramsB,
     this.remoteBaseUrl, // kind=remote
     this.remoteApiKey,
@@ -32,6 +33,11 @@ class EngineConfig {
   final int? gpuLayers;
   final String? presetName;
   final Map<String, String> extraEnv;
+
+  /// 自定义尾参（Phase 3 参数体系）：追加在 `renderArgsTemplate` 结果之后。
+  /// 优先级链的模型级档位 —— LocalModelConfig.customArgs 经路由层填这里；
+  /// 模型不设时路由层填引擎实例的 defaultConfig.args。
+  final List<String> extraArgs;
   final double? paramsB;
   final String? remoteBaseUrl;
   final String? remoteApiKey;
@@ -51,6 +57,8 @@ class EngineConfig {
             ..sort((a, b) => a.key.compareTo(b.key)))
           .map((e) => '${e.key}=${e.value}')
           .toList(),
+      // 自定义尾参同样影响命令行 → 进指纹（换尾参 = 换编译缓存目录）。
+      'a': extraArgs,
     });
     return sha1.convert(utf8.encode(key)).toString().substring(0, 16);
   }
@@ -65,6 +73,7 @@ class EngineConfig {
     int? gpuLayers,
     String? presetName,
     Map<String, String>? extraEnv,
+    List<String>? extraArgs,
     double? paramsB,
   }) =>
       EngineConfig(
@@ -78,6 +87,7 @@ class EngineConfig {
         gpuLayers: gpuLayers ?? this.gpuLayers,
         presetName: presetName ?? this.presetName,
         extraEnv: extraEnv ?? this.extraEnv,
+        extraArgs: extraArgs ?? this.extraArgs,
         paramsB: paramsB ?? this.paramsB,
         remoteBaseUrl: remoteBaseUrl,
         remoteApiKey: remoteApiKey,

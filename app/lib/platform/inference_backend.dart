@@ -16,34 +16,30 @@ abstract class InferenceBackend {
   Future<void> initialize();
 
   // ── 模型生命周期 ──────────────────────────────────────────────────────
+  /// 加载模型。桌面参数体系（v0.0.3 Phase 3）：null = 未表态，交由下层
+  /// 优先级链 **模型级(此参数) > 引擎 defaultConfig > manifest 模板/preset**
+  /// 逐档回落；非 null = 模型级显式意图（customArgs > defaultConfig > 模板）。
+  ///  - [nCtx]/[chunk]/[gpuLayers]：LocalModelConfig 的覆盖项由此透传；
+  ///  - [mmprojPath]/[draftPath]：视觉塔 / 投机草稿（模型级配置，非全局开关）；
+  ///  - [customArgs]：模型级自定义尾参（追加在 argsTemplate 之后）；
+  ///  - [engineId]：引擎钉选（null = Auto 路由；命中失败回落 Auto 并留痕）。
+  /// 手机端参数组（gpuBackend/vkNoSubgroup/nUbatch/moe*/enableGpu/enableMtp）
+  /// 已随 Phase 3「手机参数链路删除」退场。
   Future<bool> loadModel(
     String path, {
-    int nCtx = 4096,
-    bool enableGpu = true,
-    int gpuLayers = 20,
-    String gpuBackend = 'auto',
-    bool enableMtp = false,
+    int? nCtx,
+    int? chunk,
+    int? gpuLayers,
     String? mmprojPath,
     String? draftPath,
-    int nUbatch = 0,
-    bool vkNoSubgroup = false,
-    String? moeManifest,
-    int moeBank = 0,
-    int moeSlotBytes = 0,
-    int moeExpertsBytes = 0,
-    int moeResidentBytes = 0,
+    List<String>? customArgs,
+    String? engineId,
   });
 
   Future<void> unloadModel();
 
-  Future<void> setOomGuard({
-    required bool enabled,
-    int preHeadroomMb = 768,
-    int postHeadroomMb = 1536,
-  });
-
-  Future<void> setKvCacheType(String type);
-  Future<void> setFlashAttn(bool enabled);
+  // setOomGuard/setKvCacheType/setFlashAttn（手机端 JNI 推送三件套）已随
+  // Phase 4 删除：OOM 守卫由 manifest admission 承担，KV/FA 由引擎参数链决定。
 
   Future<bool> isLoaded();
   Future<bool> isModelLoaded();
@@ -52,7 +48,6 @@ abstract class InferenceBackend {
   // ── 状态查询 ──────────────────────────────────────────────────────────
   Future<Map<String, int>> getMemoryInfo();
   Future<Map<String, dynamic>> getInferenceStats();
-  Future<Map<String, String>> getDeviceInfo();
 
   // ── 生成 ──────────────────────────────────────────────────────────────
   Stream<String> completion({

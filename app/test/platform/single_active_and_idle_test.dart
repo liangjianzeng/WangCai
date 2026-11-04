@@ -12,6 +12,7 @@ import 'package:wangcai/engine/engine_registry.dart';
 import 'package:wangcai/engine/engine_status.dart' show EnginePhase;
 import 'package:wangcai/engine/engine_host.dart' show EngineProcess;
 import 'package:wangcai/engine/llama_server_host.dart' show LlamaServerHost;
+import 'package:wangcai/engine/openvino_probe.dart';
 import 'package:wangcai/platform/local_server_inference.dart';
 import 'package:wangcai/providers/shared_providers.dart';
 
@@ -77,9 +78,19 @@ void main() {
     );
     LocalServerInference.instance
         .attachRegistryForTest(reg, paths: EnginePaths.root(tmp));
+    // OPENVINO 探测必须假化（测试纪律：假 runner/假 probe）——dummy .exe
+    // 是空文本文件，真跑 --list-devices 只会引入无意义的异步与噪声。
+    probeRunnerForTest = (_, __) async =>
+        'OPENVINO3: GGML_OPENVINO_DEVICE=NPU - fake';
+    // 电源状态定值：本测试的前提是「speed 启发 → CUDA 胜出」，那只在
+    // 插电时成立；拔电会触发 auto 档 NPU 加权，开发机插拔状态会翻转断言。
+    LocalServerInference.instance.onBatteryForTest = false;
   });
 
   tearDown(() async {
+    probeRunnerForTest = null;
+    clearOpenvinoProbeCache();
+    LocalServerInference.instance.onBatteryForTest = null;
     try {
       await LocalServerInference.instance.unloadModel();
     } catch (_) {}

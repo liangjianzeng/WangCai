@@ -16,6 +16,7 @@ import '../engine/engine_manifest.dart';
 import '../engine/engine_paths.dart';
 import '../engine/engine_registry.dart';
 import '../engine/engine_status.dart' show EngineLogLine;
+import '../engine/engine_store.dart';
 import '../engine/llama_server_host.dart';
 import '../engine/process_ledger.dart';
 import '../engine/routing_policy.dart';
@@ -119,8 +120,6 @@ class LocalServerInference implements InferenceBackend {
 
   // set* 推送值：server 是独立进程，能落 env/参数的在 loadModel 用，其余随请求体。
   bool _enableThinking = false;
-  String _kvType = 'q4_0';
-  bool _flashAttn = true;
 
   StreamSubscription<EngineLogLine>? _logSub;
   CancelToken? _cancel;
@@ -260,6 +259,8 @@ class LocalServerInference implements InferenceBackend {
 
   /// §7.3「电池机型拔电 → NPU 加权」的输入（M3-b 电源感知）。
   bool _onBattery() {
+    final f = _onBatteryForTest;
+    if (f != null) return f;
     try {
       return readPowerState().onBattery;
     } catch (_) {
@@ -269,11 +270,40 @@ class LocalServerInference implements InferenceBackend {
 
   /// 路由决策（§7.3）：候选=已启用本地实例；binary 缺失=未装不作候选；
   /// admission 违例=blocked（带建议改道，不去拉必崩的 server）。
+  /// [engineId] 非空 = 模型级引擎钉选（LocalModelConfig.engineId）：命中即
+  /// 直通（跳过打分，但仍受 admission 约束）；未命中留痕回落 Auto 打分。
   Future<RoutingDecision> _route({
     required EngineRegistry reg,
     required String path,
-    required int nCtx,
+    required int? nCtx,
+    String? engineId,
   }) async {
+    if (engineId != null && engineId.isNotEmpty) {
+      final inst = reg.instance(engineId);
+      final m = inst == null ? null : reg.manifestOf(inst.id);
+      final bin = inst?.binaryPath ?? m?.binary;
+      final hit = inst != null &&
+          inst.enabled &&
+          m != null &&
+          m.kind != 'remote' &&
+          bin != null &&
+          bin.isNotEmpty &&
+          File(bin).existsSync();
+      if (hit) {
+        final p = _matchPreset(m, path);
+        final requested = nCtx ?? inst.defaultConfig?.ctx ?? (p?.ctx ?? 1024);
+        final ceil = p?.ctx;
+        final tentative = (ceil != null && requested > ceil) ? ceil : requested;
+        final v = m.checkAdmission(ctx: tentative, paramsB: p?.paramsB);
+        if (v.isNotEmpty) {
+          return RoutingDecision.none('指定引擎拒绝（$engineId）：${v.join('；')}',
+              '改用 Auto 路由，或调小上下文后重试');
+        }
+        return RoutingDecision(
+            instanceId: engineId, reason: '指定引擎（钉选）：$engineId');
+      }
+      _log('⚠️ 指定引擎 $engineId 不可用（未安装/未启用/不存在），回落 Auto 路由');
+    }
     final bindingsForModel = await _bindingsFor(_basename(path));
     final cands = <EngineCandidate>[];
     final blocked = <String, String>{};
@@ -290,7 +320,8 @@ class LocalServerInference implements InferenceBackend {
         installed: installed,
       ));
       final p = _matchPreset(m, path);
-      final requested = nCtx > 0 ? nCtx : (p?.ctx ?? 1024);
+      final requested =
+          nCtx ?? inst.defaultConfig?.ctx ?? (p?.ctx ?? 1024);
       final ceil = p?.ctx;
       final tentative = (ceil != null && requested > ceil) ? ceil : requested;
       final v = m.checkAdmission(ctx: tentative, paramsB: p?.paramsB);
@@ -303,6 +334,63 @@ class LocalServerInference implements InferenceBackend {
       blocked: blocked,
       onBattery: _onBattery(),
     ));
+  }
+
+  // ── 按需下载闭环（Phase 3c，设计 §5.1）────────────────────────────────
+  // 路由选不出本地引擎但存在「已启用未装」的 cuda/vulkan 实例时，决策带
+  // needInstall；loadModel 记下它，UI（模型管理页加载弹层）读取后弹
+  // 「下载引擎」→ installEngine（EngineStore 进度）→ 装完重试 loadModel。
+
+  /// 最近一次加载失败的下载建议（'cuda'|'vulkan'；null = 无建议）。
+  String? lastInstallSuggestion;
+
+  /// @visibleForTesting：installEngine 的 EngineStore 工厂注入（假下载器）。
+  @visibleForTesting
+  EngineStore Function(EnginePaths paths, Directory? enginesDir)?
+      engineStoreForTest;
+
+  /// 下载并装配官方 llama.cpp 引擎：whitelist 版本 → EngineStore.install
+  /// （镜像兜底 + sha256）→ 实例 binaryPath 落位 + enabled=true → engines.json。
+  /// 返回 null = 成功；非 null = 错误文案（UI 弹层直接展示）。
+  /// [enginesDir] = settings.enginesDir 用户自选目录（空 = 数据区默认）。
+  Future<String?> installEngine(
+    String variant, {
+    String? enginesDir,
+    List<String> mirrors = const [],
+    void Function(int received, int total)? onProgress,
+  }) async {
+    final reg = await _ensureRegistry();
+    final rel = StoreCatalog.verified.latest(variant);
+    if (rel == null) return '版本白名单里没有 $variant 包（检查网络清单）';
+    final dir = (enginesDir == null || enginesDir.trim().isEmpty)
+        ? null
+        : Directory(enginesDir.trim());
+    final store = engineStoreForTest?.call(reg.paths, dir) ??
+        EngineStore(reg.paths, enginesDirOverride: dir);
+    _log('⬇️ 下载引擎 $variant（官方 ${rel.version}）…');
+    final res =
+        await store.install(rel, mirrorPrefixes: mirrors, onProgress: onProgress);
+    if (!res.ok) {
+      _log('❌ 引擎安装失败：${res.error}');
+      return res.error ?? '安装失败';
+    }
+    final instId = 'llamacpp-$variant';
+    final inst = reg.instance(instId);
+    if (inst != null) {
+      inst
+        ..binaryPath = res.serverExe
+        ..enabled = true;
+    } else {
+      reg.upsert(EngineInstance(
+          id: instId,
+          manifestId: instId,
+          binaryPath: res.serverExe,
+          enabled: true));
+    }
+    await reg.save();
+    lastInstallSuggestion = null;
+    _log('✅ 引擎就绪：${res.serverExe}');
+    return null;
   }
 
   /// 推理结束回写绑定表（§7.2「实测由每次会话后回写」）；失败静默。
@@ -354,27 +442,22 @@ class LocalServerInference implements InferenceBackend {
   @override
   Future<bool> loadModel(
     String path, {
-    int nCtx = 4096,
-    bool enableGpu = true,
-    int gpuLayers = 20,
-    String gpuBackend = 'auto',
-    bool enableMtp = false,
+    int? nCtx,
+    int? chunk,
+    int? gpuLayers,
     String? mmprojPath,
     String? draftPath,
-    int nUbatch = 0,
-    bool vkNoSubgroup = false,
-    String? moeManifest,
-    int moeBank = 0,
-    int moeSlotBytes = 0,
-    int moeExpertsBytes = 0,
-    int moeResidentBytes = 0,
+    List<String>? customArgs,
+    String? engineId,
   }) async {
     try {
       await stopGeneration(); // 换载前掐掉在飞生成
       final reg = await _ensureRegistry();
-      final decision = await _route(reg: reg, path: path, nCtx: nCtx);
+      final decision = await _route(
+          reg: reg, path: path, nCtx: nCtx, engineId: engineId);
       final instId = decision.instanceId;
       if (instId == null) {
+        lastInstallSuggestion = decision.needInstall;
         _log('⛔ ${decision.reason}'
             '${decision.suggestion != null ? '（${decision.suggestion}）' : ''}');
         return false;
@@ -386,16 +469,15 @@ class LocalServerInference implements InferenceBackend {
       final host = reg.hostOf(instId) as LlamaServerHost;
       _host = host; // 失败也要可取证（debugHost / UI 读状态与日志）
 
+      // ── 参数优先级链（Phase 3）：模型级（本层调用参数，来自
+      // LocalModelConfig）> 引擎实例 defaultConfig（引擎管理页配置）>
+      // manifest preset（出厂档）。null / 未配置 = 让位下一档。
       final preset = _matchPreset(manifest, path);
-      if (gpuBackend != 'auto' && gpuBackend.isNotEmpty) {
-        _log('ℹ️ Windows 侧设备由引擎实例决定（M2 路由接管），忽略 gpuBackend=$gpuBackend');
-      }
-      // 调用方 ctx（设置页 contextSize，出厂默认 4096）是显式意图，但 preset.ctx
-      // 是**实测安全上限**（status.md 缺陷5：4B@c>512 OUT_OF_HOST_MEMORY）：
-      // caller ≤ preset 尊重（用户显式调小）；caller > preset 收敛到 preset 并
-      // 留痕——不让设置页默认值把实测配置顶穿（顶穿=admission 硬拒或执行期崩）。
-      // 「强制大 ctx / 跟随设置」档位归 M2 路由三档。
-      final requestedCtx = nCtx > 0 ? nCtx : (preset?.ctx ?? 1024);
+      final dc = reg.instance(instId)?.defaultConfig;
+      // ctx 收敛纪律（对两档显式值都生效）：preset.ctx 是**实测安全上限**
+      // （status.md 缺陷5：4B@c>512 OUT_OF_HOST_MEMORY）。显式值可抬高、
+      // 但顶不过实测上限——顶穿=admission 硬拒或执行期崩，宁可收敛留痕。
+      final requestedCtx = nCtx ?? dc?.ctx ?? (preset?.ctx ?? 1024);
       final ctxCeiling = preset?.ctx;
       final ctx =
           (ctxCeiling != null && requestedCtx > ctxCeiling) ? ctxCeiling : requestedCtx;
@@ -403,22 +485,45 @@ class LocalServerInference implements InferenceBackend {
         _log('ℹ️ ctx $requestedCtx → 收敛到预设上限 $ctx（${preset!.name} 实测上限；'
             '更大上下文请改用 CUDA/Vulkan 引擎）');
       }
+      // 自定义尾参：模型级 customArgs 整档赢过引擎 defaultConfig.args（计划
+      // 定案，非合并语义）。草稿头经 --model-draft 尾参入场（桌面侧
+      // manifest 模板没有 draft 占位符；尾参追加是 llama.cpp「后者覆盖
+      // 前者」，用户尾参始终排在最后 → 天然赢）。
+      final tailArgs = <String>[
+        if (draftPath != null && draftPath.isNotEmpty) ...['--model-draft', draftPath],
+        ...((customArgs != null && customArgs.isNotEmpty)
+            ? customArgs
+            : (dc?.args ?? const <String>[])),
+      ];
+      if (draftPath != null && draftPath.isNotEmpty) {
+        _log('⚡ 投机草稿: $draftPath（--model-draft 尾参入场）');
+      }
       final cfg = EngineConfig(
         engineId: instId,
         modelPath: path,
         mmprojPath: mmprojPath,
         ctx: ctx,
-        chunk: preset?.chunk,
+        chunk: chunk ?? dc?.chunk ?? preset?.chunk,
         // device 只对 OV 设备族有意义；llamacpp 驱动由 server 自己挑
         // （--list-devices 枚举），不伪造 'NPU' 误导日志/指纹。
-        device: preset?.device ??
+        device: dc?.device ??
+            preset?.device ??
             (manifest.capabilities.devices
                     .any((d) => d.toUpperCase().contains('NPU'))
                 ? 'NPU'
                 : null),
-        gpuLayers: preset?.gpuLayers,
+        gpuLayers: gpuLayers ?? dc?.gpuLayers ?? preset?.gpuLayers,
         presetName: preset?.name,
         paramsB: preset?.paramsB,
+        // preset 附加 env（如 Spark/Omni 的 DISABLE_DECODE_LEVELS=1，
+        // spark-npu-accept.ps1 实测必需）+ 引擎 defaultConfig.extraEnv
+        // （同键覆盖 preset）；host 侧在 envTemplate 之后合并，且已计入
+        // profileId 指纹（D6：换 env = 换编译缓存目录）。
+        extraEnv: <String, String>{
+          ...?preset?.extraEnv,
+          ...?dc?.extraEnv,
+        },
+        extraArgs: tailArgs,
       );
       final violations = manifest.checkAdmission(ctx: cfg.ctx, paramsB: cfg.paramsB);
       if (violations.isNotEmpty) {
@@ -448,6 +553,7 @@ class LocalServerInference implements InferenceBackend {
       }
       _cfg = cfg;
       _loaded = true;
+      lastInstallSuggestion = null; // 加载成功即销掉下载建议
       reg.instance(instId)!.lastConfig = cfg;
       unawaited(reg.save().catchError((Object _) {}));
       _log('✅ 引擎就绪: ${host.baseUrl}');
@@ -478,6 +584,12 @@ class LocalServerInference implements InferenceBackend {
 
   /// 测试注入的空闲时长（非 null 时优先于配置文件）。
   Duration? _idleUnloadForTest;
+
+  /// 测试注入的电源状态（null = 读真实系统）。缺省走真系统的意义在于
+  /// 「拔电 NPU 加权」是真行为；但单测必须注入定值 —— 开发机插没插电
+  /// 会翻转路由档位，让 speed 启发类断言随机翻转（2026-11-04 实案：
+  /// 单 active 互斥测试在拔电状态下选中 NPU 而非 CUDA）。
+  bool? _onBatteryForTest;
 
   void _armIdleTimer(Duration d) {
     _idleTimer?.cancel();
@@ -545,30 +657,12 @@ class LocalServerInference implements InferenceBackend {
   @visibleForTesting
   set idleUnloadForTest(Duration? d) => _idleUnloadForTest = d;
 
+  @visibleForTesting
+  set onBatteryForTest(bool? v) => _onBatteryForTest = v;
+
   // ── 设置推送（server 侧语义：加载参数在 start 落，请求参数随 body）────
-  @override
-  Future<void> setOomGuard({
-    required bool enabled,
-    int preHeadroomMb = 768,
-    int postHeadroomMb = 1536,
-  }) async {
-    // Windows 对应物 = manifest admission（loadModel 前置拦截），此处仅记录。
-    debugPrint('[LocalServer] oomGuard=$enabled (admission 承担守卫职责)');
-  }
-
-  @override
-  Future<void> setKvCacheType(String type) async {
-    _kvType = type; // llamacpp 驱动（M2）渲染 -ctk 时用；NPU 后端由 OV 管理
-  }
-
-  @override
-  Future<void> setFlashAttn(bool enabled) async {
-    _flashAttn = enabled;
-    if (!enabled) {
-      debugPrint('[LocalServer] 汪柴 NPU 硬约束 -fa 1，FA 开关忽略');
-    }
-  }
-
+  // OOM 守卫 = manifest admission；KV 精度/FA = 引擎参数链（NPU 硬约束 -fa 1）。
+  // 手机端 JNI 推送三件套 setOomGuard/setKvCacheType/setFlashAttn 已随 Phase 4 删除。
   @override
   Future<void> setEnableThinking(bool enable) async => _enableThinking = enable;
 
@@ -611,11 +705,8 @@ class LocalServerInference implements InferenceBackend {
   @override
   Future<Map<String, dynamic>> getInferenceStats() async => _lastStats;
 
-  @override
-  Future<Map<String, String>> getDeviceInfo() async => const {
-        'board': 'pc', 'hardware': '', 'socManufacturer': '', 'socModel': '',
-        'manufacturer': '', 'model': '',
-      };
+  // getDeviceInfo（SoC 硬件信息）已随 Phase 4 删除：唯一消费者是天玑芯片
+  // 禁用 OpenCL 后端的手机端判定。
 
   // ── 生成 ──────────────────────────────────────────────────────────────
 

@@ -62,20 +62,29 @@ class WangCaiPaths {
     return null;
   }
 
-  /// 安装器形态的引擎目录：{userappdata}\WangCai\engines\wangcai\（Inno
-  /// Setup 打包位，M4）。装机用户没有 repo —— 二级解析靠这里。
-  static Directory bundledEngineDir() => Directory(
-      '${dataRoot().path}${Platform.pathSeparator}engines'
-      '${Platform.pathSeparator}wangcai');
+  /// 便携/装机形态的引擎目录候选（优先级序）：
+  /// ① exe 邻侧 `Engines\wangcai\`（便携包布局，build-installer.ps1 staging
+  ///    产物；README「首启自动识别」的真身，v0.0.2 遗留缺口在 v0.0.3 补上）；
+  /// ② `{userappdata}\WangCai\engines\wangcai\`（Inno Setup 装机位，M4）。
+  static List<Directory> bundledEngineDirs() => [
+        Directory('${File(Platform.resolvedExecutable).parent.path}'
+            '${Platform.pathSeparator}Engines${Platform.pathSeparator}wangcai'),
+        Directory('${dataRoot().path}${Platform.pathSeparator}engines'
+            '${Platform.pathSeparator}wangcai'),
+      ];
 
-  /// 汪柴 llama-server.exe：WANGCAI_SERVER_EXE > 安装器引擎目录 >
+  /// 安装器（非便携）形态的引擎目录；写侧/管理侧真源（Inno 卸载清理等）。
+  static Directory bundledEngineDir() => bundledEngineDirs().last;
+
+  /// 汪柴 llama-server.exe：WANGCAI_SERVER_EXE > 便携/装机引擎目录 >
   /// 开发机构建产物（repo）。
   static String? wangcaiServerExe() {
     final env = Platform.environment['WANGCAI_SERVER_EXE']?.trim();
     if (env != null && env.isNotEmpty && File(env).existsSync()) return env;
-    final bundled = '${bundledEngineDir().path}${Platform.pathSeparator}'
-        'llama-server.exe';
-    if (File(bundled).existsSync()) return bundled;
+    for (final dir in bundledEngineDirs()) {
+      final cand = '${dir.path}${Platform.pathSeparator}llama-server.exe';
+      if (File(cand).existsSync()) return cand;
+    }
     final repo = repoRoot();
     if (repo != null) {
       final cand = '${repo.path}${Platform.pathSeparator}src'
@@ -97,9 +106,10 @@ class WangCaiPaths {
           .where((e) => e.isNotEmpty && Directory(e).existsSync())
           .toList();
     }
-    final bundled =
-        '${bundledEngineDir().path}${Platform.pathSeparator}ovlibs';
-    if (Directory(bundled).existsSync()) return [bundled];
+    for (final dir in bundledEngineDirs()) {
+      final ov = '${dir.path}${Platform.pathSeparator}ovlibs';
+      if (Directory(ov).existsSync()) return [ov];
+    }
     final repo = repoRoot();
     if (repo != null) {
       final cand = '${repo.path}${Platform.pathSeparator}ov'

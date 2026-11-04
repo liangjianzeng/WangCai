@@ -12,6 +12,7 @@ import 'package:wangcai/engine/engine_host.dart';
 import 'package:wangcai/engine/engine_paths.dart';
 import 'package:wangcai/engine/engine_status.dart';
 import 'package:wangcai/engine/llama_server_host.dart';
+import 'package:wangcai/engine/openvino_probe.dart';
 
 class FakeProcess implements EngineProcess {
   final stdoutCtl = StreamController<List<int>>();
@@ -110,8 +111,43 @@ EngineConfig testCfg({int? ctx, int? chunk, String? mmproj}) => EngineConfig(
 
 void main() {
   late Harness h;
-  setUp(() => h = Harness());
-  tearDown(() => h.dispose());
+  setUp(() {
+    // OPENVINO 探测默认模拟「开发机枚举」：NPU 命中 OPENVINO3（保持既有
+    // `-dev OPENVINO3` 断言的原语义 = 探测命中值原样进命令行）。
+    clearOpenvinoProbeCache();
+    probeRunnerForTest = (_, __) async => '''
+Available devices:
+  OPENVINO0: GGML_OPENVINO_DEVICE=CPU - Intel(R) Core(TM) Ultra 9 285H
+  OPENVINO1: GGML_OPENVINO_DEVICE=GPU - Intel(R) Arc(TM) 140T GPU (iGPU)
+  OPENVINO2: GGML_OPENVINO_DEVICE=GPU - Intel(R) Arc(TM) A770 (dGPU)
+  OPENVINO3: GGML_OPENVINO_DEVICE=NPU - Intel(R) AI Boost (NPU 3720)
+''';
+    h = Harness();
+  });
+  tearDown(() {
+    probeRunnerForTest = null;
+    clearOpenvinoProbeCache();
+    h.dispose();
+  });
+
+  test('OPENVINO 索引以探测为准：NPU 行命中 OPENVINO2 → -dev OPENVINO2（本机形态）', () async {
+    probeRunnerForTest = (_, __) async => '''
+Available devices:
+  OPENVINO0: GGML_OPENVINO_DEVICE=CPU - Intel(R) Core(TM) Ultra 9 285H
+  OPENVINO1: GGML_OPENVINO_DEVICE=GPU - Intel(R) Arc(TM) 140T GPU (iGPU)
+  OPENVINO2: GGML_OPENVINO_DEVICE=NPU - Intel(R) AI Boost (NPU 3720)
+''';
+    await h.host.start(testCfg(ctx: 1024, chunk: 256));
+    await h.waitSpawns(1);
+    expect(h.capturedArgs[0], containsAllInOrder(['-dev', 'OPENVINO2']));
+  });
+
+  test('OPENVINO 探测失败 → 回退 OPENVINO2（不带必错索引起 server）', () async {
+    probeRunnerForTest = (_, __) async => null; // 模拟无法执行/超时
+    await h.host.start(testCfg(ctx: 1024, chunk: 256));
+    await h.waitSpawns(1);
+    expect(h.capturedArgs[0], containsAllInOrder(['-dev', 'OPENVINO2']));
+  });
 
   test('launch→model loaded→health：launching→warming→ready + baseUrl', () async {
     await h.host.start(testCfg(ctx: 1024, chunk: 256));

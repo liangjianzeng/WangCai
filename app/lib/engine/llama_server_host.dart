@@ -9,6 +9,7 @@ import 'engine_host.dart';
 import 'engine_manifest.dart';
 import 'engine_paths.dart';
 import 'engine_status.dart';
+import 'openvino_probe.dart';
 import 'process_ledger.dart';
 import 'runtime_env.dart';
 
@@ -169,7 +170,9 @@ class LlamaServerHost implements EngineHost {
         if (cfg.threads != null) 'threads': '${cfg.threads}',
         'cacheDir': cacheDir.path,
       };
-      final args = renderArgsTemplate(manifest.argsTemplate, values);
+      // env 先于 args 组装：envTemplate 不消费 devArg（NPU 线只读
+      // GGML_OPENVINO_DEVICE/CACHE_DIR/CHUNK），而 OPENVINO 索引探测需要
+      // 一份与真启动同构的 env（PATH 含 ovlibs）→ 先 env 后探测再渲染。
       final engineEnv = <String, String>{};
       manifest.envTemplate.forEach((k, tpl) {
         final v = renderEnvValue(tpl, values);
@@ -184,6 +187,21 @@ class LlamaServerHost implements EngineHost {
         ],
         engineEnv: engineEnv,
       );
+      // OPENVINO 设备索引以探测为准（Phase 3）：manifest 硬编码的 OPENVINO3
+      // 是开发机枚举实测，NPU 索引随插件枚举漂移（无 dGPU 机型 = OPENVINO2）。
+      // 只接管 NPU 目标（device 未设/'NPU'）——显式 CPU/GPU/OPENVINO{n}
+      // 是用户意图，不覆盖。探测失败回退 OPENVINO2（计划定案：无 dGPU
+      // 机型通解 + 本机验证档位），绝不带着必错的索引起 server。
+      final targetsNpu = cfg.device == null || cfg.device == 'NPU';
+      if (targetsNpu &&
+          manifest.argsTemplate.any((t) => t.contains('devArg'))) {
+        final probed = await probeNpuDevArg(binaryPath, env);
+        values['devArg'] = probed ?? kOpenvinoNpuFallbackDevArg;
+      }
+      final args = renderArgsTemplate(manifest.argsTemplate, values);
+      // 自定义尾参（Phase 3 参数体系）：追加在模板之后。同名后现参数按
+      // llama.cpp「后者覆盖前者」生效，所以用户尾参天然赢过模板默认。
+      if (cfg.extraArgs.isNotEmpty) args.addAll(cfg.extraArgs);
 
       lastSpawnArgs = args;
       lastSpawnEnv = env;

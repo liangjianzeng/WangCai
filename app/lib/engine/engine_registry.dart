@@ -11,6 +11,73 @@ import 'engine_paths.dart';
 import 'llama_server_host.dart';
 import 'remote_openai_host.dart';
 
+/// 引擎实例的「默认启动参数」（Phase 3 参数体系，设计 §3）：
+/// 用户在引擎管理页编辑、落 engines.json。优先级链中间档：
+/// 模型 customArgs > 引擎 defaultConfig > manifest 模板/preset。
+/// 与 lastConfig 分工：lastConfig 仅是最近一次启动的诊断快照，不参与决策。
+class EngineDefaults {
+  const EngineDefaults({
+    this.ctx,
+    this.chunk,
+    this.gpuLayers,
+    this.device,
+    this.extraEnv = const {},
+    this.args = const [],
+  });
+
+  final int? ctx;
+  final int? chunk;
+  final int? gpuLayers;
+  final String? device;
+  final Map<String, String> extraEnv;
+
+  /// 自定义尾参（追加在 argsTemplate 之后；llama.cpp 后者覆盖前者）。
+  final List<String> args;
+
+  bool get isEmpty =>
+      ctx == null &&
+      chunk == null &&
+      gpuLayers == null &&
+      device == null &&
+      extraEnv.isEmpty &&
+      args.isEmpty;
+
+  Map<String, dynamic> toJson() => {
+        if (ctx != null) 'ctx': ctx,
+        if (chunk != null) 'chunk': chunk,
+        if (gpuLayers != null) 'gpuLayers': gpuLayers,
+        if (device != null) 'device': device,
+        if (extraEnv.isNotEmpty) 'extraEnv': extraEnv,
+        if (args.isNotEmpty) 'args': args,
+      };
+
+  /// 防御式解析：坏条目逐键丢弃（老 engines.json 无此键 → null）。
+  static EngineDefaults? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    int? i(String k) => raw[k] is num ? (raw[k] as num).toInt() : null;
+    final env = (raw['extraEnv'] as Map?)?.map(
+          (k, v) => MapEntry('$k', '$v'),
+        ) ??
+        const <String, String>{};
+    final args = (raw['args'] as List?)
+            ?.whereType<String>()
+            .where((a) => a.trim().isNotEmpty)
+            .toList() ??
+        const <String>[];
+    final d = EngineDefaults(
+      ctx: i('ctx'),
+      chunk: i('chunk'),
+      gpuLayers: i('gpuLayers'),
+      device: raw['device'] is String && (raw['device'] as String).isNotEmpty
+          ? raw['device'] as String
+          : null,
+      extraEnv: env,
+      args: args,
+    );
+    return d.isEmpty ? null : d;
+  }
+}
+
 class EngineInstance {
   EngineInstance({
     required this.id,
@@ -19,6 +86,7 @@ class EngineInstance {
     this.pathPrefixes,
     this.enabled = true,
     this.lastConfig,
+    this.defaultConfig,
   });
 
   final String id;
@@ -27,6 +95,9 @@ class EngineInstance {
   List<String>? pathPrefixes; // 覆盖 manifest 的 PATH 前置（开发机指向 repo 构建产物）
   bool enabled;
   EngineConfig? lastConfig;
+
+  /// 用户配置的默认启动参数（null = 未配置 → 走 manifest preset）。
+  EngineDefaults? defaultConfig;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -52,6 +123,8 @@ class EngineInstance {
                 'remoteModel': lastConfig!.remoteModel,
                 // api key 不入库（flutter_secure_storage 管，设计 §6.1）
               },
+        'defaultConfig':
+            defaultConfig == null ? null : defaultConfig!.toJson(),
       };
 
   factory EngineInstance.fromJson(Map<String, dynamic> j) => EngineInstance(
@@ -60,6 +133,7 @@ class EngineInstance {
         binaryPath: j['binaryPath'] as String?,
         pathPrefixes: (j['pathPrefixes'] as List?)?.cast<String>(),
         enabled: j['enabled'] != false,
+        defaultConfig: EngineDefaults.fromJson(j['defaultConfig']),
         lastConfig: j['lastConfig'] == null
             ? null
             : EngineConfig(
