@@ -38,8 +38,12 @@ void main() {
   final sep = Platform.pathSeparator;
   final dir = WangCaiPaths.modelsRoot();
   final lfm = File('${dir.path}${sep}LFM3-1.7B-Q4_K_M.gguf');
-  final skipReason = (!Platform.isWindows || !lfm.existsSync())
-      ? '需要 Windows + LFM3-1.7B-Q4_K_M.gguf（WANGCAI_MODEL_DIR）'
+  // 真机 E2E 显式开启（WANGCAI_NPU_E2E=1）：flutter test 并行跑多套件会同时
+  // 抢 NPU（每模型 ~20GB 编译缓存互踩），文件在场 ≠ 允许全量测试里真加载。
+  final skipReason = (!Platform.isWindows ||
+          Platform.environment['WANGCAI_NPU_E2E'] != '1' ||
+          !lfm.existsSync())
+      ? '需要 Windows + WANGCAI_NPU_E2E=1 + LFM3-1.7B-Q4_K_M.gguf（WANGCAI_MODEL_DIR，真机 E2E）'
       : false;
 
   setUpAll(() {

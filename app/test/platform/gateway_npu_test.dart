@@ -1,5 +1,6 @@
 // M1-d DoD · NPU 真机三问（可重复回归）。
 // 跑法（app/ 下；flutter_tester 不在仓库内，须显式指引擎路径）：
+//   export WANGCAI_NPU_E2E=1
 //   export WANGCAI_MODEL_DIR=E:/DTXY/WangCai/models
 //   export WANGCAI_SERVER_EXE=E:/DTXY/WangCai/src/llama/build/bin/llama-server.exe
 //   export WANGCAI_OV_LIBS=E:/DTXY/WangCai/ov/openvino/libs
@@ -25,8 +26,12 @@ const _rounds = [
 void main() {
   final modelDir = WangCaiPaths.modelsRoot();
   final modelFile = File('${modelDir.path}${Platform.pathSeparator}LFM3-1.7B-Q4_K_M.gguf');
-  final skipReason = (!Platform.isWindows || !modelFile.existsSync())
-      ? '需要 Windows + LFM3-1.7B-Q4_K_M.gguf（WANGCAI_MODEL_DIR 未指向模型目录）'
+  // 真机 E2E 显式开启（WANGCAI_NPU_E2E=1）：flutter test 并行跑多套件会同时
+  // 抢 NPU（每模型 ~20GB 编译缓存互踩），文件在场 ≠ 允许全量测试里真加载。
+  final skipReason = (!Platform.isWindows ||
+          Platform.environment['WANGCAI_NPU_E2E'] != '1' ||
+          !modelFile.existsSync())
+      ? '需要 Windows + WANGCAI_NPU_E2E=1 + LFM3-1.7B-Q4_K_M.gguf（WANGCAI_MODEL_DIR，真机 E2E）'
       : false;
 
   test(
