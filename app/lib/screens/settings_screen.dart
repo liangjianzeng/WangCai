@@ -23,7 +23,6 @@ import '../tts/edge_tts_service.dart'
 
 import '../agent/dev/dev.dart'
     show
-        DevNativeEnv,
         DevSessionController,
         DevStore,
         DevTask,
@@ -34,8 +33,6 @@ import '../agent/dev/dev.dart'
         SshEnvironmentService,
         SshKeyGen,
         SshStatus,
-        SshTargetKind,
-        TermuxIntentService,
         WorkspaceBackend,
         classifySshFailure,
         createWorkspaceOnActiveConnection,
@@ -46,7 +43,7 @@ import '../agent/dev/dev.dart'
         sshTargetKindOf,
         sshUsesPasswordAuth,
         taskBelongsToWorkspace;
-import '../services/app_bridge.dart' show AppBridge;
+import 'engine_install_dialog.dart';
 import 'engine_manager_section.dart' show EngineManagerSection; // WangCai 分叉 #8
 import '../agent/adb/adb_client.dart';
 import '../agent/adb/adb_targets.dart';
@@ -79,26 +76,34 @@ import '../agent/llm/thinking_effort.dart';
 import '../providers/index.dart';
 import '../providers/shared_providers.dart' show openAiServiceProvider;
 import '../providers/settings_provider.dart';
+import '../platform/local_server_inference.dart';
 import '../services/settings_service.dart';
-import '../services/model_manager.dart';
+import 'package:file_picker/file_picker.dart';
+import '../engine/bundled_manifests.dart' show bundledManifests;
+import '../engine/engine_manifest.dart' show Preset;
+import '../models/local_model.dart';
+import '../platform/wangcai_paths.dart' show WangCaiPaths;
 import '../services/model_storage_service.dart'
     show ModelStorageService, modelStorageService;
 import 'inference_log_screen.dart';
 
-/// App-lifetime guard: the local .gguf scan runs **once per app launch**.
+/// 模型管理面板 Body（v0.0.3 桌面独立版 · Phase 2 重写，2026-11-04）。
 ///
-/// It used to live on `_SettingsScreenState`, but SettingsScreen is pushed as a
-/// route, so every visit created a fresh State and re-triggered a full disk
-/// scan — noisy and slow. Keeping the flag at library scope makes it survive
-/// route disposal while still resetting on process restart.
-bool _appLaunchScanDone = false;
-
-/// Termux sshd 探测结论（`_probeSshd`）。
-enum _SshdProbe { listening, refused, timeout }
-
-/// 模型管理面板 Body（2026-10-25 自 _SettingsScreenState 原样抽出：
-/// 模型列表/下载/续传/加载/删除/默认开关），供左栏「模型」面板直嵌；
-/// 老设置页 Tab1 也复用同一 Body，行为不变。
+/// 旧手机端以「下载目录」为中心（assets/models_catalog.json + 下载/续传/
+/// 暂停/校验 + catalog 卡片）；桌面形态的模型不是等下载的东西，而是
+/// **磁盘上已存在的 GGUF 文件**。本页三段：
+///   ① NPU 预置区 —— bundled wangcai-npu manifest 声明的 preset
+///     （lfm3-1.7b / qwen3-4b / spark-x2.6-4b / lfm3-omni-2b），在模型库
+///     目录（[WangCaiPaths.modelsRoot]，WANGCAI_MODEL_DIR 可覆盖）按
+///     modelGlob 扫描命中即列出；缺文件给指引而非报错；
+///   ② 本地模型 —— 用户登记的条目（settings.localModels）：FilePicker 选
+///     .gguf，可带视觉塔/草稿/ctx/chunk/gpuLayers/引擎绑定/自定义尾参。
+///     engineId 与 customArgs 本阶段**只存不接**（引擎钉选与参数优先级链
+///     customArgs > 引擎 defaultConfig > manifest 模板是 Phase 3 地盘）；
+///   ③ 存储占用（StorageInfoWidget 原样保留）。
+/// 默认模型星标统一走 `settings.defaultModelId`，三种 id 形态并存：
+/// catalog id（旧下载链路）、`lm_*`（本地登记）、`npu:<preset>`（预置虚拟
+/// 条目），[home_screen] 的 `_initAutoLoadDefaultModel` 三者都认。
 class ModelManagementBody extends ConsumerStatefulWidget {
   const ModelManagementBody();
 
@@ -108,148 +113,92 @@ class ModelManagementBody extends ConsumerStatefulWidget {
 }
 
 class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
-  late final Future<List<ModelConfig>> _catalogFuture;
+  /// preset.name → 命中的文件绝对路径；未命中的 preset 缺席 = 缺文件。
+  Map<String, String> _presetHits = const {};
 
-  /// 存储占用信息的重建 tick：任一模型下载完成后自增，迫使 StorageInfoWidget
-  /// 重新拉取磁盘占用（它用 FutureBuilder 只拉一次）。
+  /// modelPath → 磁盘是否存在（本地模型区路径存在性，进页批量刷新）。
+  Map<String, bool> _pathExists = const {};
+
+  /// 登记项变化后强制重建 StorageInfoWidget（它用 FutureBuilder 只拉一次）。
   int _storageTick = 0;
 
   @override
   void initState() {
     super.initState();
-    _catalogFuture = loadModelCatalog();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      // APP 启动后首次进入「模型管理」做一次全盘扫描；之后进出 tab 只做
-      // 轻量校验（对已知 id 做 File.exists，无目录遍历、无提示）。
-      if (_appLaunchScanDone) {
-        _refreshCacheStatus();
-      } else {
-        _appLaunchScanDone = true;
-        _scanModels(silent: true);
-      }
-    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _rescan());
   }
 
-  /// 轻量缓存状态校验：只对目录内已知 id 的 .gguf 做存在性判断，
-  /// 用于纠正「文件已在磁盘但界面仍显示未下载」以及「文件被外部删除但
-  /// 界面仍显示已缓存」两种不一致。开销极小，可每次进入页面执行。
-  Future<void> _refreshCacheStatus() async {
+  /// 扫一次模型库目录：preset glob 命中 + 本地登记路径存在性。
+  Future<void> _rescan() async {
+    final hits = <String, String>{};
+    final exists = <String, bool>{};
     try {
-      final catalog = await _catalogFuture;
-      if (!mounted) return;
-      await ref
-          .read(downloadNotifierProvider.notifier)
-          .refreshCacheStatus(catalog);
+      final dir = WangCaiPaths.modelsRoot();
+      final names = <String>[];
+      if (await dir.exists()) {
+        await for (final e in dir.list()) {
+          if (e is File && e.path.toLowerCase().endsWith('.gguf')) {
+            names.add(p.basename(e.path));
+          }
+        }
+        names.sort();
+      }
+      final npu = bundledManifests()['wangcai-npu'];
+      for (final preset in npu?.presets ?? const <Preset>[]) {
+        final glob = preset.modelGlob;
+        if (glob == null || glob.isEmpty) continue;
+        final re = presetGlobToRegExp(glob);
+        for (final name in names) {
+          if (re.hasMatch(name)) {
+            hits[preset.name] = p.join(dir.path, name);
+            break;
+          }
+        }
+      }
+      for (final m in ref.read(settingsProvider).localModels) {
+        exists[m.modelPath] = await File(m.modelPath).exists();
+      }
     } catch (_) {}
+    if (!mounted) return;
+    setState(() {
+      _presetHits = hits;
+      _pathExists = exists;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    // 全局监听下载状态：任一模型下载完成 → 立即整体重扫模型列表 + 刷新存储
-    // 占用，而不是只更新刚完成的那个模型卡片（否则列表排序/存储统计会滞后）。
-    ref.listen<Map<String, DownloadTask>>(downloadNotifierProvider,
-        (prev, next) {
-      bool anyCompleted = false;
-      for (final e in next.entries) {
-        if (e.value.state == DownloadState.completed &&
-            prev?[e.key]?.state != DownloadState.completed) {
-          anyCompleted = true;
-          break;
-        }
-      }
-      if (anyCompleted) {
-        _storageTick++;
-        _scanModels(silent: true);
-      }
-    });
-    return _buildModelManagementTab();
-  }
-
-  // =========================================================================
-  // Tab 1 / 模型面板：模型列表
-  //
-  // 2026-10-28 按新 UI 语言重排（对齐 home_screen 左栏面板「p-card」密度：
-  // 行高 ~40、字号 13/11、图标 18、卡面 surfaceContainerHigh + outlineVariant
-  // 细描边，明暗两套全走 colorScheme，不再 Colors.blue.shade50 硬涂）：
-  // 旧形态每个模型是一张 Card（头部行 + chip 行 + 最多三个 48dp Switch 行 +
-  // 三个等分按钮行），22 个模型滚不到头。现在——
-  //   · 主行 = 状态图标 + 模型名（窄栏可换两行，2026-10-25 定案不许截断）
-  //     + 默认星标 + **一个**主操作按钮；
-  //   · 次行只在「有信息要讲」时出现：未下载 → 体积与特性、下载中 → 进度、
-  //     失败 → 错误原因；已缓存模型就占一行；
-  //   · 次要配置（图片理解 / MTP / dspark / 删除）收进点开的展开区；
-  //   · 说明性长文案（扫描提示、视觉塔省 0.9GB）撤下，改由 tooltip 承载。
-  // =========================================================================
-
-  /// 展开态（modelId 集合）：次要配置默认收起，列表保持一行/模型。
-  final Set<String> _expanded = {};
-
-  void _toggleExpanded(String id) {
-    setState(() {
-      if (!_expanded.remove(id)) _expanded.add(id);
-    });
-  }
-
-  Widget _buildModelManagementTab() {
-    final tasks = ref.watch(downloadNotifierProvider);
     final settings = ref.watch(settingsProvider);
     final ms = ref.watch(modelManagerProvider);
-
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 扫描入口收成小节标题右侧的图标钮（原来是置顶一颗大 ElevatedButton
-          // + 下面一行灰字说明，两行高度换一个低频动作）。
-          _sectionHeader('可用模型', trailing: [
-            _iconAction(Icons.refresh, '扫描已有模型（启动时已自动扫一次）',
-                () => _scanModels()),
+          _sectionHeader('NPU 预置模型', trailing: [
+            _iconAction(Icons.refresh, '重扫模型库目录', _rescan),
           ]),
-          FutureBuilder<List<ModelConfig>>(
-            future: _catalogFuture,
-            builder: (context, snapshot) {
-              if (!snapshot.hasData || snapshot.data!.isEmpty) {
-                return const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 28),
-                  child: Center(child: CircularProgressIndicator()),
-                );
-              }
-              // 排序规则：已缓存最优先在前；未下载的按名称首字母排序（A→Z）。
-              final models = List<ModelConfig>.from(snapshot.data!)
-                ..sort((a, b) {
-                  final ca = tasks[a.id]?.state == DownloadState.completed;
-                  final cb = tasks[b.id]?.state == DownloadState.completed;
-                  if (ca != cb) return ca ? -1 : 1;
-                  return cleanModelName(a.name)
-                      .toLowerCase()
-                      .compareTo(cleanModelName(b.name).toLowerCase());
-                });
-              final cachedCount = models
-                  .where((m) => tasks[m.id]?.state == DownloadState.completed)
-                  .length;
-              final rows = <Widget>[];
-              for (var i = 0; i < models.length; i++) {
-                // 已缓存块与未下载块之间插一条分组标签，长列表有个分段感。
-                if (i == cachedCount && cachedCount > 0) {
-                  rows.add(_groupLabel('未下载'));
-                }
-                rows.add(_modelRow(
-                    models[i], tasks[models[i].id], settings, ms));
-              }
-              return Column(children: rows);
-            },
-          ),
+          _buildPresetZone(settings, ms),
           const SizedBox(height: 10),
-          // 存储信息（自带标题行，不再另加小节头）。用 tick 作 key：任一模型
-          // 下载完成时强制重建，重新读磁盘占用。
+          _sectionHeader('本地模型', trailing: [
+            _iconAction(Icons.add_circle_outline,
+                '添加本地模型（选择 .gguf 文件）', _addLocalModelViaPicker),
+          ]),
+          _buildLocalZone(settings, ms),
+          const SizedBox(height: 10),
+          // 存储信息（自带标题行）。tick 作 key：登记增删时强制重建。
           StorageInfoWidget(key: ValueKey(_storageTick)),
         ],
       ),
     );
   }
 
-  /// 小节标题（11px 灰 w600，与左栏面板同一密度）。
+  // =========================================================================
+  // 通用件：小节头 / 图标钮 / 模型行 / chip
+  // （沿用 2026-10-28 的 p-card 密度语言：行高 ~40、字号 13/11、图标 18、
+  //  卡面 surfaceContainerHigh + outlineVariant 细描边，全走 colorScheme。）
+  // =========================================================================
+
   Widget _sectionHeader(String label, {List<Widget> trailing = const []}) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(2, 6, 2, 4),
@@ -266,24 +215,13 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
     );
   }
 
-  /// 分组标签（「未下载」）——比小节标题更轻一档，只做分段。
-  Widget _groupLabel(String label) => Padding(
-        padding: const EdgeInsets.fromLTRB(2, 6, 2, 3),
-        child: Text(label,
-            style: TextStyle(
-                fontSize: 10.5,
-                letterSpacing: 0.4,
-                color: Theme.of(context).colorScheme.outline)),
-      );
-
-  /// 轻量图标钮（扫描这类低频动作，不给大按钮）。
   Widget _iconAction(
-      IconData icon, String tooltip, VoidCallback? onTap) {
+      IconData icon, String tooltip, Future<void> Function() onTap) {
     final scheme = Theme.of(context).colorScheme;
     return Tooltip(
       message: tooltip,
       child: InkWell(
-        onTap: onTap,
+        onTap: () => onTap(),
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: const EdgeInsets.all(4),
@@ -293,27 +231,31 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
     );
   }
 
-  /// 单个模型的一行（+ 可选次行 / 展开区）。
-  Widget _modelRow(ModelConfig model, DownloadTask? task,
-      InferenceSettings settings, ModelState ms) {
-    final scheme = Theme.of(context).colorScheme;
-    final isCached = task?.state == DownloadState.completed;
-    final isLoadingHere = ms.isLoading && ms.modelId == model.id;
-    final isLoadedHere = ms.modelId == model.id && ms.isLoaded;
-    final isDefault = settings.defaultModelId == model.id;
-    final expanded = _expanded.contains(model.id);
-    final DownloadState state;
-    if (task != null &&
-        (task.state == DownloadState.downloading ||
-            task.state == DownloadState.paused ||
-            task.state == DownloadState.failed ||
-            task.state == DownloadState.verifying)) {
-      state = task.state;
-    } else {
-      state = isCached ? DownloadState.completed : DownloadState.idle;
-    }
+  Widget _chip(String label, Color color) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Text(label, style: TextStyle(fontSize: 10.5, color: color)),
+      );
 
-    // 状态全靠「图标颜色 + 主操作文案」表达，不再叠「已缓存 / 待下载」chip。
+  /// 模型行（预置区/本地区共用）。次要信息收在次行，一行装下状态+主操作。
+  Widget _modelRow({
+    required String title,
+    required String subtitle,
+    required bool exists,
+    required bool isLoadedHere,
+    required bool isLoadingHere,
+    required bool isDefault,
+    List<Widget> chips = const [],
+    VoidCallback? onToggleDefault,
+    VoidCallback? onLoad,
+    VoidCallback? onUnload,
+    VoidCallback? onEdit,
+    VoidCallback? onDelete,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
     final IconData leadIcon;
     final Color leadColor;
     if (isLoadedHere) {
@@ -322,24 +264,13 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
     } else if (isLoadingHere) {
       leadIcon = Icons.sync_alt;
       leadColor = scheme.primary;
-    } else if (state == DownloadState.downloading ||
-        state == DownloadState.verifying) {
-      leadIcon = Icons.download;
-      leadColor = Colors.blue;
-    } else if (state == DownloadState.paused) {
-      leadIcon = Icons.pause_circle_outline;
-      leadColor = Colors.orange;
-    } else if (state == DownloadState.failed) {
-      leadIcon = Icons.error_outline;
-      leadColor = Colors.red;
-    } else if (isCached) {
+    } else if (!exists) {
+      leadIcon = Icons.help_outline;
+      leadColor = scheme.outline;
+    } else {
       leadIcon = Icons.check_circle_outline;
       leadColor = Colors.green;
-    } else {
-      leadIcon = Icons.cloud_download_outlined;
-      leadColor = scheme.outline;
     }
-
     return Container(
       margin: const EdgeInsets.only(bottom: 4),
       decoration: BoxDecoration(
@@ -353,215 +284,92 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
               : scheme.outlineVariant,
         ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ---- 主行 ----
-          InkWell(
-            borderRadius: BorderRadius.circular(12),
-            onTap: () => _toggleExpanded(model.id),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  Icon(leadIcon, size: 18, color: leadColor),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Text(
-                      cleanModelName(model.name),
-                      style: const TextStyle(
-                          fontSize: 13, fontWeight: FontWeight.w600),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                    ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(leadIcon, size: 18, color: leadColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: const TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.w600),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                  if (model.type == ModelType.vision) ...[
-                    const SizedBox(width: 4),
-                    const Tooltip(
-                      message: '支持图片理解（视觉模型）',
-                      child: Icon(Icons.visibility_outlined,
-                          size: 14, color: Colors.grey),
-                    ),
-                  ],
-                  // 默认模型星标：点一下 = 设为/取消「启动自动加载」的默认模型
-                  // （原来是一颗 Checkbox + 「默认」二字，占宽且语义不直白）。
-                  if (isCached)
-                    Tooltip(
-                      message: isDefault
-                          ? '启动时自动加载（当前默认模型），点按取消'
-                          : '设为默认：启动时自动加载',
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: () => ref
-                            .read(settingsProvider.notifier)
-                            .setDefaultModel(isDefault ? null : model.id),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                              horizontal: 4, vertical: 2),
-                          child: Icon(
-                            isDefault
-                                ? Icons.star_rounded
-                                : Icons.star_border_rounded,
-                            size: 18,
-                            color: isDefault
-                                ? Colors.amber.shade700
-                                : scheme.outline,
-                          ),
+                ),
+                if (exists && onToggleDefault != null)
+                  Tooltip(
+                    message: isDefault
+                        ? '启动时自动加载（当前默认模型），点按取消'
+                        : '设为默认：启动时自动加载',
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: onToggleDefault,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 2),
+                        child: Icon(
+                          isDefault
+                              ? Icons.star_rounded
+                              : Icons.star_border_rounded,
+                          size: 18,
+                          color: isDefault
+                              ? Colors.amber.shade700
+                              : scheme.outline,
                         ),
                       ),
                     ),
-                  const SizedBox(width: 2),
-                  _buildActionButton(model, state, isCached,
-                      isLoadedHere: isLoadedHere,
-                      isLoadingHere: isLoadingHere),
+                  ),
+                const SizedBox(width: 2),
+                if (onLoad != null)
+                  _actionButton(
+                      label: isLoadingHere ? '加载中' : '加载',
+                      tone: true,
+                      onPressed: isLoadingHere ? null : onLoad),
+                if (isLoadedHere) ...[
+                  const SizedBox(width: 4),
+                  _actionButton(
+                      label: '卸载',
+                      foreground: Colors.red.shade600,
+                      onPressed: onUnload),
                 ],
-              ),
+                if (onEdit != null)
+                  _iconAction(Icons.edit_outlined, '编辑配置', () async => onEdit()),
+                if (onDelete != null)
+                  _iconAction(
+                      Icons.delete_outline, '移除登记（不删文件）', () async => onDelete()),
+              ],
             ),
-          ),
-
-          // ---- 次行（只在该说点什么时出现）----
-          // 展开态让位给展开区：那里用**同一个**渲染点画体积+标签，两边都画
-          // 就是上下两行一模一样的内容（2026-10-30 反馈：未下载模型描述重复）。
-          if (!isCached &&
-                !expanded &&
-                (state == DownloadState.idle ||
-                    state == DownloadState.failed)) ...[
             Padding(
-              padding: const EdgeInsets.fromLTRB(36, 0, 12, 7),
-              child: _modelMetaLine(
-                model,
-                failedMessage: state == DownloadState.failed
-                    ? (task?.errorMessage ?? '下载失败')
-                    : null,
-              ),
-            ),
-          ] else if (state == DownloadState.downloading ||
-              state == DownloadState.verifying ||
-              state == DownloadState.paused) ...[
-            Padding(
-              padding: const EdgeInsets.fromLTRB(36, 0, 12, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              padding: const EdgeInsets.fromLTRB(26, 0, 4, 2),
+              child: Wrap(
+                spacing: 6,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  LinearProgressIndicator(
-                      value: task?.progress,
-                      minHeight: 3,
-                      borderRadius: BorderRadius.circular(2)),
-                  const SizedBox(height: 3),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          _progressLabel(state, task),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                              fontSize: 11,
-                              color: scheme.onSurfaceVariant),
-                        ),
-                      ),
-                      Text(
-                        '${task?.downloadedDisplay ?? '-'} / ${task?.totalDisplay ?? '-'} · ${task?.progressPercent ?? ''}',
-                        style: TextStyle(
-                            fontSize: 11, color: scheme.onSurfaceVariant),
-                      ),
-                    ],
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 340),
+                    child: Text(
+                      subtitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                          fontSize: 10.5, color: scheme.onSurfaceVariant),
+                    ),
                   ),
+                  ...chips,
                 ],
               ),
             ),
           ],
-
-          // ---- 展开区：次要配置与危险动作 ----
-          if (expanded) _buildExpandArea(model, settings, state, isCached),
-        ],
+        ),
       ),
     );
-  }
-
-  /// 下载次行的状态文字：档位前缀 + 当前阶段（多文件模型有 主模型/投影器/加速头）。
-  String _progressLabel(DownloadState state, DownloadTask? task) {
-    final prefix = state == DownloadState.paused
-        ? '已暂停'
-        : (state == DownloadState.verifying ? '校验中' : '下载中');
-    final stage = task?.stage;
-    return stage == null || stage.isEmpty ? prefix : '$prefix · $stage';
-  }
-
-  /// 主操作按钮：一个模型只留一颗（加载/下载/暂停/继续/重试）。
-  ///
-  /// 「加载到内存」→「加载」：这一列里能点的就是它，不必把话说全（2026-10-28
-  /// 用户指令：列表太臃肿）；旧「下载＋含投影器」那颗同理——投影器要不要补下，
-  /// 下载阶段那行已经写清楚了。（注释里刻意不写原字面量：doc 注释会进 debug
-  /// kernel_blob，字符串级验收时会被当成"旧 UI 幽灵"误报。）
-  Widget _buildActionButton(
-    ModelConfig model,
-    DownloadState state,
-    bool isCached, {
-    required bool isLoadedHere,
-    required bool isLoadingHere,
-  }) {
-    final manager = ref.read(modelManagerProvider.notifier);
-    if (state == DownloadState.downloading) {
-      return _actionButton(
-          label: '暂停',
-          onPressed: () =>
-              ref.read(downloadNotifierProvider.notifier).pauseDownload(model.id));
-    }
-    if (state == DownloadState.paused) {
-      return _actionButton(
-          label: '继续',
-          tone: true,
-          onPressed: () => _resumeDownloadAndRescan(model.id));
-    }
-    if (state == DownloadState.failed) {
-      return _actionButton(
-          label: '重试',
-          foreground: Colors.red.shade600,
-          onPressed: () => _startDownloadAndRescan(model));
-    }
-    if (state == DownloadState.verifying) {
-      return _actionButton(label: '校验中', onPressed: null);
-    }
-    if (!isCached) {
-      return _actionButton(
-          label: '下载',
-          tone: true,
-          onPressed: () => _startDownloadAndRescan(model));
-    }
-    if (isLoadingHere) {
-      return _actionButton(
-          label: '加载中',
-          onPressed: null,
-          icon: const SizedBox(
-              width: 11,
-              height: 11,
-              child: CircularProgressIndicator(strokeWidth: 2)));
-    }
-    if (isLoadedHere) {
-      return Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _actionButton(
-              label: '已加载',
-              onPressed: null,
-              tone: true,
-              foreground: Colors.green.shade700),
-          const SizedBox(width: 4),
-          _actionButton(
-              label: '卸载',
-              foreground: Colors.red.shade600,
-              onPressed: manager.isBusy
-                  ? null
-                  : () => unloadModelAndNotify(ref, context, model.name)),
-        ],
-      );
-    }
-    return _actionButton(
-        label: '加载',
-        tone: true,
-        onPressed: manager.isBusy ? null : () => _handleLoadModel(model));
   }
 
   /// 紧凑按钮（高 30 / 字号 12 / 圆角 8）：tone=true 为 tonal 主操作。
@@ -570,7 +378,6 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
     VoidCallback? onPressed,
     bool tone = false,
     Color? foreground,
-    Widget? icon,
   }) {
     final scheme = Theme.of(context).colorScheme;
     final fg = foreground ??
@@ -593,211 +400,11 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
         side: WidgetStatePropertyAll(BorderSide(
             color: tone ? Colors.transparent : scheme.outlineVariant)),
       ),
-      child: icon == null
-          ? Text(label)
-          : Row(mainAxisSize: MainAxisSize.min, children: [
-              icon,
-              const SizedBox(width: 5),
-              Text(label),
-            ]),
+      child: Text(label),
     );
   }
 
-  /// 展开区：体积/全量特性 + 逐项开关 + 删除。
-  Widget _buildExpandArea(
-      ModelConfig model, InferenceSettings settings, DownloadState state, bool isCached) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(36, 0, 10, 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // 体积 + 特性标签全量：折叠态那行在这里接管（同一渲染点、同一缩进），
-          // 展开只是把标签补全，不再重复画一遍。
-          _modelMetaLine(model, expanded: true),
-          const SizedBox(height: 4),
-          if (isCached)
-            _switchRow(
-              label: '设为默认',
-              tooltip: '勾选后 APP 启动进入首页时自动加载该模型',
-              value: settings.defaultModelId == model.id,
-              onChanged: (v) => ref
-                  .read(settingsProvider.notifier)
-                  .setDefaultModel(v == true ? model.id : null),
-            ),
-          if (model.type == ModelType.vision)
-            _switchRow(
-              label: '图片理解',
-              tooltip: '关闭后不加载视觉投影器（省 ~0.9GB，只能文本对话）；'
-                  '切换后重新加载模型生效',
-              value: settings.visionEnabled(model.id),
-              onChanged: (v) => ref
-                  .read(settingsProvider.notifier)
-                  .setVisionEnabled(model.id, v),
-            ),
-          if (settings.enableMtpFeature && model.mtp)
-            _switchRow(
-              label: 'MTP 加速',
-              value: settings.mtpEnabled(model.id),
-              onChanged: (v) => ref
-                  .read(settingsProvider.notifier)
-                  .setEnableMtp(model.id, v),
-            ),
-          if (settings.enableDsparkFeature && model.dspark != null)
-            _switchRow(
-              label: 'dspark 加速',
-              value: settings.dsparkEnabled(model.id),
-              onChanged: (v) => ref
-                  .read(settingsProvider.notifier)
-                  .setEnableDspark(model.id, v),
-            ),
-          // 删除是危险动作，收在展开区（原来和「加载/卸载」等分挤在主行三颗）。
-          if (isCached)
-            _dangerButton('删除', () => _confirmDeleteModel(model, context))
-          else if (state != DownloadState.idle)
-            // 下载中 / 已暂停 / 失败：连同半成品一起清掉。
-            _dangerButton('删除', () => _confirmDeleteDownloading(model, context)),
-        ],
-      ),
-    );
-  }
-
-  /// 紧凑开关行（30dp 高 Switch；标题可带 tooltip 承载原来的长注释）。
-  Widget _switchRow({
-    required String label,
-    String? tooltip,
-    required bool value,
-    required ValueChanged<bool>? onChanged,
-  }) {
-    final scheme = Theme.of(context).colorScheme;
-    final title = tooltip == null
-        ? Text(label, style: const TextStyle(fontSize: 12.5))
-        : Tooltip(
-            message: tooltip,
-            child: Row(mainAxisSize: MainAxisSize.min, children: [
-              Text(label, style: const TextStyle(fontSize: 12.5)),
-              const SizedBox(width: 4),
-              Icon(Icons.info_outline, size: 12, color: scheme.outline),
-            ]),
-          );
-    return SizedBox(
-      height: 32,
-      child: Row(
-        children: [
-          Expanded(child: title),
-          SizedBox(
-            height: 30,
-            child: Switch(
-              value: value,
-              onChanged: onChanged,
-              materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// 展开区里的危险动作（小号红字按钮）。
-  Widget _dangerButton(String label, VoidCallback onPressed) {
-    return TextButton(
-      onPressed: onPressed,
-      style: ButtonStyle(
-        minimumSize: const WidgetStatePropertyAll(Size(0, 30)),
-        padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 6)),
-        visualDensity: VisualDensity.compact,
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        foregroundColor: WidgetStatePropertyAll(Colors.red.shade600),
-        textStyle: const WidgetStatePropertyAll(
-            TextStyle(fontSize: 12, fontWeight: FontWeight.w500)),
-      ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        const Icon(Icons.delete_outline, size: 15),
-        const SizedBox(width: 4),
-        Text(label),
-      ]),
-    );
-  }
-
-  /// 删除已缓存模型前先弹确认框，避免误删（模型文件移除后需重新下载）。
-  /// 确认后才真正调用 deleteModel。
-  ///
-  /// 两道以前没有的收尾（2026-10-30 反馈「删除点了没反应，再进列表还在」）：
-  /// ① 正在内存里用的模型不许删——文件被 mmap，删掉后再次缺页就是 SIGBUS
-  ///    直接崩进程，先让用户「卸载」；
-  /// ② 删完立刻用磁盘真值校正列表并如实播报删了几项，不再只把内存态清成
-  ///    idle（那样文件没删净时要等下次进页面才被发现，看着像按钮坏了）。
-  Future<void> _confirmDeleteModel(
-      ModelConfig model, BuildContext context) async {
-    final ms = ref.read(modelManagerProvider);
-    if (ms.modelId == model.id && ms.isLoaded) {
-      _showDeleteToast(
-          '「${model.name}」正在使用中，请先点「卸载」再删除（删除正在使用的模型文件会导致应用崩溃）',
-          warn: true);
-      return;
-    }
-
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('确认删除模型？'),
-        content: Text(
-          '删除「${model.name}」会移除已下载的模型文件（${_formatSize(model.sizeBytes)}），'
-          '之后需要重新下载才能再用。确定删除吗？',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('删除'),
-          ),
-        ],
-      ),
-    );
-    if (confirmed != true) return;
-
-    final res =
-        await ref.read(downloadNotifierProvider.notifier).deleteModel(model.id);
-    // 若删除的是默认模型，同时清除默认设置，避免启动时指向已不存在的模型。
-    if (ref.read(settingsProvider).defaultModelId == model.id) {
-      await ref.read(settingsProvider.notifier).setDefaultModel(null);
-    }
-    await _afterDelete(model, res);
-  }
-
-  /// 删除/取消下载之后的统一收尾：磁盘真值校正 + 存储占用刷新 + 如实播报。
-  Future<void> _afterDelete(
-      ModelConfig model, ({List<String> removed, String? error}) res) async {
-    // 用磁盘真值校正：文件真没了才显示「未下载」，没删净就继续显示「已缓存」，
-    // 免得界面先装作删好了、下次进来又冒出来。
-    await _refreshCacheStatus();
-    if (!mounted) return;
-    setState(() => _storageTick++);
-
-    final stillCached = ref
-            .read(downloadNotifierProvider)[model.id]
-            ?.state ==
-        DownloadState.completed;
-    if (res.error != null) {
-      _showDeleteToast('删除「${model.name}」失败：${res.error}', warn: true);
-    } else if (stillCached) {
-      _showDeleteToast(
-        '「${model.name}」文件仍在磁盘上（已删 ${res.removed.length} 项）——'
-        '请到「存储空间」确认目录权限后重试',
-        warn: true,
-      );
-    } else if (res.removed.isEmpty) {
-      _showDeleteToast('「${model.name}」没有需要清理的文件');
-    } else {
-      _showDeleteToast('已删除「${model.name}」（${res.removed.length} 个文件）');
-    }
-  }
-
-  void _showDeleteToast(String message, {bool warn = false}) {
+  void _toast(String message, {bool warn = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text(message),
@@ -805,187 +412,219 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
     ));
   }
 
-  /// 删除「下载中」的模型任务：先弹确认框（会丢失已下载的半成品，需重下），
-  /// 确认后取消当前下载并清理主 gguf / mmproj 及其残留 .tmp 文件。
-  Future<void> _confirmDeleteDownloading(
-      ModelConfig model, BuildContext context) async {
+  // =========================================================================
+  // ① NPU 预置区
+  // =========================================================================
+
+  Widget _buildPresetZone(InferenceSettings settings, ModelState ms) {
+    final npu = bundledManifests()['wangcai-npu'];
+    final presets = npu?.presets ?? const <Preset>[];
+    if (presets.isEmpty) return const SizedBox.shrink();
+    final rows = <Widget>[];
+    for (final preset in presets) {
+      final hit = _presetHits[preset.name];
+      final id = '$kNpuPresetIdPrefix${preset.name}';
+      final isLoadedHere = ms.modelId == id && ms.isLoaded;
+      final isLoadingHere = ms.isLoading && ms.modelId == id;
+      final isDefault = settings.defaultModelId == id;
+      rows.add(_modelRow(
+        title: preset.name,
+        subtitle: hit != null
+            ? p.basename(hit)
+            : '缺文件 — 把 GGUF 放入模型库目录（${WangCaiPaths.modelsRoot().path}）后点右上重扫，或在下方手动登记',
+        exists: hit != null,
+        isLoadedHere: isLoadedHere,
+        isLoadingHere: isLoadingHere,
+        isDefault: isDefault,
+        chips: [
+          if (preset.device != null) _chip(preset.device!, Colors.teal),
+          if (preset.ctx != null) _chip('ctx ${preset.ctx}', Colors.blueGrey),
+          if (preset.chunk != null)
+            _chip('chunk ${preset.chunk}', Colors.blueGrey),
+        ],
+        onToggleDefault: hit == null
+            ? null
+            : () => ref
+                .read(settingsProvider.notifier)
+                .setDefaultModel(isDefault ? null : id),
+        onLoad: hit == null
+            ? null
+            : () {
+                final path = hit;
+                _runLoad(
+                  id: id,
+                  name: preset.name,
+                  load: () => ref
+                      .read(modelManagerProvider.notifier)
+                      .loadModelByLocalConfig(LocalModelConfig(
+                          id: id, name: preset.name, modelPath: path)),
+                );
+              },
+        onUnload: isLoadedHere
+            ? () => unloadModelAndNotify(ref, context, preset.name)
+            : null,
+      ));
+    }
+    return Column(children: rows);
+  }
+
+  // =========================================================================
+  // ② 本地模型区
+  // =========================================================================
+
+  Widget _buildLocalZone(InferenceSettings settings, ModelState ms) {
+    final models = List<LocalModelConfig>.from(settings.localModels)
+      ..sort((a, b) {
+        final ea = _pathExists[a.modelPath] ?? true;
+        final eb = _pathExists[b.modelPath] ?? true;
+        if (ea != eb) return ea ? -1 : 1;
+        return a.displayName
+            .toLowerCase()
+            .compareTo(b.displayName.toLowerCase());
+      });
+    if (models.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(4, 2, 4, 6),
+        child: Text(
+          '还没有登记本地模型 —— 点右上 + 选择磁盘上的 .gguf 文件。',
+          style: TextStyle(
+              fontSize: 11.5, color: Theme.of(context).colorScheme.outline),
+        ),
+      );
+    }
+    final scheme = Theme.of(context).colorScheme;
+    final rows = <Widget>[];
+    for (final m in models) {
+      final exists = _pathExists[m.modelPath] ?? true;
+      final isLoadedHere = ms.modelId == m.id && ms.isLoaded;
+      final isLoadingHere = ms.isLoading && ms.modelId == m.id;
+      final isDefault = settings.defaultModelId == m.id;
+      rows.add(_modelRow(
+        title: m.displayName,
+        subtitle: exists ? m.modelPath : '文件不在：${m.modelPath}（移动/改名后请编辑重选文件）',
+        exists: exists,
+        isLoadedHere: isLoadedHere,
+        isLoadingHere: isLoadingHere,
+        isDefault: isDefault,
+        chips: [
+          if (m.hasMmproj) _chip('视觉塔', Colors.purple),
+          if (m.hasDraft) _chip('草稿加速', Colors.indigo),
+          if (m.hasEngine) _chip('引擎 ${m.engineId}', Colors.teal),
+          if (m.ctx != null) _chip('ctx ${m.ctx}', Colors.blueGrey),
+          if (m.chunk != null) _chip('chunk ${m.chunk}', Colors.blueGrey),
+          if (m.gpuLayers != null)
+            _chip('-ngl ${m.gpuLayers}', Colors.blueGrey),
+          if (m.customArgsList.isNotEmpty)
+            _chip('自定义尾参 ${m.customArgsList.length}', Colors.orange),
+        ],
+        onToggleDefault: !exists
+            ? null
+            : () => ref
+                .read(settingsProvider.notifier)
+                .setDefaultModel(isDefault ? null : m.id),
+        onLoad: !exists
+            ? null
+            : () => _runLoad(
+                  id: m.id,
+                  name: m.displayName,
+                  load: () => ref
+                      .read(modelManagerProvider.notifier)
+                      .loadModelByLocalConfig(m),
+                ),
+        onUnload: isLoadedHere
+            ? () => unloadModelAndNotify(ref, context, m.displayName)
+            : null,
+        onEdit: () => _showLocalModelEditor(existing: m),
+        onDelete: () => _confirmDeleteLocalModel(m, scheme),
+      ));
+    }
+    return Column(children: rows);
+  }
+
+  /// 移除登记 = 只删登记项，不碰磁盘文件（桌面模型文件归用户自管）。
+  Future<void> _confirmDeleteLocalModel(
+      LocalModelConfig m, ColorScheme scheme) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('删除下载中的模型？'),
-        content: Text(
-          '删除「${model.name}」会取消当前下载，并移除已下载的半成品文件'
-          '（${_formatSize(model.totalBytes)}，含 mmproj 投影器）。\n\n'
-          '之后需要重新下载才能再用。确定删除吗？',
-        ),
+        title: Text('移除登记「${m.displayName}」？'),
+        content: const Text(
+            '仅从列表移除这条登记，**不会删除磁盘上的模型文件**。之后可重新「添加本地模型」。'),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('取消'),
-          ),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消')),
           TextButton(
             onPressed: () => Navigator.pop(ctx, true),
             style: TextButton.styleFrom(foregroundColor: Colors.red),
-            child: const Text('删除'),
+            child: const Text('移除'),
           ),
         ],
       ),
     );
     if (confirmed != true) return;
-    // cancelDownload 会取消进行中的传输并清理全部产物与 .tmp（多目录清扫），
-    // 收尾与「删除已缓存模型」一致：磁盘真值校正 + 如实播报。
-    final res = await ref
-        .read(downloadNotifierProvider.notifier)
-        .cancelDownload(model.id);
-    await _afterDelete(model, res);
+    await ref.read(settingsProvider.notifier).deleteLocalModel(m.id);
+    _toast('已移除登记「${m.displayName}」（文件保留在磁盘）');
   }
 
-  /// 折叠态次行最多展示的特性标签数（全量在展开区，不丢信息）。
-  static const int _kCollapsedTagLimit = 3;
+  // =========================================================================
+  // 添加 / 编辑本地模型
+  // =========================================================================
 
-  /// 体积 + 特性标签描述行 —— **唯一渲染点**。
-  ///
-  /// 折叠态的次行与展开区都调它，只按 [expanded] 决定标签放几条（折叠 = 前
-  /// [_kCollapsedTagLimit] 条，展开 = 全量），两处缩进一致，点开即原地补全。
-  ///
-  /// 2026-10-30 修复：未下载模型原先「次行」与「展开区」各画一遍体积+前三个
-  /// 标签，点开就是上下两行一模一样的内容。
-  Widget _modelMetaLine(
-    ModelConfig model, {
-    bool expanded = false,
-    String? failedMessage,
-  }) {
-    return Wrap(
-      spacing: 6,
-      runSpacing: 4,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      children: [
-        _buildModelTag(_formatSize(model.totalBytes), neutral: true),
-        if (failedMessage != null)
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 220),
-            child: Text(
-              failedMessage,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 10.5, color: Colors.red.shade600),
-            ),
-          )
-        else
-          for (final tag in modelFeatureTags(
-            model,
-            limit: expanded ? null : _kCollapsedTagLimit,
-          ))
-            _buildModelTag(tag),
-      ],
+  Future<void> _addLocalModelViaPicker() async {
+    final picked = await FilePicker.platform.pickFiles(
+      dialogTitle: '选择 GGUF 模型文件',
+      type: FileType.custom,
+      allowedExtensions: ['gguf'],
     );
-  }
-
-  String _formatSize(int bytes) {
-    final mb = bytes / (1024 * 1024);
-    if (mb >= 1024) return '${(mb / 1024).toStringAsFixed(1)} GB';
-    return '${mb.toStringAsFixed(0)} MB';
-  }
-
-  /// 统一的特性标记小 chip（11px，胶囊底 = 语义色 12% 透明：明暗两套都成立，
-  /// 不再用 Colors.x.shade100 那种只适配浅色的实底）。
-  Widget _buildModelTag(String label, {bool neutral = false}) {
-    final scheme = Theme.of(context).colorScheme;
-    final (i, color) = neutral ? ('', scheme.outline) : _tagStyle(label);
-    final text = i.isEmpty ? label : '$i $label';
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Text(text,
-          style: TextStyle(fontSize: 10.5, color: color)),
-    );
-  }
-
-  /// 特性标签 → (icon, 语义色)。未知标签给中性灰，防未知 tag 视觉失控。
-  (String, Color) _tagStyle(String tag) {
-    switch (tag) {
-      case '推荐':
-        return ('⭐', Colors.blue);
-      case '速度快':
-        return ('⚡', Colors.orange);
-      // 不推荐：警示红，提示「体积大/门槛高，普通机型不推荐」。
-      case '不推荐':
-        return ('⚠️', Colors.red);
-      // 限高端旗舰：金色，提示「需要旗舰级硬件（内存/算力）才带得动」。
-      case '限高端旗舰':
-        return ('👑', Colors.amber.shade800);
-      default:
-        if (tag.startsWith('需')) return ('⚠️', Colors.red.shade700);
-        return ('🏷️', Colors.blueGrey);
-    }
-  }
-
-  /// 启动下载。下载完成的「全局重扫 + 存储刷新」由 build 里的
-  /// downloadNotifierProvider 监听统一处理（任何入口完成都会触发），
-  /// 这里不再重复扫描。
-  Future<void> _startDownloadAndRescan(ModelConfig model) async {
-    await ref.read(downloadNotifierProvider.notifier).startDownload(model);
-  }
-
-  /// 断点续传。同上，完成后的全局重扫由监听统一处理。
-  Future<void> _resumeDownloadAndRescan(String modelId) async {
-    await ref.read(downloadNotifierProvider.notifier).resumeDownload(modelId);
-  }
-
-  Future<void> _scanModels({bool silent = false}) async {
-    final manager = ModelManager();
-    final cachedIds = await manager.scanExistingModels();
-
-    if (!mounted) return;
-
-    if (cachedIds.isEmpty) {
-      if (!silent) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('未找到已下载的模型文件'), backgroundColor: Colors.orange),
-        );
-      }
+    final path = (picked?.files.isNotEmpty ?? false) ? picked!.files.single.path : null;
+    if (path == null) return;
+    if (ref.read(settingsProvider).localModels.any((m) => m.modelPath == path)) {
+      _toast('这个文件已登记过了', warn: true);
       return;
     }
-
-    final allModels = await loadModelCatalog();
-    final foundModels =
-        allModels.where((m) => cachedIds.contains(m.id)).toList();
-
-    if (foundModels.isNotEmpty) {
-      await ref
-          .read(downloadNotifierProvider.notifier)
-          .initCachedModels(foundModels);
-
-      // 静默扫描（启动首次 / 下载完成）不弹 SnackBar，避免打扰。
-      if (!silent && mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('已恢复 ${foundModels.length} 个模型状态'),
-            backgroundColor: Colors.green,
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-    } else if (!silent) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('找到文件但未匹配到已知模型，请检查模型ID'),
-            backgroundColor: Colors.orange),
-      );
-    }
+    _showLocalModelEditor(pickedPath: path);
   }
 
-  Future<void> _handleLoadModel(ModelConfig model) async {
-    final manager = ref.read(modelManagerProvider.notifier);
-    // 模型重载影响本地引擎：任何会话（含后台并发回合）在跑都算。
-    final isGenerating = ref.read(runningTurnsProvider).isNotEmpty;
+  Future<void> _showLocalModelEditor({
+    String? pickedPath,
+    LocalModelConfig? existing,
+  }) async {
+    final draft = await showDialog<_LocalModelDraft>(
+      context: context,
+      builder: (_) => _LocalModelEditor(
+        pickedPath: pickedPath,
+        existing: existing,
+      ),
+    );
+    if (draft == null) return;
+    final notifier = ref.read(settingsProvider.notifier);
+    if (existing == null) {
+      await notifier.addLocalModel(draft.toConfig(newLocalModelId()));
+      _toast('已登记「${draft.toConfig(newLocalModelId()).displayName}」');
+    } else {
+      await notifier.updateLocalModel(draft.toConfig(existing.id));
+      _toast('已更新「${draft.toConfig(existing.id).displayName}」');
+    }
+    setState(() => _storageTick++);
+    await _rescan();
+  }
 
-    // 1) 已有一个不同模型在内存中（可能正在推理）→ 友好提醒，确认后再切换。
-    if (manager.isLoadedState && manager.modelId != model.id) {
+  // =========================================================================
+  // 加载流（与旧 _handleLoadModel 同骨架：切换确认 → 停生成 → 进度弹窗 →
+  // 按结果播报）。catalog 下载链路的 _handleLoadModel 已随 Phase 2 移除。
+  // =========================================================================
+
+  Future<void> _runLoad({
+    required String id,
+    required String name,
+    required Future<bool> Function() load,
+  }) async {
+    final manager = ref.read(modelManagerProvider.notifier);
+    if (manager.isBusy) return;
+
+    // 1) 已有别的模型在内存 → 确认后切换。
+    if (manager.isLoadedState && manager.modelId != id) {
       final confirm = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -997,69 +636,391 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
             ],
           ),
           content: Text(
-            '当前「${manager.currentModelName}」已在内存中'
-            '${isGenerating ? '（正在推理）' : ''}。\n\n'
-            '切换到「${model.name}」会先卸载当前模型，再加载新模型。确定继续吗？',
+            '当前「${manager.currentModelName}」已在内存中。\n\n'
+            '切换到「$name」会先卸载当前模型，再加载新模型。确定继续吗？',
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消'),
-            ),
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('取消')),
             ElevatedButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('切换模型'),
-            ),
+                onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('切换模型')),
           ],
         ),
       );
       if (confirm != true) return;
     }
 
-    // 2) 若正在推理，必须先停止全部回合，否则卸载模型会令原生引擎崩溃（红屏）。
+    // 2) 推理中必须先停回合，否则卸载模型会令引擎崩溃。
     if (ref.read(runningTurnsProvider).isNotEmpty) {
       try {
         await ref.read(chatNotifierProvider.notifier).stopGeneration();
-      } catch (_) {
-        // 忽略停止异常，继续尝试卸载/加载。
-      }
-      // 给原生层一点时间完成停止流程。
+      } catch (_) {}
       await Future.delayed(const Duration(milliseconds: 300));
     }
-
     if (!mounted) return;
 
-    // 3) 弹出「加载中」对话框，实时展示进度（大模型耗时较长，避免用户不知所措）。
-    final loadFuture = manager.loadModel(model.id);
+    // 3) 进度弹窗 + 后台加载。
+    final loadFuture = load();
     showDialog(
       context: context,
       barrierDismissible: false,
-      builder: (_) => _ModelLoadProgressDialog(modelName: model.name),
+      builder: (_) => _ModelLoadProgressDialog(modelName: name),
     );
-
     final ok = await loadFuture;
 
-    // 加载结束，关闭进度弹窗。
     if (mounted && Navigator.of(context).canPop()) {
       Navigator.of(context).pop();
     }
     if (!mounted) return;
-
-    // 4) 走原有完成提示路径：成功 / 失败 SnackBar。
     if (ok) {
-      ref.read(currentModelIdProvider.notifier).state = model.id;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-            content: Text('✅ ${model.name} 已加载到内存'),
-            backgroundColor: Colors.green),
-      );
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-            content: Text('❌ 模型加载失败，请查看"推理引擎"标签页的日志'),
-            backgroundColor: Colors.red),
-      );
+      ref.read(currentModelIdProvider.notifier).state = id;
+      _toast('✅ $name 已加载到内存');
+      return;
     }
+    // Phase 3c 按需下载闭环：路由报「缺 cuda/vulkan 引擎」→ 弹下载层
+    // （官方 release + 镜像兜底 + sha256），装成功后自动重试加载。
+    final variant = LocalServerInference.instance.lastInstallSuggestion;
+    if (variant != null) {
+      final installed = await _showEngineInstallDialog(variant);
+      if (!mounted) return;
+      if (installed == true) {
+        final retry = await load();
+        if (!mounted) return;
+        if (retry) {
+          ref.read(currentModelIdProvider.notifier).state = id;
+          _toast('✅ $name 已加载到内存');
+          return;
+        }
+      }
+    }
+    _toast('❌ $name 加载失败，请查看「推理引擎」页的日志', warn: true);
+  }
+
+  /// 「下载引擎」弹层（Phase 3c）：自动开跑官方包下载（进度条），成功
+  /// 返回 true；失败/关闭返回 false。目录与镜像取 settings（enginesDir /
+  /// engineMirror，未配置走数据区默认 + 官方直连）。
+  Future<bool?> _showEngineInstallDialog(String variant) async {
+    final s = await ref.read(settingsServiceProvider).load();
+    if (!mounted) return null;
+    return showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => EngineInstallDialog(
+        variant: variant,
+        enginesDir: s.enginesDir,
+        mirrors:
+            s.engineMirror == null ? const [] : [s.engineMirror!],
+        introText: '本地没有可用引擎，需要官方 llama.cpp 运行包'
+            '（GitHub Release，sha256 白名单校验）。',
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 本地模型 编辑卡（添加/编辑共用）。纯收集表单：提交时组装 _LocalModelDraft
+// 弹回调用方，由调用方负责持久化 —— 对话框不做副作用，取消即无痕。
+// ---------------------------------------------------------------------------
+
+/// 编辑卡收集到的原始字段（字符串口径，[toConfig] 时统一清洗解析）。
+class _LocalModelDraft {
+  final String name;
+  final String modelPath;
+  final String? mmprojPath;
+  final String? draftPath;
+  final String? engineId;
+  final int? ctx;
+  final int? chunk;
+  final int? gpuLayers;
+  final List<String> customArgs;
+
+  const _LocalModelDraft({
+    required this.name,
+    required this.modelPath,
+    this.mmprojPath,
+    this.draftPath,
+    this.engineId,
+    this.ctx,
+    this.chunk,
+    this.gpuLayers,
+    this.customArgs = const [],
+  });
+
+  LocalModelConfig toConfig(String id) => LocalModelConfig(
+        id: id,
+        name: name.trim(),
+        modelPath: modelPath,
+        engineId: engineId,
+        customArgs: customArgs.isEmpty ? null : customArgs,
+        mmprojPath: mmprojPath,
+        draftPath: draftPath,
+        ctx: ctx,
+        chunk: chunk,
+        gpuLayers: gpuLayers,
+      );
+}
+
+class _LocalModelEditor extends ConsumerStatefulWidget {
+  final String? pickedPath; // 添加模式：FilePicker 已选主文件
+  final LocalModelConfig? existing; // 编辑模式
+
+  const _LocalModelEditor({this.pickedPath, this.existing});
+
+  @override
+  ConsumerState<_LocalModelEditor> createState() => _LocalModelEditorState();
+}
+
+class _LocalModelEditorState extends ConsumerState<_LocalModelEditor> {
+  late final TextEditingController _name;
+  late String? _modelPath;
+  late String? _mmproj;
+  late String? _draft;
+  late String? _engineId;
+  late final TextEditingController _ctx;
+  late final TextEditingController _chunk;
+  late final TextEditingController _gpuLayers;
+  late final TextEditingController _customArgs;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final e = widget.existing;
+    _modelPath = widget.pickedPath ?? e?.modelPath;
+    _name = TextEditingController(
+        text: e?.name ??
+            (_modelPath != null ? p.basenameWithoutExtension(_modelPath!) : ''));
+    _mmproj = e?.mmprojPath;
+    _draft = e?.draftPath;
+    _engineId = (e?.hasEngine ?? false) ? e!.engineId : null;
+    _ctx = TextEditingController(text: e?.ctx?.toString() ?? '');
+    _chunk = TextEditingController(text: e?.chunk?.toString() ?? '');
+    _gpuLayers = TextEditingController(text: e?.gpuLayers?.toString() ?? '');
+    _customArgs =
+        TextEditingController(text: (e?.customArgsList ?? const []).join('\n'));
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _ctx.dispose();
+    _chunk.dispose();
+    _gpuLayers.dispose();
+    _customArgs.dispose();
+    super.dispose();
+  }
+
+  Future<String?> _pickGguf() async {
+    final picked = await FilePicker.platform.pickFiles(
+      dialogTitle: '选择 GGUF 文件',
+      type: FileType.custom,
+      allowedExtensions: ['gguf'],
+    );
+    return (picked?.files.isNotEmpty ?? false) ? picked!.files.single.path : null;
+  }
+
+  int? _parseInt(TextEditingController c) =>
+      int.tryParse(c.text.trim().isEmpty ? '' : c.text.trim());
+
+  void _submit() {
+    final path = _modelPath;
+    if (path == null || path.isEmpty) {
+      setState(() => _error = '请先选择模型文件（.gguf）');
+      return;
+    }
+    if (!File(path).existsSync()) {
+      setState(() => _error = '文件不存在：$path');
+      return;
+    }
+    final draft = _LocalModelDraft(
+      name: _name.text,
+      modelPath: path,
+      mmprojPath: _mmproj,
+      draftPath: _draft,
+      engineId: _engineId,
+      ctx: _parseInt(_ctx),
+      chunk: _parseInt(_chunk),
+      gpuLayers: _parseInt(_gpuLayers),
+      customArgs: _customArgs.text
+          .split('\n')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList(),
+    );
+    Navigator.pop(context, draft);
+  }
+
+  Widget _pathField(String label, String? value,
+      {required Future<void> Function() onPick, VoidCallback? onClear}) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 76,
+            child: Text(label,
+                style: const TextStyle(fontSize: 12.5, height: 1.2)),
+          ),
+          Expanded(
+            child: Text(
+              value ?? '（未选择）',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                  fontSize: 11.5,
+                  color: value == null ? scheme.outline : null),
+            ),
+          ),
+          TextButton(onPressed: () => onPick(), child: const Text('选择…')),
+          if (value != null && onClear != null)
+            TextButton(
+                onPressed: onClear,
+                style: TextButton.styleFrom(
+                    foregroundColor: scheme.error,
+                    visualDensity: VisualDensity.compact),
+                child: const Text('清除')),
+        ],
+      ),
+    );
+  }
+
+  Widget _numField(String label, TextEditingController c, String hint) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        children: [
+          SizedBox(
+              width: 76,
+              child: Text(label,
+                  style: const TextStyle(fontSize: 12.5, height: 1.2))),
+          Expanded(
+            child: SizedBox(
+              height: 34,
+              child: TextField(
+                controller: c,
+                keyboardType: TextInputType.number,
+                style: const TextStyle(fontSize: 12),
+                decoration: InputDecoration(
+                  isDense: true,
+                  hintText: hint,
+                  hintStyle: TextStyle(fontSize: 11),
+                  contentPadding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                  border: const OutlineInputBorder(),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEdit = widget.existing != null;
+    final engineIds = bundledManifests().values
+        .where((m) => m.kind == 'llamaServer')
+        .toList(growable: false);
+    return AlertDialog(
+      title: Text(isEdit ? '编辑本地模型' : '添加本地模型'),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _pathField('模型文件', _modelPath, onPick: () async {
+                final path = await _pickGguf();
+                if (path == null) return;
+                setState(() {
+                  _modelPath = path;
+                  _error = null;
+                  if (_name.text.trim().isEmpty) {
+                    _name.text = p.basenameWithoutExtension(path);
+                  }
+                });
+              }, onClear: null),
+              _pathField('视觉塔 mmproj', _mmproj, onPick: () async {
+                final path = await _pickGguf();
+                if (path != null) setState(() => _mmproj = path);
+              }, onClear: () => setState(() => _mmproj = null)),
+              _pathField('草稿 (MTP)', _draft, onPick: () async {
+                final path = await _pickGguf();
+                if (path != null) setState(() => _draft = path);
+              }, onClear: () => setState(() => _draft = null)),
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Row(
+                  children: [
+                    const SizedBox(
+                        width: 76,
+                        child: Text('引擎',
+                            style:
+                                TextStyle(fontSize: 12.5, height: 1.2))),
+                    Expanded(
+                      child: DropdownButtonFormField<String?>(
+                        value: _engineId,
+                        isExpanded: true,
+                        style: const TextStyle(fontSize: 12),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          contentPadding: EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 8),
+                          border: OutlineInputBorder(),
+                        ),
+                        items: [
+                          const DropdownMenuItem<String?>(
+                              value: null, child: Text('Auto（按模型路由）')),
+                          for (final m in engineIds)
+                            DropdownMenuItem<String?>(
+                                value: m.id, child: Text(m.display)),
+                        ],
+                        onChanged: (v) => setState(() => _engineId = v),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              _numField('ctx', _ctx, '留空 = 全局/引擎值'),
+              _numField('chunk', _chunk, 'NPU prefill chunk（留空=引擎值）'),
+              _numField('gpuLayers', _gpuLayers, '-ngl（留空=引擎值）'),
+              const SizedBox(height: 6),
+              TextField(
+                controller: _customArgs,
+                minLines: 2,
+                maxLines: 4,
+                style: const TextStyle(fontSize: 12),
+                decoration: const InputDecoration(
+                  isDense: true,
+                  alignLabelWithHint: true,
+                  labelText: '自定义尾参（一行一个，如 -np 1）',
+                  helperText: 'Phase 3 参数优先级接线后生效（自定义 > 引擎默认 > 模板）',
+                  hintStyle: TextStyle(fontSize: 11),
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              if (_error != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Text(_error!,
+                      style: TextStyle(fontSize: 11.5, color: Colors.red)),
+                ),
+              const SizedBox(height: 4),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        FilledButton(onPressed: _submit, child: Text(isEdit ? '保存' : '登记')),
+      ],
+    );
   }
 }
 
@@ -1147,17 +1108,6 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
     final modelState = ref.watch(modelManagerProvider);
     final gpuSettings = ref.watch(settingsProvider);
     final gpuNotifier = ref.read(settingsProvider.notifier);
-    // 设备 SoC 信息：天玑（MediaTek）芯片不支持 OpenCL，禁用该后端并提示。
-    final deviceInfo = ref.watch(deviceInfoProvider).valueOrNull ?? const {};
-    final isDimensity = _isDimensitySoC(deviceInfo);
-    // 天玑不支持 OpenCL：若此前选了 opencl 后端，自动切到 Vulkan。
-    if (isDimensity && gpuSettings.gpuBackend == 'opencl') {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (gpuSettings.gpuBackend == 'opencl') {
-          gpuNotifier.setGpuBackend('vulkan');
-        }
-      });
-    }
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(12),
@@ -1166,108 +1116,6 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
         children: [
           // ---- Windows 引擎管理（WangCai 分叉 #8，见 UPSTREAM.md）----
           if (Platform.isWindows) const EngineManagerSection(),
-          // ---- GPU 加速设置卡片（Android 端 llama.cpp 后端选择器）----
-          // 桌面由「引擎管理」（CUDA / Vulkan / 汪柴 NPU）统一接管，这张
-          // Adreno 向的 OpenCL/Vulkan/层数调优在 Windows 上是噪声，隐藏。
-          if (!Platform.isWindows)
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildToggleTitle(
-                    '⚙️ GPU 加速',
-                    gpuSettings.enableGpu,
-                    gpuNotifier.setEnableGpu,
-                  ),
-                  const SizedBox(height: 10),
-                  // 分段钮不带图标（图标+长英文 label 在窄面板必然断行成
-                  // 「Ope nCL / Vulk an」，2026-10-25 真机截图定案），字号 12。
-                  SegmentedButton<String>(
-                    segments: [
-                      const ButtonSegment(
-                        value: 'auto',
-                        label: Text('自动', style: TextStyle(fontSize: 12)),
-                      ),
-                      ButtonSegment(
-                        value: 'opencl',
-                        label: Text('OpenCL', style: TextStyle(fontSize: 12)),
-                        enabled: !isDimensity,
-                      ),
-                      const ButtonSegment(
-                        value: 'vulkan',
-                        label: Text('Vulkan', style: TextStyle(fontSize: 12)),
-                      ),
-                    ],
-                    selected: {gpuSettings.gpuBackend},
-                    onSelectionChanged: gpuSettings.enableGpu
-                        ? (sel) {
-                            final v = sel.first;
-                            if (v != gpuSettings.gpuBackend) {
-                              gpuNotifier.setGpuBackend(v);
-                            }
-                          }
-                        : null,
-                    showSelectedIcon: false,
-                    style: ButtonStyle(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: WidgetStatePropertyAll(
-                        TextStyle(fontSize: 12, color: Colors.grey.shade800),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    isDimensity
-                        ? '当前设备为天玑（MediaTek）芯片：不支持 OpenCL，GPU 加速请优先使用 Vulkan'
-                        : (gpuSettings.enableGpu
-                            ? _gpuBackendHint(gpuSettings.gpuBackend)
-                            : 'GPU 已关闭（纯 CPU）'),
-                    style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Slider(
-                          value: gpuSettings.gpuLayers.toDouble(),
-                          min: 0,
-                          max: 100,
-                          divisions: 100,
-                          label: '${gpuSettings.gpuLayers}',
-                          onChanged: _gpuLayersEditable(gpuSettings)
-                              ? (v) => gpuNotifier.setGpuLayers(v.round())
-                              : null,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 56,
-                        child: Text(
-                          '${gpuSettings.gpuLayers} 层',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            fontWeight: FontWeight.w500,
-                            color: Colors.grey.shade500,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Text(
-                      _gpuLayersHint(gpuSettings),
-                      style:
-                          TextStyle(fontSize: 12, color: Colors.grey.shade600),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
           const SizedBox(height: 10),
 
           // ---- 思考模式设置卡片 ----
@@ -1286,46 +1134,6 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
                       ref.read(inferenceServiceProvider).setEnableThinking(v);
                     },
                     subtitle: '先输出推理过程再给结论；直接作答更快（仅思考型模型生效）',
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ---- MTP 加速全局开关卡片 ----
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildToggleTitle(
-                    '🚀 MTP 加速（端侧推测解码）',
-                    gpuSettings.enableMtpFeature,
-                    gpuNotifier.setEnableMtpFeature,
-                    subtitle: '默认关闭；开启后在模型卡片配置各模型 MTP（仅高端机按需开启）',
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ---- dspark 加速全局开关卡片 ----
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildToggleTitle(
-                    '⚡ dspark 加速（整块投机解码）',
-                    gpuSettings.enableDsparkFeature,
-                    gpuNotifier.setEnableDsparkFeature,
-                    subtitle: '默认关闭；开启后在模型卡片配置各模型 dspark（Q1_0 低比特模型收益有限）',
                   ),
                 ],
               ),
@@ -1394,275 +1202,6 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
                     gpuSettings.autoLoadMmproj,
                     gpuNotifier.setAutoLoadMmproj,
                     subtitle: '针对有投影器（mmproj）的视觉模型；关闭后仅文本推理',
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ---- GPU 推理防闪纹卡片（2026-10-07 小米13 定案）----
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildToggleTitle(
-                    '🖥️ GPU 推理时限制刷新率（防闪纹）',
-                    gpuSettings.inferenceLimitRefreshRate,
-                    gpuNotifier.setInferenceLimitRefreshRate,
-                    subtitle: '模型加载/prefill 的瞬时显存带宽会挤占显示供帧'
-                        '（Adreno 闪条纹），期间自动锁 60Hz、回合结束恢复 120Hz。'
-                        'CPU 后端无此现象不受影响',
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ---- GPU 稳定性调优（2026-10-07 小米13 GPU fault 定案）----
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('⚙️ GPU 稳定性调优（防 GPU fault）',
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w600, fontSize: 14)),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Adreno 持续满血计算可能触发 GPU 挂死'
-                    '（屏幕随机彩色乱码，Vulkan 档可升级为闪退）。',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                  ),
-                  const Divider(height: 20),
-                  _buildSliderRow(
-                    label: 'prefill 宽度（n_ubatch）',
-                    value: gpuSettings.gpuNUbatch,
-                    min: 0,
-                    max: 512,
-                    divisions: 16,
-                    display: gpuSettings.gpuNUbatch == 0
-                        ? '自动'
-                        : '${gpuSettings.gpuNUbatch}',
-                    onChanged: gpuNotifier.setGpuNUbatch,
-                    hint: '0=自动（统一 512，split-MoE 按 bank 自动收敛）；调小拆'
-                        '单次计算 burst 缓解 GPU 挂死，prefill 变慢。32 的倍数步'
-                        '进，改后重新加载模型生效',
-                  ),
-                  _buildToggleTitle(
-                    'Vulkan 禁用 subgroup',
-                    gpuSettings.vkNoSubgroup,
-                    gpuNotifier.setVkNoSubgroup,
-                    subtitle: 'turnip GPU 挂死嫌疑源之一，开启可能更稳但略降速；'
-                        '重启 app 后生效',
-                  ),
-                  _buildToggleTitle(
-                    '🧩 智能 MoE 加载',
-                    gpuSettings.smartMoeEnabled,
-                    gpuNotifier.setSmartMoeEnabled,
-                    subtitle: '超大 MoE 模型（拆分专家版）：dense 权重常驻内存，'
-                        '路由专家按需流式读入专家窗口。关闭则整包全加载'
-                        '（内存不足的大模型会失败）。改后重新加载模型生效',
-                  ),
-                  const Divider(height: 24),
-                  // 热专家 bank：默认按机型 MemAvailable 自动分档（12G/16G
-                  // 机型预算不同）；手动覆写走通配键 '*'，滑条固定槽数。
-                  _buildToggleTitle(
-                    '专家池手动覆写',
-                    gpuSettings.moeBankOverrideByModel['*'] != null,
-                    (v) => gpuNotifier.setMoeBankOverride('*', v ? 16 : null),
-                    subtitle: '热专家常驻槽数（8–64）。默认自动分档：按机型可用内存 '
-                        '− 系统保留 − KV − 草稿 − 视觉 的预算÷单专家体积；16G 机型'
-                        '自动多驻留专家、少换入。开启后按滑条固定。改后重新加载模型生效',
-                  ),
-                  if (gpuSettings.moeBankOverrideByModel['*'] != null)
-                    _buildSliderRow(
-                      label: '专家池槽数',
-                      value: gpuSettings.moeBankOverrideByModel['*']!,
-                      min: 8,
-                      max: 64,
-                      divisions: 14,
-                      display: '${gpuSettings.moeBankOverrideByModel['*']}',
-                      onChanged: (v) => gpuNotifier.setMoeBankOverride('*', v),
-                      hint: '槽数 × 单专家体积 = 常驻内存；过大挤占 KV/视觉，'
-                          '过小换入频繁。参考自动值（推理日志「智能 MoE 加载」行）',
-                    ),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ---- OOM 内存守卫设置卡片 ----
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  _buildToggleTitle(
-                    '🛡️ OOM 内存守卫',
-                    gpuSettings.oomGuardEnabled,
-                    gpuNotifier.setOomGuardEnabled,
-                    subtitle: gpuSettings.oomGuardEnabled
-                        ? '加载前预检内存余量，超出则拒绝加载，防止整机硬死机'
-                        : '⚠️ 已关闭：超大模型可强行加载，内存不足时可能整机死机重启',
-                  ),
-                  // 余量滑条仅守卫开启时可调；关闭时置灰直观反映「不生效」。
-                  Opacity(
-                    opacity: gpuSettings.oomGuardEnabled ? 1.0 : 0.45,
-                    child: IgnorePointer(
-                      ignoring: !gpuSettings.oomGuardEnabled,
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Divider(height: 24),
-                          _buildHeadroomSlider(
-                            label: '预检余量',
-                            value: gpuSettings.oomPreHeadroomMb,
-                            onChanged: gpuNotifier.setOomPreHeadroomMb,
-                            hint: '加载前可用内存需超出模型体积至少该余量，否则拒绝加载；'
-                                '调小更容易放过极限大模型，调大更保守',
-                          ),
-                          _buildHeadroomSlider(
-                            label: '加载后余量',
-                            value: gpuSettings.oomPostHeadroomMb,
-                            onChanged: gpuNotifier.setOomPostHeadroomMb,
-                            hint: '加载完成后 KV 缓存/图计算缓冲的内存预算 = '
-                                '可用内存 − 该余量；调小给上下文更大空间，调大更保守',
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Text(
-                    '默认 768 / 1536 MB（与原生层一致）。修改后下次加载模型生效',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ---- KV 缓存精度卡片（手机必须量化：默认 Q4） ----
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '🧮 KV 缓存精度',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 8),
-                  SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(
-                        value: 'q4_0',
-                        label: Text('Q4（默认）'),
-                        icon: Icon(Icons.compress, size: 16),
-                      ),
-                      ButtonSegment(
-                        value: 'q8_0',
-                        label: Text('Q8'),
-                        icon: Icon(Icons.balance, size: 16),
-                      ),
-                      ButtonSegment(
-                        value: 'f16',
-                        label: Text('F16'),
-                        icon: Icon(Icons.speed, size: 16),
-                      ),
-                    ],
-                    selected: {gpuSettings.kvCacheType},
-                    onSelectionChanged: (sel) {
-                      final v = sel.first;
-                      if (v != gpuSettings.kvCacheType) {
-                        gpuNotifier.setKvCacheType(v);
-                      }
-                    },
-                    showSelectedIcon: false,
-                    style: ButtonStyle(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: WidgetStatePropertyAll(
-                        TextStyle(fontSize: 12, color: Colors.grey.shade800),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '端侧内存有限，KV 缓存默认 Q4 量化（所有本地模型生效）；'
-                    'Q8 精度更高、更占内存。仅量化 K 部分，V 保持 F16'
-                    '（V 量化需开启下方 flash-attn）。'
-                    'F16 不量化：混合架构（GDN+注意力，如 Ling）GPU 卸载时'
-                    'Q4 K 会把注意力链踢回 CPU，选 F16 恢复全 GPU 路径。'
-                    '修改后重新加载模型生效',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
-                  ),
-                ],
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 10),
-
-          // ---- flash attention 卡片（P1：实验性，默认关） ----
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '⚡ Flash Attention（实验性）',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-                  ),
-                  const SizedBox(height: 8),
-                  SegmentedButton<bool>(
-                    segments: const [
-                      ButtonSegment(
-                        value: false,
-                        label: Text('关（默认）'),
-                        icon: Icon(Icons.shield_outlined, size: 16),
-                      ),
-                      ButtonSegment(
-                        value: true,
-                        label: Text('开'),
-                        icon: Icon(Icons.flash_on, size: 16),
-                      ),
-                    ],
-                    selected: {gpuSettings.flashAttn},
-                    onSelectionChanged: (sel) {
-                      final v = sel.first;
-                      if (v != gpuSettings.flashAttn) {
-                        gpuNotifier.setFlashAttn(v);
-                      }
-                    },
-                    showSelectedIcon: false,
-                    style: ButtonStyle(
-                      visualDensity: VisualDensity.compact,
-                      textStyle: WidgetStatePropertyAll(
-                        TextStyle(fontSize: 12, color: Colors.grey.shade800),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    '开启后 attention 走 FA 内核，长上下文 prefill/decode 显存'
-                    '与速度收益明显；V 缓存跟随 K 一起量化（省一半 KV 内存）。'
-                    'hybrid（recurrent 层）架构会自动保持关闭。历史上该开关'
-                    '在 KV 复用路径上出过乱码，开启后请先做一次多轮对话测试。'
-                    '修改后重新加载模型生效',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
                   ),
                 ],
               ),
@@ -1848,83 +1387,6 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
     );
   }
 
-  // ---- GPU 后端辅助 ----
-
-  /// OOM 余量滑条行：标签 + 当前值（MB）+ 滑条（0~4096，步进 64）+ 说明。
-  Widget _buildHeadroomSlider({
-    required String label,
-    required int value,
-    required ValueChanged<int> onChanged,
-    required String hint,
-  }) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                  child: Text(label, style: const TextStyle(fontSize: 12))),
-              SizedBox(
-                width: 88,
-                child: Text(
-                  '$value MB',
-                  textAlign: TextAlign.right,
-                  style: const TextStyle(
-                      fontSize: 12, fontWeight: FontWeight.w500),
-                ),
-              ),
-            ],
-          ),
-          SizedBox(
-            height: 34,
-            child: Slider(
-              value: value.clamp(0, 4096).toDouble(),
-              min: 0,
-              max: 4096,
-              divisions: 64,
-              label: '$value MB',
-              onChanged: (v) => onChanged((v / 64).round() * 64),
-            ),
-          ),
-          Text(hint,
-              style: TextStyle(fontSize: 11, color: Colors.grey.shade600)),
-        ],
-      ),
-    );
-  }
-
-  /// 判断是否为 MediaTek 天玑（Dimensity）SoC。
-  /// 依据：Build.SOC_MANUFACTURER == "MediaTek"（API 31+），
-  /// 或硬件/主板名含 MTK 平台代号（mtxxxx / MTxxxx）。
-  static bool _isDimensitySoC(Map<String, String> info) {
-    final socMfg = (info['socManufacturer'] ?? '').toLowerCase();
-    if (socMfg.contains('mediatek')) return true;
-    final hardware = (info['hardware'] ?? '').toLowerCase();
-    final board = (info['board'] ?? '').toLowerCase();
-    final socModel = (info['socModel'] ?? '').toLowerCase();
-    if (hardware.startsWith('mt') || board.startsWith('mt')) return true;
-    if (socModel.startsWith('mt')) return true;
-    // 平台代号回退：常见天玑平台代号（部分机型 hardware 为 "mt6877" 等）
-    if (RegExp(r'^mt\d{4,5}$').hasMatch(hardware)) return true;
-    if (RegExp(r'^mt\d{4,5}$').hasMatch(board)) return true;
-    return false;
-  }
-
-  String _gpuBackendHint(String backend) {
-    switch (backend) {
-      case 'opencl':
-        return 'OpenCL：推荐后端';
-      case 'vulkan':
-        return 'Vulkan';
-      case 'cpu':
-        return 'CPU：纯 CPU 后端';
-      default:
-        return '自动：优先 OpenCL，无 GPU 时回落 CPU';
-    }
-  }
-
   /// 一键复制全部推理日志（最近日志摘要与日志页共用语义：全量拼接换行）。
   void _copyInferenceLogs(BuildContext context, WidgetRef ref) {
     final logs = ref.read(modelManagerProvider.notifier).loadingLogs;
@@ -1940,22 +1402,6 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
     );
   }
 
-  bool _gpuLayersEditable(InferenceSettings s) {
-    if (!s.enableGpu) return false;
-    // CPU 无意义；其余后端（opencl/auto）允许调层数，Vulkan 暂不可调。
-    return s.gpuBackend == 'opencl' || s.gpuBackend == 'auto';
-  }
-
-  String _gpuLayersHint(InferenceSettings s) {
-    if (!s.enableGpu) return 'GPU 已关闭（纯 CPU）';
-    if (_gpuLayersEditable(s)) {
-      return '0 = 纯 CPU，越大卸载越多（全量 = 999）';
-    }
-    if (s.gpuBackend == 'vulkan') {
-      return 'Vulkan 暂不可调层数';
-    }
-    return '当前后端固定，层数不可调';
-  }
 }
 
 Widget _buildSectionHeader(String title, BuildContext context) {
@@ -4284,6 +3730,10 @@ class RecentLogsWidget extends ConsumerWidget {
 /// 使下载进度频繁重建时不会丢失输入焦点/光标。
 /// 模型名内联编辑框（替换原独立「自定义名称」行）。
 /// 直接显示在模型卡片标题位置：有自定义名则显示自定义名，否则显示模型配置名
+/// 「下载引擎」弹层（Phase 3c 按需下载闭环）：打开即自动下载官方
+/// llama.cpp 包（镜像兜底 + sha256 校验 + 解包，全在 EngineStore），
+/// 成功 pop(true) → 调用方重试加载；失败给错误文案。下载中途不可取消
+/// （EngineStore 无取消语义，假取消会留 .zip.tmp 残骸——如实呈现）。
 /// 加载模型时的「加载中」对话框。
 /// 监听 [modelManagerProvider]，实时展示原生层推送的最新加载日志，
 /// 让用户清楚大模型（数 GB）加载的进展，避免误以为卡死。
@@ -4958,7 +4408,7 @@ class CapabilitySettingsBodyState
 // =========================================================================
 // 开发者 Tab：开发模式 + SSH 自动连接向导 + 工作区管理 + 危险命令策略。
 // 设计目标（用户反馈）：能自动的绝不手填——密钥自动生成、命令一键复制、
-// 连接自动建立、Termux 项目目录自动创建。用户只做"复制粘贴一条命令"。
+// 连接自动建立、工作区目录自动创建。用户只做"复制粘贴一条命令"。
 // =========================================================================
 class DevSettingsBody extends ConsumerStatefulWidget {
   const DevSettingsBody();
@@ -4970,20 +4420,6 @@ class DevSettingsBody extends ConsumerStatefulWidget {
 class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
   /// SSH 连接/工作区激活是异步后台变化，监听 ChangeNotifier 实时刷新。
   VoidCallback? _devStateListener;
-
-  /// 免 SSH 通道测试 / Termux APK 下载 进行中标记。
-  bool _testingIntent = false;
-  bool _downloadingTermux = false;
-
-  /// 免 SSH 通道测试结果（持久显示，SnackBar 真机上抓不到）。
-  String? _intentTestResult;
-
-  /// 上次「免 SSH 通道测试」是否成功。
-  ///
-  /// 判色必须用这个状态位，**不能用文案 `contains('可用')`** ——
-  /// 「Termux 未安装：**可用**下方按钮自动下载」「免 SSH 通道不可**用**」两条失败
-  /// 文案都含"可用"，旧版把失败渲染成绿色成功（可用性评估 P1-2）。
-  bool _intentTestOk = false;
 
   /// 当前激活工作区下的任务（懒加载；新建/删除后刷新）。
   List<DevTask> _devTasks = const [];
@@ -5407,14 +4843,14 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
                 if (mounted) setState(() {});
               },
               subtitle: settings.devModeEnabled
-                  ? '开：注册 git/规划/SSH/测试工具，可连 Termux/远程电脑做 AI 编程'
+                  ? '开：注册 git/规划/SSH/测试工具，可连远程电脑做 AI 编程'
                   : '关：现有智能体行为完全不变（默认）',
             ),
             const SizedBox(height: 4),
             Text(
-              '开启后：对话里的智能体可直接读写手机 Termux / 远程电脑上的项目，'
+              '开启后：对话里的智能体可直接读写远程电脑上的项目，'
               '执行 git 提交、跑测试。连接由下方向导完成：'
-              '远程电脑填账号密码即可，Termux 走自动密钥。',
+              '远程电脑填账号密码即可。',
               style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
             ),
             // P2-D1：Dev 工具逐组开关（默认全开 = 旧行为）。
@@ -5444,7 +4880,7 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
     );
   }
 
-  // ---------------- 连接配置（多目标：Termux / 远程电脑） ----------------
+  // ---------------- 连接配置（远程电脑） ----------------
 
   Widget _buildConnectionsCard(
       InferenceSettings settings, SettingsNotifier notifier) {
@@ -5497,16 +4933,11 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
               ],
             ),
             const SizedBox(height: 8),
-            // 自动向导入口：Termux / 远程电脑 各一个。
+            // 自动向导入口：远程电脑。
             Wrap(
               spacing: 8,
               runSpacing: 8,
               children: [
-                FilledButton.icon(
-                  onPressed: () => _showTermuxSetupDialog(context, notifier),
-                  icon: const Icon(Icons.smartphone, size: 16),
-                  label: const Text('📱 连接 Termux'),
-                ),
                 FilledButton.icon(
                   onPressed: () => _showRemotePcSetupDialog(context, notifier),
                   icon: const Icon(Icons.desktop_windows, size: 16),
@@ -5517,133 +4948,9 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
             const SizedBox(height: 6),
             Text(
               '远程电脑可用「账号密码」直接连（电脑开好 SSH 服务即可，不必装公钥）；'
-              'Termux 走自动生成密钥，一条命令完成，无需 root。'
               '连接失败会给针对性诊断和修复动作。',
               style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
             ),
-            // 免 SSH 通道（RUN_COMMAND intent，L2）：工具执行优先走这里，
-            // 不可用才回落 SSH。状态探测 + 一键拉起 Termux + 下载安装。
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                TextButton.icon(
-                  onPressed: _testingIntent
-                      ? null
-                      : () async {
-                          setState(() {
-                            _testingIntent = true;
-                            _intentTestResult = null;
-                          });
-                          String msg;
-                          var ok = false;
-                          try {
-                            final installed = await AppBridge.isAppInstalled(
-                                AppBridge.termuxPackage);
-                            if (!installed) {
-                              msg = 'Termux 未安装：可用下方按钮自动下载';
-                            } else {
-                              final res = await TermuxIntentService.instance
-                                  .run('echo ok',
-                                      timeout: const Duration(seconds: 10));
-                              ok = res.output.trim() == 'ok' && res.exit == 0;
-                              msg = ok
-                                  ? '免 SSH 通道可用（RUN_COMMAND，echo ok 往返成功）'
-                                  : '通道返回异常（exit=${res.exit}，输出：${res.output.trim()}）：'
-                                      '检查 allow-external-apps 是否已开启';
-                            }
-                            if (mounted) {
-                              ScaffoldMessenger.of(context)
-                                  .showSnackBar(SnackBar(content: Text(msg)));
-                            }
-                          } catch (e) {
-                            ok = false;
-                            msg = '免 SSH 通道不可用：'
-                                '${e.toString().replaceAll('StateError: ', '')}';
-                            if (mounted) {
-                              ScaffoldMessenger.of(context)
-                                  .showSnackBar(SnackBar(content: Text(msg)));
-                            }
-                          }
-                          // 结果持久显示（SnackBar 4s 即逝，真机验收读不到）。
-                          if (mounted) {
-                            setState(() {
-                              _intentTestResult = msg;
-                              _intentTestOk = ok;
-                              _testingIntent = false;
-                            });
-                          }
-                        },
-                  icon: Icon(_testingIntent ? Icons.hourglass_top : Icons.bolt,
-                      size: 16),
-                  label: Text(_testingIntent ? '测试中…' : '免 SSH 通道测试'),
-                ),
-                TextButton.icon(
-                  onPressed: _downloadingTermux
-                      ? null
-                      : () async {
-                          setState(() => _downloadingTermux = true);
-                          try {
-                            const apkUrl =
-                                'https://github.com/termux/termux-app/releases/download/v0.118.1/termux-app_0.118.1+github-debug_arm64-v8a.apk';
-                            final err =
-                                await DevNativeEnv.downloadTermuxApk(apkUrl);
-                            if (!mounted) return;
-                            if (err != null) {
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                  SnackBar(content: Text('下载失败：$err')));
-                              return;
-                            }
-                            // 下载入队后轮询目标文件出现，再拉安装器。
-                            const apkPath =
-                                '/storage/emulated/0/Download/TongYi-Lite/termux.apk';
-                            for (var i = 0; i < 240; i++) {
-                              await Future<void>.delayed(
-                                  const Duration(seconds: 5));
-                              final f = File(apkPath);
-                              if (await f.exists() &&
-                                  await f.length() > 1024 * 1024) {
-                                final installErr =
-                                    await DevNativeEnv.installApk(apkPath);
-                                if (mounted) {
-                                  ScaffoldMessenger.of(context).showSnackBar(
-                                      SnackBar(
-                                          content: Text(installErr == null
-                                              ? '下载完成，已拉起安装器（需允许安装未知应用）'
-                                              : '安装器拉起失败：$installErr')));
-                                }
-                                return;
-                              }
-                            }
-                            if (mounted) {
-                              ScaffoldMessenger.of(context)
-                                  .showSnackBar(const SnackBar(
-                                      content: Text('下载超时：请到系统通知查看进度，'
-                                          '完成后在 Download/TongYi-Lite/ 找到 APK')));
-                            }
-                          } finally {
-                            if (mounted)
-                              setState(() => _downloadingTermux = false);
-                          }
-                        },
-                  icon: Icon(
-                      _downloadingTermux ? Icons.hourglass_top : Icons.download,
-                      size: 16),
-                  label: Text(_downloadingTermux ? '下载中…' : '下载 Termux'),
-                ),
-              ],
-            ),
-            if (_intentTestResult != null)
-              Padding(
-                padding: const EdgeInsets.only(top: 4),
-                child: Text(
-                  '上次测试：$_intentTestResult',
-                  style: TextStyle(
-                      fontSize: 12,
-                      color: _intentTestOk
-                          ? Colors.green.shade700
-                          : Colors.red.shade700),
-                ),
-              ),
             // 配置列表（已保存的连接目标）。
             if (configs.isNotEmpty) ...[
               const SizedBox(height: 8),
@@ -5824,294 +5131,6 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text('✅ 已切到工作区「${r.ws!.name}」（${r.dir}）：'
             '现在让它「看项目 / 改代码 / 跑测试」都会在这台电脑上执行')));
-  }
-
-  // ---------------- Termux 自动向导 ----------------
-
-  /// Termux 向导（诊断驱动）：
-  /// 打开时探测一次 sshd → 按结果给诊断（未运行 / 被拉黑 / 正常）→
-  /// 万能命令（自带 pkill+sshd 重启，顺带清 PerSourcePenalties 惩罚）→
-  /// 可一键拉起 Termux → 用户名 → 真实连接。
-  Future<void> _showTermuxSetupDialog(
-      BuildContext context, SettingsNotifier notifier) async {
-    var step = 0; // 0: 探测  1: 命令执行  2: 用户名+连接
-    var probing = true;
-    var probeResult = _SshdProbe.timeout;
-    var generated = false;
-    String? publicKey;
-    String? privateKeyPem;
-    var command = '';
-    var userName = '';
-    var connecting = false;
-    var probeStarted = false;
-    // 向导内「免 SSH 通道」自检结果（allow-external-apps 是否生效 / Termux 是否可执行）。
-    String? _wizardMsg;
-    bool? _wizardOk;
-    var _wizardTesting = false;
-
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) {
-          Future<void> probeAndGen() async {
-            setState(() => probing = true);
-            probeResult = await _probeSshd('127.0.0.1', 8022);
-            if (!generated) {
-              final keys = SshKeyGen.generate();
-              if (keys != null) {
-                generated = true;
-                publicKey = keys.publicKey;
-                privateKeyPem = keys.privateKeyPem;
-                command = _buildTermuxInstallCommand(keys.publicKey);
-              }
-            }
-            probing = false;
-            step = 1;
-            setState(() {});
-          }
-
-          Future<void> finishConnect() async {
-            setState(() => connecting = true);
-            userName = userName.trim();
-            final cfg = SshConfig.termuxTemplate.copyWith(
-              username: userName,
-              privateKeyPem: privateKeyPem,
-              authType: SshAuthType.key,
-            );
-            await notifier.upsertSshConfig(cfg);
-            final ssh = SshEnvironmentService.instance;
-            await ssh.connect(cfg);
-            connecting = false;
-            if (!ctx.mounted) return;
-            if (ssh.isConnected) {
-              Navigator.pop(ctx);
-              return;
-            }
-            Navigator.pop(ctx);
-            ScaffoldMessenger.of(this.context).showSnackBar(SnackBar(
-                backgroundColor: Colors.red.shade700,
-                content: Text('❌ ${_classifySshError(ssh.lastError)}',
-                    style: const TextStyle(fontSize: 12))));
-          }
-
-          if (!probeStarted) {
-            probeStarted = true;
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (ctx.mounted) probeAndGen();
-            });
-          }
-
-          final diagnosis = switch (probeResult) {
-            _SshdProbe.listening => 'sshd 运行中——还差最后一步：安装公钥',
-            _SshdProbe.refused => 'sshd 没在运行（最常见的失败原因）',
-            _SshdProbe.timeout => '端口无响应——大概率是之前多次连接失败后被 Termux 的 OpenSSH '
-                '临时拉黑（PerSourcePenalties），越重试越连不上',
-          };
-
-          final dialog = AlertDialog(
-            title: const Text('📱 Termux 自动连接向导'),
-            content: SizedBox(
-              width: 480,
-              child: SingleChildScrollView(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (step == 0)
-                      const Row(children: [
-                        SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2)),
-                        SizedBox(width: 12),
-                        Text('正在检测 Termux sshd（127.0.0.1:8022）…'),
-                      ])
-                    else ...[
-                      Text('诊断：$diagnosis',
-                          style: const TextStyle(fontSize: 13)),
-                      const SizedBox(height: 10),
-                      // 万能命令：pkill 重启 sshd（清拉黑）+ 装公钥 + 写用户名，
-                      // 三种诊断状态都靠它修复，一条到底。
-                      Text('在 Termux 里粘贴执行这条命令（自动重启 sshd + 安装公钥）：',
-                          style: const TextStyle(fontSize: 12)),
-                      const SizedBox(height: 6),
-                      _copyableCommand(ctx, command),
-                      const SizedBox(height: 10),
-                      Row(children: [
-                        FilledButton.icon(
-                          onPressed: () async {
-                            // 零粘贴：RUN_COMMAND 让 Termux 自己执行安装命令。
-                            final ok = await AppBridge.runInTermux(command);
-                            if (!ctx.mounted) return;
-                            if (ok) {
-                              ScaffoldMessenger.of(this.context)
-                                  .showSnackBar(const SnackBar(
-                                      content: Text('已发送到 Termux 执行；若执行完未出现 '
-                                          'ALL_DONE，检查 Termux 是否开启 '
-                                          'allow-external-apps')));
-                            } else {
-                              ScaffoldMessenger.of(this.context)
-                                  .showSnackBar(const SnackBar(
-                                      content: Text('发送失败：Termux 未安装或'
-                                          '未授权 RUN_COMMAND，请粘贴执行')));
-                            }
-                          },
-                          icon: const Icon(Icons.bolt, size: 16),
-                          label: const Text('自动执行'),
-                        ),
-                        const SizedBox(width: 8),
-                        FilledButton.tonalIcon(
-                          onPressed: () async {
-                            final ok = await AppBridge.launchApp(
-                                AppBridge.termuxPackage);
-                            if ((!ok) && ctx.mounted) {
-                              ScaffoldMessenger.of(this.context).showSnackBar(
-                                  const SnackBar(
-                                      content: Text('未找到 Termux，请先安装 Termux')));
-                            }
-                          },
-                          icon: const Icon(Icons.open_in_new, size: 16),
-                          label: const Text('拉起 Termux'),
-                        ),
-                        const SizedBox(width: 8),
-                        TextButton.icon(
-                          onPressed: probing ? null : () => probeAndGen(),
-                          icon: const Icon(Icons.refresh, size: 16),
-                          label: Text(probing ? '检测中…' : '重新检测'),
-                        ),
-                      ]),
-                      Container(
-                        padding: const EdgeInsets.all(8),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade50,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          '⚠️ 最关键的一步（绝大多数「不行」都卡在这）：'
-                          'RUN_COMMAND 免 SSH 通道要求 Termux 开启 '
-                          'allow-external-apps 并【彻底重启 Termux】（不是切后台再回来）。'
-                          '上面这条命令已写好该开关，但 Termux 只在启动时读 '
-                          'termux.properties——没重启前，App 发来的命令会被 Termux '
-                          '静默忽略，表现就是"测试超时 / 通道不可用"。'
-                          '另外若未在 Termux 里跑过 termux-setup-storage，'
-                          '交换文件写不进、同样会超时。请满足这两点再测。',
-                          style:
-                              TextStyle(fontSize: 12, color: Colors.red.shade800),
-                        ),
-                      ),
-                      // 向导内自检：直接经 RUN_COMMAND 跑 echo ok。
-                      // 通过=allow-external-apps 已生效（绿）；不通=明确指引去补重启/存储权限。
-                      OutlinedButton.icon(
-                        onPressed: _wizardTesting
-                            ? null
-                            : () async {
-                                setState(() {
-                                  _wizardTesting = true;
-                                  _wizardMsg = null;
-                                  _wizardOk = null;
-                                });
-                                try {
-                                  final res = await TermuxIntentService.instance
-                                      .run('echo ok',
-                                          timeout: const Duration(
-                                              seconds: 10));
-                                  final ok = res.output.trim() == 'ok'
-                                      && res.exit == 0;
-                                  setState(() {
-                                    _wizardTesting = false;
-                                    _wizardOk = ok;
-                                    _wizardMsg = ok
-                                        ? '✅ 免 SSH 通道可用（RUN_COMMAND 往返成功），可继续。'
-                                        : '❌ RUN_COMMAND 通道不通——请先：① 确认 '
-                                            'termux.properties 有 '
-                                            'allow-external-apps=true，② 彻底重启 '
-                                            'Termux（不是切后台），③ 已在 Termux 跑过 '
-                                            'termux-setup-storage；然后回来再点测试。';
-                                  });
-                                } on StateError catch (e) {
-                                  setState(() {
-                                    _wizardTesting = false;
-                                    _wizardOk = false;
-                                    _wizardMsg = '❌ 通道不可用：'
-                                        '${e.message.replaceAll('StateError: ', '')}'
-                                        '（多半是 Termux 未装 / 未开 '
-                                        'allow-external-apps / 未重启）。';
-                                  });
-                                } catch (e) {
-                                  setState(() {
-                                    _wizardTesting = false;
-                                    _wizardOk = false;
-                                    _wizardMsg = '❌ 测试异常：$e';
-                                  });
-                                }
-                              },
-                        icon: Icon(_wizardTesting
-                            ? Icons.hourglass_top
-                            : Icons.bolt,
-                            size: 16),
-                        label: Text(_wizardTesting
-                            ? '测试中…'
-                            : '测试免SSH通道'),
-                      ),
-                      if (_wizardMsg != null) ...[
-                        const SizedBox(height: 6),
-                        Text(_wizardMsg!,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: _wizardOk == true
-                                  ? FontWeight.w500
-                                  : FontWeight.w600,
-                              color: _wizardOk == true ? Colors.green : Colors.red,
-                            )),
-                      ],
-                      if (step == 2) ...[
-                        const SizedBox(height: 12),
-                        TextField(
-                          controller: TextEditingController(text: userName),
-                          onChanged: (v) => userName = v,
-                          decoration: const InputDecoration(
-                            labelText: 'Termux 用户名',
-                            hintText: '通常 u0_aXXX，已自动填好',
-                            border: OutlineInputBorder(),
-                            isDense: true,
-                          ),
-                        ),
-                      ] else ...[
-                        const SizedBox(height: 6),
-                        const Text('执行完命令后点「下一步」。',
-                            style: TextStyle(fontSize: 11, color: Colors.grey)),
-                      ],
-                    ],
-                  ],
-                ),
-              ),
-            ),
-            actions: [
-              if (step == 1)
-                TextButton(
-                  onPressed: () {
-                    userName = _readSharedUserName() ?? '';
-                    setState(() => step = 2);
-                  },
-                  child: const Text('下一步'),
-                ),
-              TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('取消'),
-              ),
-              if (step == 2)
-                FilledButton(
-                  onPressed: connecting ? null : finishConnect,
-                  child: Text(connecting ? '连接中…' : '✅ 连接'),
-                ),
-            ],
-          );
-          return dialog;
-        },
-      ),
-    );
-    if (mounted) setState(() {});
   }
 
   /// 远程电脑向导：host/port/用户名 + **认证方式（密码 或 密钥）** + 连接。
@@ -6401,84 +5420,17 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
     );
   }
 
-  /// Termux sshd 诊断探测（只在向导打开时做一次）。
-  ///
-  /// ⚠️ 对 Termux 的 OpenSSH 10.x **不能频繁裸探测**：TCP 连上后未认证即断开
-  /// 会被 PerSourcePenalties 记惩罚（源 127.0.0.1 被拉黑后 sshd 接受连接但
-  /// 不发 banner → 表现为 timeout），越探越死。refused = 没监听（不记惩罚）。
-  Future<_SshdProbe> _probeSshd(String host, int port) async {
-    try {
-      final socket =
-          await Socket.connect(host, port, timeout: const Duration(seconds: 3));
-      socket.destroy();
-      return _SshdProbe.listening;
-    } on SocketException catch (e) {
-      final msg = e.message.toLowerCase();
-      if (msg.contains('refused') || e.osError?.errorCode == 111) {
-        return _SshdProbe.refused; // sshd 没在监听
-      }
-      return _SshdProbe.timeout; // 被拉黑 / sshd 卡死
-    } catch (_) {
-      return _SshdProbe.timeout;
-    }
-  }
-
   /// SSH 连接失败 → 人话 + 下一步动作（不甩原始异常）。
   ///
-  /// 可用性评估实锤：旧版一套 **Termux 话术** 通吃所有失败，连远程电脑失败
-  /// 也在教用户"打开 Termux 重新执行安装命令"。现按目标类型（Termux/电脑）
-  /// 与认证方式（密钥/密码）分流；不传 cfg（Termux 向导）按 Termux+密钥。
-  String _classifySshError(String? raw, {SshConfig? cfg}) {
+  /// 可用性评估实锤：旧版一套话术通吃所有失败——连电脑用户也被教去 Termux 装密钥。
+  /// 现按目标类型与认证方式（密钥/密码）分流。
+  String _classifySshError(String? raw, {required SshConfig cfg}) {
     return classifySshFailure(
       raw,
-      target: cfg == null ? SshTargetKind.termux : sshTargetKindOf(cfg),
-      passwordAuth: cfg == null ? false : sshUsesPasswordAuth(cfg),
-      keyAuth: cfg == null ? true : cfg.usesKey,
+      target: sshTargetKindOf(cfg),
+      passwordAuth: sshUsesPasswordAuth(cfg),
+      keyAuth: cfg.usesKey,
     );
-  }
-
-  /// 读取 Termux 写入共享文件的用户名（/sdcard/tongyilite_ssh_user.txt）。
-  /// 实锤修复：文件内容是 `USER=u0_a333` 整行，此前直接存进配置导致
-  /// 用户名带 `USER=` 前缀 → 认证必败。这里剥前缀 + 兜底清洗。
-  String? _readSharedUserName() {
-    try {
-      final f = File('/storage/emulated/0/tongyilite_ssh_user.txt');
-      if (!f.existsSync()) return null;
-      var v = f.readAsStringSync().trim();
-      // 取第一行；兼容 KEY=VALUE / 纯用户名两种形态。
-      final first = v.split('\n').first.trim();
-      if (first.contains('=')) {
-        v = first.split('=').last.trim();
-      } else {
-        v = first;
-      }
-      // 手机用户名形如 u0_aXXX；防止残留关键字前缀/空白。
-      if (v.isEmpty || v.toLowerCase() == 'user') return null;
-      return v;
-    } catch (_) {
-      return null;
-    }
-  }
-
-  /// Termux 安装公钥 + 写用户名（一条复制即用；无存储权限不影响公钥安装）。
-  String _buildTermuxInstallCommand(String publicKey) {
-    // v3（2026-10-04）：追加 allow-external-apps（RUN_COMMAND 免 SSH 通道的
-    // 唯一前置）+ termux-setup-storage（交换目录 /sdcard/TongYiLite 需要
-    // Termux 侧存储权限）；SSH 部分保留作回退通道。
-    //
-    // v4（2026-10-20 可用性评估 P1-1）：中文说明**不得塞进 echo 参数** ——
-    // 旧版输出 `ALL_DONE（免 SSH 通道已配置；…）`，而 UI 要求用户确认出现
-    // `ALL_DONE`，混排让人无法判定成功。改为：提示单独 echo，`ALL_DONE` 独占一行且最后。
-    return 'pkg install -y openssh procps 2>/dev/null; '
-        'pkill sshd 2>/dev/null; sleep 1; sshd 2>/dev/null; '
-        'mkdir -p ~/.ssh && echo "$publicKey" > ~/.ssh/authorized_keys && '
-        'chmod 600 ~/.ssh/authorized_keys; '
-        'mkdir -p ~/.termux && grep -q allow-external-apps ~/.termux/termux.properties 2>/dev/null '
-        '|| echo "allow-external-apps=true" >> ~/.termux/termux.properties; '
-        'termux-reload-settings 2>/dev/null; '
-        'echo "USER=\$(whoami)" > /sdcard/tongyilite_ssh_user.txt 2>/dev/null || true; '
-        'echo "[TongYi-Lite] 提示：如需 App 读写共享存储，请在 Termux 里再执行一次 termux-setup-storage"; '
-        'echo ALL_DONE';
   }
 
   /// 远程电脑添加公钥命令（追加，不覆盖已有公钥）。
@@ -6536,7 +5488,7 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
                       controller: nameCtrl,
                       decoration: const InputDecoration(
                         labelText: '配置名称',
-                        hintText: '如：Termux / 家里电脑',
+                        hintText: '如：家里电脑 / 工作电脑',
                         border: OutlineInputBorder(),
                       ),
                     ),
@@ -6671,7 +5623,7 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
                         decoration: InputDecoration(
                           labelText: '登录密码',
                           hintText: storedPassword.isEmpty
-                              ? '电脑/Termux 的账号登录密码'
+                              ? '电脑的账号登录密码'
                               : '已保存，留空保持不变',
                           helperText: authType == SshAuthType.keyThenPassword
                               ? '密钥认证失败时自动改用这个密码'
@@ -6760,9 +5712,9 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
           children: [
             _buildSectionHeader('📁 工作区', context),
             Text(
-              '文件/记忆工具跟随激活工作区；远端工作区（Termux/电脑）'
+              '文件/记忆工具跟随激活工作区；远端工作区（电脑）'
               '用 ssh_exec / ssh_read_file / ssh_write_file 操作。'
-              '新增 Termux 工作区时可自动建目录。',
+              '新增工作区时可自动建目录。',
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
             const SizedBox(height: 8),

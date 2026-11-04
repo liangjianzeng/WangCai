@@ -3,15 +3,21 @@
 // 职责：实例列表 / 状态实时 / 停止 / 按上次配置重启 / 日志 tail / 启动命令取证。
 // 模型加载入口仍在「模型管理」页（loadModel 会按 manifest 拉起对应实例）。
 import 'dart:async';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../engine/engine_host.dart';
 import '../engine/engine_registry.dart';
 import '../engine/engine_status.dart';
+import '../engine/engine_store.dart';
 import '../engine/llama_server_host.dart';
 import '../platform/local_server_inference.dart';
+import '../platform/wangcai_paths.dart';
+import '../providers/settings_provider.dart';
+import 'engine_install_dialog.dart';
 
 class EngineManagerSection extends ConsumerStatefulWidget {
   const EngineManagerSection({super.key, this.registry});
@@ -31,17 +37,117 @@ class _EngineManagerSectionState extends ConsumerState<EngineManagerSection> {
   bool _routingLoaded = false;
   final _idleCtl = TextEditingController();
 
+  // 按需下载偏好（Phase 3c）：安装目录 + 镜像前缀（settings 持久化）。
+  String? _enginesDir;
+  bool _prefsLoaded = false;
+  final _mirrorCtl = TextEditingController();
+
   @override
   void initState() {
     super.initState();
     _load();
     _loadRouting();
+    _loadPrefs();
   }
 
   @override
   void dispose() {
     _idleCtl.dispose();
+    _mirrorCtl.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadPrefs() async {
+    try {
+      final s = await ref.read(settingsServiceProvider).load();
+      if (mounted) {
+        setState(() {
+          _enginesDir = s.enginesDir;
+          _mirrorCtl.text = s.engineMirror ?? '';
+          _prefsLoaded = true;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _prefsLoaded = true);
+    }
+  }
+
+  // ── 获取引擎（v0.0.3 用户反馈：一键下载 + 选目录自动识别）──────────────
+
+  bool _scanning = false;
+  String? _scanMsg;
+
+  /// 目录里已有现成引擎 → 扫描认领（按目录名推断 cuda/vulkan），写进
+  /// engines.json。保留实例已有 defaultConfig（只补 binaryPath + 启用）。
+  Future<void> _scanForEngines() async {
+    setState(() {
+      _scanning = true;
+      _scanMsg = null;
+    });
+    try {
+      final reg =
+          await (widget.registry ?? LocalServerInference.instance.registry)();
+      final root = (_enginesDir == null || _enginesDir!.isEmpty)
+          ? EngineStore(WangCaiPaths.enginePaths()).enginesRoot
+          : Directory(_enginesDir!);
+      final found = EngineStore.discoverEngineExes(root);
+      final notes = <String>[];
+      for (final e in found.entries) {
+        final instId = 'llamacpp-${e.key}';
+        final existing = reg.instance(instId);
+        if (existing != null) {
+          existing.binaryPath = e.value;
+          existing.enabled = true;
+        } else {
+          reg.upsert(EngineInstance(
+              id: instId, manifestId: instId, binaryPath: e.value));
+        }
+        notes.add('${e.key} → ${e.value}');
+      }
+      if (found.isNotEmpty) await reg.save();
+      await _load();
+      if (mounted) {
+        setState(() => _scanMsg = found.isEmpty
+            ? '未发现 llama-server.exe（扫描目录：${root.path}）'
+            : '识别到 ${found.length} 个引擎：${notes.join('；')}');
+      }
+    } catch (e) {
+      if (mounted) setState(() => _scanMsg = '扫描失败：$e');
+    } finally {
+      if (mounted) setState(() => _scanning = false);
+    }
+  }
+
+  /// 一键下载弹层（共享 EngineInstallDialog）：目录/镜像取当前 UI 值，
+  /// 成功后刷新实例列表。
+  Future<void> _openInstallDialog(String variant) async {
+    final s = await ref.read(settingsServiceProvider).load();
+    if (!mounted) return;
+    final mirrorUi = _mirrorCtl.text.trim();
+    final ok = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => EngineInstallDialog(
+        variant: variant,
+        enginesDir: _enginesDir,
+        mirrors: mirrorUi.isNotEmpty
+            ? [mirrorUi]
+            : (s.engineMirror == null ? const [] : [s.engineMirror!]),
+      ),
+    );
+    if (ok == true && mounted) {
+      await _load();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content:
+                Text('✅ llama.cpp $variant 已安装，模型绑定该引擎或留空 Auto 即可用')));
+      }
+    }
+  }
+
+  bool _variantInstalled(EngineRegistry reg, String variant) {
+    final p = reg.instance('llamacpp-$variant')?.binaryPath;
+    return p != null && p.isNotEmpty && File(p).existsSync();
   }
 
   Future<void> _load() async {
@@ -155,6 +261,148 @@ class _EngineManagerSectionState extends ConsumerState<EngineManagerSection> {
                 ),
               ]),
             ],
+            if (_prefsLoaded) ...[
+              const SizedBox(height: 6),
+              Row(children: [
+                Text('引擎安装目录',
+                    style:
+                        TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    _enginesDir ?? '默认（数据区 engines/）',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                        fontSize: 11, color: Colors.grey.shade500),
+                  ),
+                ),
+                TextButton(
+                  onPressed: () async {
+                    final dir = await FilePicker.platform
+                        .getDirectoryPath(dialogTitle: '选择引擎安装目录');
+                    if (dir == null || !mounted) return;
+                    setState(() => _enginesDir = dir);
+                    await ref
+                        .read(settingsProvider.notifier)
+                        .setEnginesDir(dir);
+                  },
+                  child: const Text('更改', style: TextStyle(fontSize: 12)),
+                ),
+                if (_enginesDir != null)
+                  TextButton(
+                    onPressed: () async {
+                      setState(() => _enginesDir = null);
+                      await ref
+                          .read(settingsProvider.notifier)
+                          .setEnginesDir(null);
+                    },
+                    child:
+                        const Text('恢复默认', style: TextStyle(fontSize: 12)),
+                  ),
+              ]),
+              const SizedBox(height: 2),
+              Row(children: [
+                Text('下载镜像前缀',
+                    style:
+                        TextStyle(fontSize: 12, color: Colors.grey.shade700)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: _mirrorCtl,
+                    style: const TextStyle(fontSize: 12),
+                    decoration: const InputDecoration(
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                      hintText: '如 https://ghproxy.net/（留空 = GitHub 直连）',
+                      hintStyle: TextStyle(fontSize: 11),
+                    ),
+                    onSubmitted: (v) async {
+                      await ref
+                          .read(settingsProvider.notifier)
+                          .setEngineMirror(v);
+                    },
+                  ),
+                ),
+              ]),
+            ],
+            const SizedBox(height: 8),
+
+            // ---- 获取引擎卡（v0.0.3 用户反馈）：一键下载官方白名单版本 +
+            // 扫描识别自选目录里的现成 llama.cpp ----
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(children: [
+                      const Text('⬇️ 获取引擎',
+                          style: TextStyle(
+                              fontWeight: FontWeight.w600, fontSize: 14)),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: _scanning ? null : _scanForEngines,
+                        child: Text(_scanning ? '扫描中…' : '扫描识别',
+                            style: const TextStyle(fontSize: 12)),
+                      ),
+                    ]),
+                    Text(
+                      '一键下载官方白名单版本（sha256 校验）；已有现成 llama.cpp？'
+                      '把 llama-server.exe 放进安装目录（目录名含 cuda / vulkan '
+                      '即可识别），点「扫描识别」。',
+                      style: TextStyle(
+                          fontSize: 11, color: Colors.grey.shade600),
+                    ),
+                    if (_scanMsg != null) ...[
+                      const SizedBox(height: 4),
+                      Text(_scanMsg!,
+                          style: TextStyle(
+                              fontSize: 11, color: Colors.teal.shade700)),
+                    ],
+                    const SizedBox(height: 4),
+                    for (final r in StoreCatalog.verified.releases)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Row(children: [
+                          Text(
+                              '${r.variant == 'cuda' ? 'CUDA' : 'Vulkan'}'
+                              ' · ${r.version}',
+                              style: const TextStyle(fontSize: 12)),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              _variantInstalled(reg, r.variant)
+                                  ? (reg
+                                          .instance('llamacpp-${r.variant}')
+                                          ?.binaryPath ??
+                                      '')
+                                  : r.assetName,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                  fontSize: 11,
+                                  color: Colors.grey.shade500),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          if (_variantInstalled(reg, r.variant))
+                            Text('已安装',
+                                style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Colors.teal.shade700))
+                          else
+                            OutlinedButton(
+                              onPressed: () => _openInstallDialog(r.variant),
+                              child: const Text('一键下载',
+                                  style: TextStyle(fontSize: 12)),
+                            ),
+                        ]),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+
             const SizedBox(height: 8),
             for (final inst in reg.instances)
               if (reg.manifestOf(inst.id).kind != 'remote')
@@ -267,6 +515,17 @@ class _InstanceRowState extends State<_InstanceRow> {
                 onPressed: () => _showLogs(context, host),
                 child: const Text('日志', style: TextStyle(fontSize: 12)),
               ),
+              TextButton(
+                // 默认启动参数（Phase 3 参数体系中间档）：模型不配
+                // customArgs 时，本配置赢过 manifest 出厂 preset。
+                onPressed: () => _showDefaults(context, inst),
+                child: Text(
+                  inst.defaultConfig == null
+                      ? '默认参数'
+                      : '默认参数 ✓',
+                  style: const TextStyle(fontSize: 12),
+                ),
+              ),
               if (host is LlamaServerHost)
                 TextButton(
                   onPressed: () => _showLaunchCmd(context, host),
@@ -285,6 +544,18 @@ class _InstanceRowState extends State<_InstanceRow> {
       context: context,
       builder: (_) => _LogDialog(host: host),
     );
+  }
+
+  /// 「默认启动参数」编辑卡（Phase 3）：保存进 engines.json 的
+  /// EngineInstance.defaultConfig。空字段 = 未表态，让位 manifest 出厂 preset；
+  /// 模型级 customArgs/ctx/chunk/gpuLayers 仍压过这里（优先级链顶层）。
+  void _showDefaults(BuildContext context, EngineInstance inst) {
+    showDialog<void>(
+      context: context,
+      builder: (_) => _EngineDefaultsDialog(registry: widget.registry, instance: inst),
+    ).then((_) {
+      if (mounted) setState(() {}); // 刷新「默认参数 ✓」标记
+    });
   }
 
   void _showLaunchCmd(BuildContext context, LlamaServerHost host) {
@@ -351,6 +622,179 @@ class _PhaseChip extends StatelessWidget {
           style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w500)),
     );
   }
+}
+
+/// 引擎默认启动参数编辑卡（v0.0.3 Phase 3 参数体系）。
+/// 落盘目标 = EngineInstance.defaultConfig（engines.json）；参与路由/加载的
+/// 优先级链：**模型 customArgs/覆盖项 > 本卡 > manifest preset**。
+/// 空字段 = 未表态（让位 preset），与「填 0」区分开。
+class _EngineDefaultsDialog extends StatefulWidget {
+  const _EngineDefaultsDialog({required this.registry, required this.instance});
+  final EngineRegistry registry;
+  final EngineInstance instance;
+
+  @override
+  State<_EngineDefaultsDialog> createState() => _EngineDefaultsDialogState();
+}
+
+class _EngineDefaultsDialogState extends State<_EngineDefaultsDialog> {
+  late final TextEditingController _ctx;
+  late final TextEditingController _chunk;
+  late final TextEditingController _gpuLayers;
+  late final TextEditingController _device;
+  late final TextEditingController _env;
+  late final TextEditingController _args;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    final d = widget.instance.defaultConfig;
+    String? n(int? v) => v == null ? '' : '$v';
+    _ctx = TextEditingController(text: n(d?.ctx));
+    _chunk = TextEditingController(text: n(d?.chunk));
+    _gpuLayers = TextEditingController(text: n(d?.gpuLayers));
+    _device = TextEditingController(text: d?.device ?? '');
+    _env = TextEditingController(
+        text: (d?.extraEnv ?? const <String, String>{})
+            .entries
+            .map((e) => '${e.key}=${e.value}')
+            .join('\n'));
+    _args = TextEditingController(text: (d?.args ?? const <String>[]).join(' '));
+  }
+
+  @override
+  void dispose() {
+    for (final c in [_ctx, _chunk, _gpuLayers, _device, _env, _args]) {
+      c.dispose();
+    }
+    super.dispose();
+  }
+
+  int? _parseInt(TextEditingController c, String label) {
+    final t = c.text.trim();
+    if (t.isEmpty) return null;
+    final v = int.tryParse(t);
+    if (v == null || v <= 0) {
+      setState(() => _error = '$label 需为正整数（留空 = 跟随出厂预设）');
+      throw const _DefaultsInputError();
+    }
+    return v;
+  }
+
+  Future<void> _save() async {
+    try {
+      final ctx = _parseInt(_ctx, 'ctx');
+      final chunk = _parseInt(_chunk, 'chunk');
+      final gpuLayers = _parseInt(_gpuLayers, '-ngl');
+      final env = <String, String>{};
+      for (final line in _env.text.split('\n')) {
+        final t = line.trim();
+        if (t.isEmpty) continue;
+        final i = t.indexOf('=');
+        if (i <= 0) {
+          setState(() => _error = '附加环境变量需 KEY=VALUE 每行一条：「$t」');
+          throw const _DefaultsInputError();
+        }
+        env[t.substring(0, i).trim()] = t.substring(i + 1).trim();
+      }
+      final args = _args.text
+          .split(RegExp(r'\s+'))
+          .where((t) => t.isNotEmpty)
+          .toList();
+      final d = EngineDefaults(
+        ctx: ctx,
+        chunk: chunk,
+        gpuLayers: gpuLayers,
+        device: _device.text.trim().isEmpty ? null : _device.text.trim(),
+        extraEnv: env,
+        args: args,
+      );
+      widget.instance.defaultConfig = d.isEmpty ? null : d;
+      await widget.registry.save();
+      if (mounted) Navigator.pop(context);
+    } on _DefaultsInputError {
+      // 错误文案已进 _error，留在弹层里
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final manifest = widget.registry.manifestOf(widget.instance.id);
+    final presetHint = manifest.presets.isEmpty
+        ? '无出厂 preset（全走 argsTemplate 模板）'
+        : '出厂 preset：${manifest.presets.map((p) => p.name).join(' / ')}';
+    Widget field(TextEditingController c, String label, String hint,
+        {bool numeric = false, int maxLines = 1}) {
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: TextField(
+          controller: c,
+          keyboardType: numeric ? TextInputType.number : null,
+          maxLines: maxLines,
+          style: const TextStyle(fontSize: 12),
+          decoration: InputDecoration(
+            isDense: true,
+            border: const OutlineInputBorder(),
+            labelText: label,
+            hintText: hint,
+            labelStyle: const TextStyle(fontSize: 12),
+            hintStyle: const TextStyle(fontSize: 11, fontStyle: FontStyle.italic),
+          ),
+        ),
+      );
+    }
+
+    return AlertDialog(
+      title: Text('${manifest.display} · 默认启动参数',
+          style: const TextStyle(fontSize: 15)),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '未配置模型自定义参数时，这里赢过出厂预设（$presetHint）。'
+                '留空 = 跟随预设；模型管理页的模型级参数再压过这里。',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+              ),
+              const SizedBox(height: 10),
+              Row(children: [
+                Expanded(child: field(_ctx, '上下文 -c', '跟随预设', numeric: true)),
+                const SizedBox(width: 8),
+                Expanded(child: field(_chunk, 'chunk', '跟随预设', numeric: true)),
+                const SizedBox(width: 8),
+                Expanded(child: field(_gpuLayers, 'GPU 层数 -ngl', '跟随预设', numeric: true)),
+              ]),
+              field(_device, '设备 device', 'NPU / CPU / GPU / OPENVINO{n}（OV 引擎）'),
+              field(_env, '附加环境变量', '每行 KEY=VALUE（如 GGML_OPENVINO_PREFILL_CHUNK_SIZE=128）',
+                  maxLines: 3),
+              field(_args, '自定义尾参', '追加在模板之后，如 --flash_attn 1（后者覆盖前者）',
+                  maxLines: 2),
+              if (_error != null)
+                Text(_error!, style: TextStyle(fontSize: 11, color: Colors.red.shade600)),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
+        FilledButton(
+          onPressed: _save,
+          style: FilledButton.styleFrom(
+              textStyle: const TextStyle(fontSize: 12),
+              visualDensity: VisualDensity.compact),
+          child: const Text('保存'),
+        ),
+      ],
+    );
+  }
+}
+
+class _DefaultsInputError implements Exception {
+  const _DefaultsInputError();
 }
 
 /// 实时引擎日志对话框：历史 tail + 订阅增量（关闭即取消订阅）。

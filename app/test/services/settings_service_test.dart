@@ -4,6 +4,7 @@ import 'package:dartssh2/dartssh2.dart' show SSHKeyPair;
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:wangcai/agent/dev/ssh/ssh_credentials.dart';
+import 'package:wangcai/models/local_model.dart';
 import 'package:wangcai/services/settings_service.dart';
 
 void main() {
@@ -90,34 +91,9 @@ void main() {
           {'maxRounds': 4, 'nctx': 32768});
     });
 
-    test('GPU 推理防闪纹开关：默认开，往返一致（缺键兼容旧配置）', () {
-      const s = InferenceSettings();
-      expect(s.inferenceLimitRefreshRate, isTrue);
-      final off = InferenceSettings.fromJson(
-          {'inferenceLimitRefreshRate': false});
-      expect(off.inferenceLimitRefreshRate, isFalse);
-      expect(InferenceSettings.fromJson(off.toJson()).inferenceLimitRefreshRate,
-          isFalse);
-      // 旧配置无此键 → 默认开（行为与本次改动前一致）。
-      expect(InferenceSettings.fromJson({}).inferenceLimitRefreshRate, isTrue);
-    });
-
-    test('GPU 稳定性调优：n_ubatch 默认 0（自动）/往返一致，vkNoSubgroup 默认关', () {
-      const s = InferenceSettings();
-      expect(s.gpuNUbatch, 0);
-      expect(s.vkNoSubgroup, isFalse);
-      final custom = InferenceSettings.fromJson(
-          {'gpuNUbatch': 64, 'vkNoSubgroup': true});
-      expect(custom.gpuNUbatch, 64);
-      expect(custom.vkNoSubgroup, isTrue);
-      final restored = InferenceSettings.fromJson(custom.toJson());
-      expect(restored.gpuNUbatch, 64);
-      expect(restored.vkNoSubgroup, isTrue);
-      // 旧配置无此键 → 默认值（0=自动 / 关），行为与改动前一致。
-      final legacy = InferenceSettings.fromJson({});
-      expect(legacy.gpuNUbatch, 0);
-      expect(legacy.vkNoSubgroup, isFalse);
-    });
+    // v0.0.3 Phase 4：GPU 防闪纹/n_ubatch/vkNoSubgroup 等手机端引擎配置字段
+    // 已删除（对应旧测试移除）；遗留 JSON key 的静默兼容由下方
+    // 「旧配置（无 agent 字段）加载」用例覆盖。
 
     test('并发会话槽位：默认 1，往返一致，解析夹紧 1~4', () {
       const s = InferenceSettings();
@@ -489,6 +465,140 @@ void main() {
       final s = InferenceSettings(themeMode: 'dark');
       expect(s.copyWith().themeMode, 'dark');
       expect(s.copyWith(themeMode: 'light').themeMode, 'light');
+    });
+  });
+
+  group('InferenceSettings 本地模型登记（v0.0.3 Phase 2）', () {
+    LocalModelConfig sample() => LocalModelConfig(
+          id: 'lm_1_aaaaaaaa',
+          name: 'Qwen3-4B',
+          modelPath: r'E:\models\qwen3-4b-q4_k_xl.gguf',
+          engineId: 'wangcai-npu',
+          customArgs: const ['-np', '  ', '--flash-attn'],
+          mmprojPath: r'E:\models\qwen3-4b-mmproj.gguf',
+          draftPath: null,
+          ctx: 4096,
+          chunk: 128,
+          gpuLayers: 0,
+        );
+
+    test('默认空列表；登记/往返经真实 JSON 编解码保真', () {
+      expect(const InferenceSettings().localModels, isEmpty);
+      final s = InferenceSettings(
+        localModels: [sample()],
+        defaultModelId: 'lm_1_aaaaaaaa',
+      );
+      final back =
+          InferenceSettings.fromJson(jsonDecode(jsonEncode(s.toJson())));
+      expect(back.localModels.length, 1);
+      final m = back.localModels.single;
+      expect(m.id, 'lm_1_aaaaaaaa');
+      expect(m.name, 'Qwen3-4B');
+      expect(m.modelPath, r'E:\models\qwen3-4b-q4_k_xl.gguf');
+      expect(m.engineId, 'wangcai-npu');
+      // 空串/纯空白条目在编解码中被滤除，有效尾参保序保留。
+      expect(m.customArgs, ['-np', '--flash-attn']);
+      expect(m.mmprojPath, r'E:\models\qwen3-4b-mmproj.gguf');
+      expect(m.hasDraft, isFalse);
+      expect(m.ctx, 4096);
+      expect(m.chunk, 128);
+      expect(m.gpuLayers, 0);
+      expect(back.defaultModelId, 'lm_1_aaaaaaaa');
+    });
+
+    test('null 字段不落 JSON 键；老配置缺 localModels 键 → 空列表', () {
+      final minimal = LocalModelConfig(
+        id: 'lm_2',
+        name: 'M',
+        modelPath: r'D:\m.gguf',
+      );
+      final json = minimal.toJson();
+      for (final k in ['engineId', 'customArgs', 'mmprojPath', 'draftPath',
+          'ctx', 'chunk', 'gpuLayers']) {
+        expect(json.containsKey(k), isFalse, reason: k);
+      }
+      expect(
+          InferenceSettings.fromJson(const <String, dynamic>{}).localModels,
+          isEmpty);
+    });
+
+    test('坏条目静默丢弃（非 Map / 缺 id / 缺 modelPath / 类型错）', () {
+      final back = InferenceSettings.fromJson({
+        'localModels': [
+          sample().toJson(),
+          42,
+          {'id': 'lm_x', 'name': 'no-path'}, // 缺 modelPath
+          {'modelPath': 'd:\\a.gguf'}, // 缺 id
+          {'id': 'lm_y', 'modelPath': 3.5}, // 类型错
+          {'id': 'lm_z', 'modelPath': 'd:\\z.gguf', 'ctx': 'big'}, // ctx 坏
+        ],
+      });
+      expect(back.localModels.map((e) => e.id), ['lm_1_aaaaaaaa', 'lm_z']);
+      expect(back.localModels.last.ctx, isNull);
+    });
+
+    test('copyWith：id 锁定、clear 标记能真正清空可空字段', () {
+      final m = sample();
+      final edited = m.copyWith(
+        name: '改名',
+        ctx: 2048,
+        clearEngineId: true,
+        clearCustomArgs: true,
+        clearMmprojPath: true,
+        draftPath: r'D:\draft.gguf',
+      );
+      expect(edited.id, m.id);
+      expect(edited.name, '改名');
+      expect(edited.ctx, 2048);
+      expect(edited.engineId, isNull);
+      expect(edited.customArgs, isNull);
+      expect(edited.mmprojPath, isNull);
+      expect(edited.hasDraft, isTrue);
+      // 不传 = 保留。
+      expect(m.copyWith(chunk: null).chunk, 128);
+      expect(m.copyWith().gpuLayers, 0);
+    });
+
+    test('displayName：name 空取文件名去扩展名；newLocalModelId 不撞且形态合规', () {
+      expect(
+        LocalModelConfig(id: 'i', name: '  ', modelPath: r'E:\a\lfm3.gguf')
+            .displayName,
+        'lfm3',
+      );
+      final ids = <String>{for (var i = 0; i < 100; i++) newLocalModelId()};
+      expect(ids.length, greaterThan(98));
+      expect(
+          ids.every((e) => RegExp(r'^lm_[0-9]+_[0-9a-f]{1,8}$').hasMatch(e)),
+          isTrue);
+    });
+  });
+
+  group('InferenceSettings 引擎目录/镜像（v0.0.3 Phase 3c）', () {
+    test('JSON 往返 + 空白清洗为 null（老 JSON 缺键 = null 不炸）', () {
+      final s = const InferenceSettings()
+          .copyWith(enginesDir: r'E:\my_engines ', engineMirror: ' https://gh/ ');
+      final back = InferenceSettings.fromJson(s.toJson());
+      expect(back.enginesDir, r'E:\my_engines', reason: '存储前 trim');
+      expect(back.engineMirror, 'https://gh/');
+      final legacy = InferenceSettings.fromJson(const {'gpuLayers': 12});
+      expect(legacy.enginesDir, isNull);
+      expect(legacy.engineMirror, isNull);
+      // 空串/纯空白落盘读回 = null（等同未配置）
+      final blank = InferenceSettings.fromJson(
+          const {'enginesDir': '   ', 'engineMirror': ''});
+      expect(blank.enginesDir, isNull);
+      expect(blank.engineMirror, isNull);
+    });
+
+    test('copyWith clear 标记可复位默认（null 不可被 ?? 语义表达）', () {
+      final s = const InferenceSettings()
+          .copyWith(enginesDir: 'D:\\e', engineMirror: 'https://gh/');
+      final cleared =
+          s.copyWith(clearEnginesDir: true, clearEngineMirror: true);
+      expect(cleared.enginesDir, isNull);
+      expect(cleared.engineMirror, isNull);
+      // 不传 = 保持
+      expect(s.copyWith(gpuLayers: 8).enginesDir, 'D:\\e');
     });
   });
 }

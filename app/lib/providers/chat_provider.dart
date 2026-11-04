@@ -10,10 +10,15 @@ import 'package:path_provider/path_provider.dart';
 import '../models/chat_message.dart';
 import '../models/conversation.dart';
 import '../models/turn_trace.dart';
+import 'project_provider.dart' show activeProjectIdProvider;
 
 import '../agent/agent.dart';
 import '../agent/dev/dev.dart'
-    show DevSessionController, buildDevContext, sanitizeWorkspaceDirName;
+    show
+        DevSessionController,
+        buildDevContext,
+        buildWorkspaceContextSection,
+        sanitizeWorkspaceDirName;
 import '../agent/dev/tools/ssh_tools.dart' show readRemoteAgentsMd;
 import '../agent/dev/workspace.dart' show DevWorkspace;
 import '../agent/web_search/web_search_provider.dart';
@@ -79,7 +84,6 @@ import 'agent_state_provider.dart'
 import 'shared_providers.dart'
     show inferenceServiceProvider, openAiServiceProvider;
 import 'settings_provider.dart' show settingsProvider;
-import '../services/app_bridge.dart' show AppBridge;
 import 'context_usage_provider.dart' show contextUsageProvider;
 
 // Re-export for other files that need these types.
@@ -179,13 +183,21 @@ String? resolveExplicitLocalTarget({
 
 final conversationsProvider =
     StateNotifierProvider<ConversationsNotifier, List<Conversation>>((ref) {
-  return ConversationsNotifier(ref.read(storageServiceProvider));
+  // 项目层级（v0.0.3）：watch 激活项目 id —— 切换项目时 riverpod 重建本
+  // notifier（值相等去重，改名/刷新不会白白重载列表）。
+  return ConversationsNotifier(ref.read(storageServiceProvider),
+      projectId: ref.watch(activeProjectIdProvider));
 });
 
 class ConversationsNotifier extends StateNotifier<List<Conversation>> {
   final StorageService _storage;
+
+  /// 归属项目（null = 未加载/不过滤：加载期间先展示全量，加载完自然收敛）。
+  final String? _projectId;
   Completer<void>? _loadCompleter;
-  ConversationsNotifier(this._storage) : super([]) {
+  ConversationsNotifier(this._storage, {String? projectId})
+      : _projectId = projectId,
+        super([]) {
     _ensureLoaded();
   }
 
@@ -194,7 +206,7 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
   Future<void> _ensureLoaded() {
     if (_loadCompleter == null) {
       _loadCompleter = Completer<void>();
-      _storage.getAllConversations().then((list) {
+      _storage.getAllConversations(projectId: _projectId).then((list) {
         state = list;
         _loadCompleter!.complete();
       }).catchError((e) {
@@ -207,7 +219,10 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
   Future<void> ensureLoaded() => _ensureLoaded();
 
   Future<void> create({String title = '新对话'}) async {
-    final conv = await _storage.createConversation(title: title);
+    // 新会话自动归属当前激活项目（项目未加载时留 NULL = 默认项目语义，
+    // 迁移器的 NULL 兜底保证可见性）。
+    final conv = await _storage.createConversation(
+        title: title, projectId: _projectId);
     state = [conv, ...state];
   }
 
@@ -218,6 +233,12 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
       try {
         final base = await getApplicationSupportDirectory();
         await GoalStore(baseDir: '${base.path}/goals').deletePlan(id);
+      } catch (_) {}
+    }());
+    // 会话 JSONL 随删（v0.0.3 项目树；旧平铺一并清，绝不留幽灵副本）。
+    unawaited(() async {
+      try {
+        await JsonlSessionStore().delete(id);
       } catch (_) {}
     }());
     state = state.where((c) => c.id != id).toList();
@@ -415,42 +436,9 @@ class ChatNotifier extends StateNotifier<bool> {
     _ref.read(runningTurnsProvider.notifier).state = map;
     _ref.read(isGeneratingProvider.notifier).state = map.isNotEmpty;
     state = map.isNotEmpty;
-    _updateInferenceRefreshRate();
+    // v0.0.3 Phase 4：手机端「GPU 推理防闪纹锁 60Hz」链路（Adreno UMA 专用，
+    // 依赖已删除的 gpuBackend/inferenceLimitRefreshRate）已整体退场。
   }
-
-  /// GPU 推理防闪纹（2026-10-07 小米13 定案）：本地回合的模型加载 + prefill
-  /// 瞬时显存带宽会挤占显示供帧（Adreno UMA 闪条纹）。回合存在期间锁
-  /// 60Hz（DPU 供帧带宽减半），回合结束恢复跟随系统。API 回合不占 GPU
-  /// 引擎、CPU 后端无此现象，均不介入。
-  void _updateInferenceRefreshRate() {
-    try {
-      final s = _ref.read(settingsProvider);
-      if (!s.inferenceLimitRefreshRate) return;
-      final gpuTurnActive = _activeTurns.values
-          .any((t) => !t.started || t.local); // 未定路由的占位按 GPU 预判
-      if (s.gpuBackend == 'cpu') {
-        if (_rateLimitEngaged) {
-          _rateLimitEngaged = false;
-          AppBridge.setPreferredRefreshRate(0);
-        }
-        return;
-      }
-      if (gpuTurnActive && !_rateLimitEngaged) {
-        _rateLimitEngaged = true;
-        AppBridge.setPreferredRefreshRate(60).then((ok) => debugPrint(
-            '[ChatNotifier] [refresh-rate] engage 60Hz ok=$ok '
-            'backend=${s.gpuBackend}'));
-      } else if (!gpuTurnActive && _rateLimitEngaged) {
-        _rateLimitEngaged = false;
-        AppBridge.setPreferredRefreshRate(0).then((ok) =>
-            debugPrint('[ChatNotifier] [refresh-rate] restore ok=$ok'));
-      }
-    } catch (e) {
-      debugPrint('[ChatNotifier] refresh-rate limit failed: $e');
-    }
-  }
-
-  bool _rateLimitEngaged = false;
 
   ChatNotifier(this._ref, this._inference, this._storage) : super(false);
 
@@ -1511,6 +1499,22 @@ class ChatNotifier extends StateNotifier<bool> {
       } catch (e) {
         debugPrint('[Dev] context build failed: $e');
       }
+    } else if (settings.agentEnabled) {
+      // 普通聊天 × 智能体（v0.0.3 项目层级）：注入轻量工作区段（只给
+      // 工作目录真源，不带任务/计划/开发循环）——模型从此知道"在哪个
+      // 项目目录里干活"，文件/命令工具与它同真源（workspaceResolver）。
+      // 项目不变更逐回合稳定，不破坏 KV 前缀 / API prompt cache。
+      try {
+        await DevSessionController.instance.init(
+            preferredActiveId: settings.devWorkspaceId);
+        final wsSection = await buildWorkspaceContextSection(
+            workspaceId: DevSessionController.instance.activeWorkspaceId);
+        if (wsSection.trim().isNotEmpty) {
+          systemPrompt = '$systemPrompt\n\n$wsSection';
+        }
+      } catch (e) {
+        debugPrint('[Project] workspace context build failed: $e');
+      }
     }
     // ---- 用户记忆自动注入（DSH AGENTS.md 承担"用户偏好"的等价物）----
     // 全局记忆前 8 条注入系统提示，模型跨会话记得用户偏好/事实。
@@ -1798,10 +1802,13 @@ class ChatNotifier extends StateNotifier<bool> {
       systemPrompt: systemPrompt,
       onToolActivity: session.update,
       sandboxApprover: _ref.read(sandboxApproverProvider),
-      // Dev Agent：开发模式注入工作区解析器（文件/ssh 工具跟随激活工作区）。
-      workspaceResolver: settings.devModeEnabled
-          ? DevSessionController.instance.resolveActiveWorkspaceId
-          : null,
+      // 工作区解析器（v0.0.3 真源合一）：**普通聊天也注入** ——
+      // 激活项目时 ProjectsNotifier 已把 DevSessionController 切到项目派生
+      // 工作区（localMirror=项目工作目录），文件/shell 工具因此跟随项目；
+      // 从未激活过项目时 activeWorkspaceId='default' → documents/workspace，
+      // 与旧行为逐字节一致（零回归）。
+      workspaceResolver:
+          DevSessionController.instance.resolveActiveWorkspaceId,
       // Phase 6：pre-execute `ask` → 审批确认框（ApprovalDialog）。
       preApprover: _ref.read(toolPreApproverProvider),
       hooks: hooks,

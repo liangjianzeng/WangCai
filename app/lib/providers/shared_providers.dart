@@ -12,8 +12,5 @@ final inferenceServiceProvider =
 final storageServiceProvider = Provider<StorageService>((ref) => StorageService());
 final openAiServiceProvider = Provider<OpenAiService>((ref) => OpenAiService());
 
-/// 设备硬件信息（SoC 等），惰性获取一次；用于按芯片禁用不支持的 GPU 后端
-/// （如 MediaTek 天玑芯片上 OpenCL 不可用，Vulkan 优先）。
-final deviceInfoProvider = FutureProvider<Map<String, String>>((ref) async {
-  return ref.read(inferenceServiceProvider).getDeviceInfo();
-});
+// deviceInfoProvider（SoC 硬件信息）已随 Phase 4 删除：唯一消费者是天玑
+// 芯片禁用 OpenCL 的手机端 GPU 后端判定（settings_screen GPU 卡一并移除）。

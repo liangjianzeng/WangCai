@@ -69,65 +69,42 @@ class InferenceService implements InferenceBackend {
   // ------------------------------------------------------------------
   // Model management
   // ------------------------------------------------------------------
+  /// Android JNI 通道（桌面版死路径：Windows 走 LocalServerInference）。
+  /// 签名与 [InferenceBackend] 对齐（v0.0.3 Phase 3 瘦身）；JNI 协议字典里
+  /// 的手机端键（enableGpu/gpuBackend/enableMtp/nUbatch/vkNoSubgroup/moe*）
+  /// 用历史默认值填平 —— 原生侧代码不动，桌面侧永远不会调到差异化值。
+  /// [chunk]/[customArgs]/[engineId] 无 JNI 对应物，忽略（Android 已退役）。
+  @override
   Future<bool> loadModel(
     String path, {
-    int nCtx = 4096,
-    bool enableGpu = true,
-    int gpuLayers = 20,
-    String gpuBackend = 'auto',
-    bool enableMtp = false,
-
-    /// 可选的 mmproj 投影器路径（text+mmproj 两文件形态的视觉模型）。
-    /// 原生侧（mtmd）加载该投影器后启用图像理解；null 表示单文件 VL 或文本模型。
+    int? nCtx,
+    int? chunk,
+    int? gpuLayers,
     String? mmprojPath,
-
-    /// 可选的 dspark 投机解码草稿模型路径（如 Bonsai-27B-dspark-Q4_1.gguf）。
-    /// 原生侧加载后启用 DFlash/DSpark 投机加速；null 表示不启用。
     String? draftPath,
-
-    /// prefill 宽度 n_ubatch（0 = 自动：统一 512，split-MoE 按 bank 收敛）。
-    /// 小值拆小 dispatch burst，缓解 Adreno GPU fault（小米13 定案）。
-    int nUbatch = 0,
-
-    /// Vulkan 禁用 subgroup（GGML_VK_NO_SUBGROUP，turnip GPU 挂死缓解）。
-    bool vkNoSubgroup = false,
-
-    /// split-MoE manifest 路径（{modelsRoot}/{modelId}.experts/manifest.json）。
-    /// 非空时原生层启用专家 slot 动态加载（超大 MoE 统一架构）。
-    String? moeManifest,
-
-    /// split-MoE 每层 prefill 槽位容量（>= n_expert_used）。0 = 不启用。
-    int moeBank = 0,
-
-    /// split-MoE 单槽全层驻留字节（manifest Σ bytes_per_expert），oom 预检用。
-    int moeSlotBytes = 0,
-
-    /// in-place 整包 split：整包 gguf 内专家区总字节，oom 预检从常驻估算中扣除。
-    /// packed-bins 形态传 0（主文件本就不含专家）。
-    int moeExpertsBytes = 0,
-    int moeResidentBytes = 0,
+    List<String>? customArgs,
+    String? engineId,
   }) async {
     debugPrint('[InferenceService] Loading model from: $path '
-        '(nCtx=$nCtx, enableGpu=$enableGpu, gpuLayers=$gpuLayers, gpuBackend=$gpuBackend, enableMtp=$enableMtp'
-        ', mmproj=$mmprojPath, draft=$draftPath, nUbatch=$nUbatch, vkNoSubgroup=$vkNoSubgroup'
-        ', moe=$moeManifest/$moeBank/$moeSlotBytes/$moeExpertsBytes)');
+        '(nCtx=$nCtx, gpuLayers=$gpuLayers'
+        ', mmproj=$mmprojPath, draft=$draftPath)');
     try {
       final result = await _channel.invokeMethod('loadModel', {
         'path': path,
-        'nCtx': nCtx,
-        'enableGpu': enableGpu,
-        'gpuLayers': gpuLayers,
-        'gpuBackend': gpuBackend,
-        'enableMtp': enableMtp,
+        'nCtx': nCtx ?? 4096,
+        'enableGpu': true,
+        'gpuLayers': gpuLayers ?? 20,
+        'gpuBackend': 'auto',
+        'enableMtp': false,
         'mmprojPath': mmprojPath,
         'draftPath': draftPath,
-        'nUbatch': nUbatch,
-        'vkNoSubgroup': vkNoSubgroup,
-        'moeManifest': moeManifest,
-        'moeBank': moeBank,
-        'moeSlotBytes': moeSlotBytes,
-        'moeExpertsBytes': moeExpertsBytes,
-        'moeResidentBytes': moeResidentBytes,
+        'nUbatch': 0,
+        'vkNoSubgroup': false,
+        'moeManifest': null,
+        'moeBank': 0,
+        'moeSlotBytes': 0,
+        'moeExpertsBytes': 0,
+        'moeResidentBytes': 0,
       });
       debugPrint('[InferenceService] Model load result: $result');
       return result == true;
@@ -142,49 +119,8 @@ class InferenceService implements InferenceBackend {
     await _channel.invokeMethod('unloadModel');
   }
 
-  /// 推送 OOM 内存守卫设置到原生层（设置→推理引擎→内存守卫）。
-  ///
-  /// 必须在每次 loadModel 之前调用：原生侧在加载时读取这组值判定
-  /// 「预检拒绝 / 加载后 KV 预算」。guard=false 时完全跳过守卫拒绝
-  /// （风险：整台机器硬死机重启，仅高级用户排障用）。
-  Future<void> setOomGuard({
-    required bool enabled,
-    int preHeadroomMb = 768,
-    int postHeadroomMb = 1536,
-  }) async {
-    try {
-      await _channel.invokeMethod('setOomGuard', {
-        'enabled': enabled,
-        'preHeadroomMb': preHeadroomMb,
-        'postHeadroomMb': postHeadroomMb,
-      });
-    } catch (e) {
-      debugPrint('[InferenceService] setOomGuard failed: $e');
-    }
-  }
-
-  /// 推送 KV 缓存精度到原生层（设置→推理引擎→KV 精度）。
-  ///
-  /// 必须在每次 loadModel 之前调用；重载模型后生效。[type] 取 'q4_0' 或 'q8_0'，
-  /// 仅量化 K；V 恒为 F16（V 量化要求开启 flash attention，本 app 保持关闭）。
-  /// 不兼容的模型架构（MLA 系）原生层会自动回退 F16 KV。
-  Future<void> setKvCacheType(String type) async {
-    try {
-      await _channel.invokeMethod('setKvCacheType', {'type': type});
-    } catch (e) {
-      debugPrint('[InferenceService] setKvCacheType failed: $e');
-    }
-  }
-
-  /// [dspark 2026-10-14] P1: flash attention 开关。必须在每次 loadModel 之前
-  /// 调用；重载模型后生效。hybrid（recurrent 层）架构原生层会强制关闭。
-  Future<void> setFlashAttn(bool enabled) async {
-    try {
-      await _channel.invokeMethod('setFlashAttn', {'enabled': enabled});
-    } catch (e) {
-      debugPrint('[InferenceService] setFlashAttn failed: $e');
-    }
-  }
+  // 手机端 JNI 推送三件套 setOomGuard/setKvCacheType/setFlashAttn 已随
+  // Phase 4 删除（Android 原生层死通道；桌面侧由 admission + 引擎参数链承担）。
 
   Future<bool> isLoaded() async {
     final result = await _channel.invokeMethod('isLoaded');
@@ -230,22 +166,6 @@ class InferenceService implements InferenceBackend {
   }
 
 
-
-  /// 获取设备硬件信息（SoC 等），用于按芯片禁用不支持的 GPU 后端。
-  Future<Map<String, String>> getDeviceInfo() async {
-    try {
-      final r = await _channel.invokeMethod('getDeviceInfo');
-      if (r is Map) {
-        return r.map((k, v) => MapEntry(k.toString(), v?.toString() ?? ''));
-      }
-    } catch (e) {
-      debugPrint('[InferenceService] getDeviceInfo failed: $e');
-    }
-    return const {
-      'board': '', 'hardware': '', 'socManufacturer': '', 'socModel': '',
-      'manufacturer': '', 'model': '',
-    };
-  }
 
   // ------------------------------------------------------------------
   // Streaming completion (raw prompt, no chat template)

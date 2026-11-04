@@ -9,6 +9,7 @@ import '../agent/dev/ssh/ssh_credentials.dart' show SshConfig;
 import '../agent/web_search/web_search_provider.dart';
 import '../models/agent_persona.dart';
 import '../models/api_model.dart';
+import '../models/local_model.dart';
 import '../services/api_key_store.dart' // WangCai 分叉 #9：API key 安全存储
     show migrateApiKeysToSecure, overlayApiKeys, redactApiKeys;
 import '../services/settings_service.dart';
@@ -48,23 +49,10 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
     await _persist();
   }
 
-  Future<void> setEnableGpu(bool value) async {
-    state = state.copyWith(enableGpu: value);
-    await _persist();
-  }
-
   Future<void> setGpuLayers(int value) async {
     // 防御性夹紧，避免越界值进入原生层??
     final clamped = value.clamp(0, 999);
     state = state.copyWith(gpuLayers: clamped);
-    await _persist();
-  }
-
-  /// 设置 GPU 后端??cpu' / 'vulkan' / 'opencl' / 'auto'）??
-  Future<void> setGpuBackend(String value) async {
-    const allowed = {'cpu', 'vulkan', 'opencl', 'auto'};
-    if (!allowed.contains(value)) return;
-    state = state.copyWith(gpuBackend: value);
     await _persist();
   }
 
@@ -79,53 +67,6 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
   /// 设置是否允许 Qwen3 思考模式。默认关闭（直接作答）??
   Future<void> setEnableThinking(bool value) async {
     state = state.copyWith(enableThinking: value);
-    await _persist();
-  }
-
-  /// 设置某个模型是否启用 MTP（多 token 预测）加速。按模型 id 独立开关，
-  /// 互不影响——仅对带 NextN 头的模型生效，用户可在模型列表逐个开启??
-  Future<void> setEnableMtp(String modelId, bool value) async {
-    final updated = Map<String, bool>.from(state.mtpEnabledByModel);
-    updated[modelId] = value;
-    state = state.copyWith(mtpEnabledByModel: updated);
-    await _persist();
-  }
-
-  /// 设置全局 MTP 功能总开关（默认关闭）。关闭时模型卡片不显示各模型 MTP
-  /// 开关，加载模型也强制不启用；开启后模型卡片显示支持 MTP 模型的开关，
-  /// 用户可逐个配置??
-  Future<void> setEnableMtpFeature(bool value) async {
-    state = state.copyWith(enableMtpFeature: value);
-    await _persist();
-  }
-
-  /// 设置某个模型是否启用 dspark 投机加速。按模型 id 独立开关，互不影响
-  /// ——仅对目录声明了草稿头（dspark config）且文件已下载完整的模型生效??
-  Future<void> setEnableDspark(String modelId, bool value) async {
-    final updated = Map<String, bool>.from(state.dsparkEnabledByModel);
-    updated[modelId] = value;
-    state = state.copyWith(dsparkEnabledByModel: updated);
-    await _persist();
-  }
-
-  /// 设置全局 dspark 功能总开关（默认关闭）。关闭时模型卡片不显示各模型
-  /// dspark 开关，加载模型也强制不启用；开启后模型卡片显示声明了草稿头??
-  /// 模型??dspark 开关，用户可逐个配置??
-  Future<void> setEnableDsparkFeature(bool value) async {
-    state = state.copyWith(enableDsparkFeature: value);
-    await _persist();
-  }
-
-  /// 设置 split-MoE 热专家 bank 手动覆写（8–64）。传 null = 恢复内存自适应
-  /// 自动分档。modelId 用 '*' 表示应用到所有智能 MoE 模型（设置页全局滑条）。
-  Future<void> setMoeBankOverride(String modelId, int? bank) async {
-    final updated = Map<String, int>.from(state.moeBankOverrideByModel);
-    if (bank == null) {
-      updated.remove(modelId);
-    } else {
-      updated[modelId] = bank.clamp(8, 64);
-    }
-    state = state.copyWith(moeBankOverrideByModel: updated);
     await _persist();
   }
 
@@ -196,6 +137,58 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
     if (state.activeApiModelId == modelId) return;
     state = state.copyWith(
         activeApiModelId: modelId, clearActiveApiModel: modelId == null);
+    await _persist();
+  }
+
+  // ---------------------------------------------------------------
+  // 本地模型登记（v0.0.3 桌面独立版 Phase 2；与 apiModels 同一持久化）
+  // ---------------------------------------------------------------
+
+  /// 登记一个本地 GGUF 模型条目（同路径重复登记直接忽略）。
+  Future<void> addLocalModel(LocalModelConfig config) async {
+    if (state.localModels.any((m) => m.modelPath == config.modelPath)) return;
+    state = state.copyWith(localModels: [...state.localModels, config]);
+    await _persist();
+  }
+
+  /// 更新一个已登记的本地模型（按 id 定位；不存在则忽略）。
+  Future<void> updateLocalModel(LocalModelConfig config) async {
+    state = state.copyWith(
+      localModels: [
+        for (final m in state.localModels)
+          if (m.id == config.id) config else m,
+      ],
+    );
+    await _persist();
+  }
+
+  /// 移除登记（**只删登记项，不碰磁盘文件**——桌面模型是用户自管的文件）；
+  /// 若它正是默认模型，同时清默认标记，免得启动自动加载指向幽灵。
+  Future<void> deleteLocalModel(String id) async {
+    final removedDefault = state.defaultModelId == id;
+    state = state.copyWith(
+      localModels: state.localModels.where((m) => m.id != id).toList(),
+      defaultModelId: removedDefault ? null : state.defaultModelId,
+      clearDefaultModel: removedDefault,
+    );
+    await _persist();
+  }
+
+  /// 引擎安装目录（Phase 3c 按需下载）：null/空白 = 复位数据区默认。
+  Future<void> setEnginesDir(String? dir) async {
+    final t = (dir ?? '').trim();
+    state = t.isEmpty
+        ? state.copyWith(clearEnginesDir: true)
+        : state.copyWith(enginesDir: t);
+    await _persist();
+  }
+
+  /// 引擎下载镜像前缀（Phase 3c）：null/空白 = 仅官方直连。
+  Future<void> setEngineMirror(String? mirror) async {
+    final t = (mirror ?? '').trim();
+    state = t.isEmpty
+        ? state.copyWith(clearEngineMirror: true)
+        : state.copyWith(engineMirror: t);
     await _persist();
   }
 
@@ -851,68 +844,6 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
   /// GPU/CPU 占用率监控呈现开关??
   Future<void> setShowResourceMonitor(bool value) async {
     state = state.copyWith(showResourceMonitor: value);
-    await _persist();
-  }
-
-  /// OOM 内存守卫总开关。关闭 = 加载前不再拒绝超大模型（有整机死机风险）。
-  Future<void> setOomGuardEnabled(bool value) async {
-    state = state.copyWith(oomGuardEnabled: value);
-    await _persist();
-  }
-
-  /// KV 缓存精度：'q4_0'（默认）/ 'q8_0'。仅量化 K，V 恒 F16（见 settings_service
-  /// 注释）。重新加载模型后生效。
-  Future<void> setKvCacheType(String value) async {
-    final v = (value == 'q8_0') ? 'q8_0' : 'q4_0';
-    if (v == state.kvCacheType) return;
-    state = state.copyWith(kvCacheType: v);
-    await _persist();
-  }
-
-  /// [dspark 2026-10-14] P1: flash attention 开关。默认关。重新加载模型后生效。
-  Future<void> setFlashAttn(bool value) async {
-    if (value == state.flashAttn) return;
-    state = state.copyWith(flashAttn: value);
-    await _persist();
-  }
-
-  /// GPU 推理时限制刷新率（防闪纹）。关 = 推理期间不干预屏幕刷新率。
-  Future<void> setInferenceLimitRefreshRate(bool value) async {
-    state = state.copyWith(inferenceLimitRefreshRate: value);
-    await _persist();
-  }
-
-  /// prefill 宽度 n_ubatch。0 = 自动（统一 512，split-MoE 按 bank 自动收敛）；
-  /// 32~512 = 拆小（GPU fault 缓解等场景）。改后重新加载模型生效。
-  /// 2026-10-16 起对任意后端生效（CPU 档 ubatch=16 强制已证伪废除）。
-  Future<void> setGpuNUbatch(int value) async {
-    state = state.copyWith(gpuNUbatch: value < 32 ? 0 : value.clamp(32, 512));
-    await _persist();
-  }
-
-  /// Vulkan 禁用 subgroup（GGML_VK_NO_SUBGROUP）。重启 app 后生效。
-  Future<void> setVkNoSubgroup(bool value) async {
-    state = state.copyWith(vkNoSubgroup: value);
-    await _persist();
-  }
-
-  /// 智能 MoE 加载（超大 MoE 统一架构）。改后重新加载模型生效。
-  Future<void> setSmartMoeEnabled(bool value) async {
-    state = state.copyWith(smartMoeEnabled: value);
-    await _persist();
-  }
-
-  /// OOM 预检余量（MB??~4096）。加载前 MemAvailable 扣除该余量后与模型体??
-  /// 比较；调小更容易放过极限大模型，调大更保守??
-  Future<void> setOomPreHeadroomMb(int value) async {
-    state = state.copyWith(oomPreHeadroomMb: value.clamp(0, 4096));
-    await _persist();
-  }
-
-  /// OOM 加载后余量（MB??~4096）。KV cache / 图计算缓冲预??=
-  /// MemAvailable - 该余量；调小??KV 更大空间，调大更保守??
-  Future<void> setOomPostHeadroomMb(int value) async {
-    state = state.copyWith(oomPostHeadroomMb: value.clamp(0, 4096));
     await _persist();
   }
 

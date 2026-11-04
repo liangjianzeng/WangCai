@@ -21,6 +21,8 @@ import '../providers/index.dart'
         currentModelIdProvider,
         kLocalVisionSupported;
 import '../providers/model_provider.dart';
+import '../providers/project_provider.dart' show projectsProvider, ProjectsNotifier;
+import '../project/project.dart' show Project;
 import '../providers/settings_provider.dart' show settingsProvider;
 import '../services/attachment_service.dart'
     show kMaxAttachments, kSupportedExtensions;
@@ -45,6 +47,7 @@ import '../agent/builtin_tools/todo_tool.dart'
     show readTodoStore, renderTodoCardText;
 import '../widgets/todo_card.dart';
 import '../models/conversation.dart';
+import '../models/local_model.dart';
 import '../services/settings_service.dart';
 import '../services/storage_permission_service.dart';
 import '../widgets/agent_workflow.dart';
@@ -219,6 +222,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       await initInferenceEngine();
     } catch (e) {
       debugPrint('[Home] InferenceService init failed, skipping auto-load: $e');
+      return;
+    }
+
+    // v0.0.3 桌面独立版：defaultModelId 三种形态并存 ——
+    //   `npu:<preset>`（NPU 预置虚拟条目）、`lm_*`（本地登记）走
+    //   LocalModelConfig 通道；其余为旧下载链路 catalog id（保留兼容）。
+    if (defaultId.startsWith(kNpuPresetIdPrefix)) {
+      final cfg = resolveNpuPresetConfig(
+          defaultId.substring(kNpuPresetIdPrefix.length));
+      if (cfg == null) return; // 模型文件不在库目录 → 静默跳过
+      final ok = await manager.loadModelByLocalConfig(cfg);
+      if (ok && mounted) {
+        ref.read(currentModelIdProvider.notifier).state = defaultId;
+        manager.appendInferenceLog('启动自动加载默认模型（NPU 预置）: $defaultId');
+      }
+      return;
+    }
+    if (defaultId.startsWith(kLocalModelIdPrefix)) {
+      final cfg = settings.localModels
+          .where((m) => m.id == defaultId && File(m.modelPath).existsSync())
+          .firstOrNull;
+      if (cfg == null) return; // 登记项被移除/文件被移走 → 静默跳过
+      final ok = await manager.loadModelByLocalConfig(cfg);
+      if (ok && mounted) {
+        ref.read(currentModelIdProvider.notifier).state = defaultId;
+        manager.appendInferenceLog('启动自动加载默认模型（本地登记）: $defaultId');
+      }
       return;
     }
 
@@ -3088,6 +3118,277 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   void _invalidateSnippets() => _snippetsFuture = null;
 
+  // ---- v0.0.3 项目层级：左栏项目选择器（设计 §12 Phase 1） ----------------
+  //
+  // 纪律：项目是工作目录的**唯一真源**——激活项目即切换工具层 cwd
+  // （ProjectsNotifier._syncDevWorkspace 派生 DevWorkspace），Dev 工作区
+  // 胶囊显示的是同一实体。这里只做展示与操作入口，不存任何路径副本。
+
+  /// 会话面板头部：当前项目 + 工作目录（点开项目面板）。
+  Widget _buildProjectHeader() {
+    final state = ref.watch(projectsProvider);
+    final active = state.active;
+    final theme = Theme.of(context);
+    return Material(
+      color: theme.colorScheme.surfaceContainerLow,
+      child: InkWell(
+        onTap: () => _showProjectSheet(),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          child: Row(children: [
+            Icon(active != null && !active.isDefault
+                ? Icons.folder_copy_outlined
+                : Icons.folder_outlined,
+                size: 18,
+                color: theme.colorScheme.primary),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    state.loaded
+                        ? (active?.name ?? Project.kDefaultName)
+                        : '正在加载项目…',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    active?.workspacePath ?? '（未设置工作目录）',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade600, fontSize: 11),
+                  ),
+                ],
+              ),
+            ),
+            Icon(Icons.unfold_more, size: 18, color: Colors.grey.shade500),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  String _pathBasename(String path) {
+    final parts = path.split(RegExp(r'[\\/]')).where((s) => s.isNotEmpty);
+    return parts.isEmpty ? path : parts.last;
+  }
+
+  Future<void> _openInExplorer(String path) async {
+    try {
+      if (Platform.isWindows) {
+        await Process.start('explorer.exe', [path],
+            mode: ProcessStartMode.detached);
+      } else if (Platform.isLinux) {
+        await Process.start('xdg-open', [path],
+            mode: ProcessStartMode.detached);
+      }
+    } catch (_) {}
+  }
+
+  /// 项目名输入框（新建/重命名共用）。确定返回名字，取消返回 null。
+  Future<String?> _promptProjectName(BuildContext ctx,
+      {String initial = '', String title = '项目名称'}) async {
+    final ctrl = TextEditingController(text: initial);
+    return showDialog<String>(
+      context: ctx,
+      builder: (d) => AlertDialog(
+        title: Text(title),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '如：汪柴主仓库'),
+          onSubmitted: (v) => Navigator.pop(d, v),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(d, ctrl.text),
+              child: const Text('确定')),
+        ],
+      ),
+    );
+  }
+
+  /// 新建项目：file_picker 选文件夹 → 命名 → 创建并激活。
+  Future<void> _createProjectViaPicker(
+      BuildContext ctx, ProjectsNotifier notifier) async {
+    final dir = await FilePicker.platform
+        .getDirectoryPath(dialogTitle: '选择项目工作目录');
+    if (dir == null || !ctx.mounted) return;
+    final name =
+        await _promptProjectName(ctx, initial: _pathBasename(dir));
+    if (name == null || name.trim().isEmpty || !ctx.mounted) return;
+    await notifier.create(name: name, workspacePath: dir);
+    setState(() {});
+    if (ctx.mounted) {
+      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+          content:
+              Text('已创建并激活项目「${name.trim()}」：$dir')));
+    }
+  }
+
+  /// 项目面板：列表（会话计数/激活态）+ 新建 + 行内 重命名/打开目录/移除。
+  Future<void> _showProjectSheet() async {
+    final notifier = ref.read(projectsProvider.notifier);
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx2, setSheet) {
+            final state = ref.read(projectsProvider);
+            return SafeArea(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 8, 4),
+                    child: Row(children: [
+                      Expanded(
+                        child: Text('项目',
+                            style: Theme.of(ctx2)
+                                .textTheme
+                                .titleMedium
+                                ?.copyWith(fontWeight: FontWeight.w600)),
+                      ),
+                      TextButton.icon(
+                        onPressed: () async {
+                          await _createProjectViaPicker(ctx2, notifier);
+                          setSheet(() {});
+                        },
+                        icon: const Icon(Icons.create_new_folder, size: 18),
+                        label: const Text('新建项目'),
+                      ),
+                    ]),
+                  ),
+                  Flexible(
+                    child: FutureBuilder<List<Conversation>>(
+                      future: ref
+                          .read(storageServiceProvider)
+                          .getAllConversations(),
+                      builder: (ctx3, snap) {
+                        final counts = <String, int>{};
+                        for (final c in snap.data ?? const <Conversation>[]) {
+                          final key = c.projectId ?? Project.kDefaultId;
+                          counts[key] = (counts[key] ?? 0) + 1;
+                        }
+                        final list = [...state.projects]
+                          ..sort((a, b) {
+                            // 默认项目固定沉底（兜底容器，不是一等公民）。
+                            if (a.isDefault != b.isDefault) {
+                              return a.isDefault ? 1 : -1;
+                            }
+                            return a.name.compareTo(b.name);
+                          });
+                        if (list.isEmpty) {
+                          return const Padding(
+                            padding: EdgeInsets.all(24),
+                            child: Text('还没有项目'),
+                          );
+                        }
+                        return ListView.builder(
+                          shrinkWrap: true,
+                          itemCount: list.length,
+                          itemBuilder: (_, i) {
+                            final prj = list[i];
+                            final isActive = prj.id == state.activeId;
+                            return ListTile(
+                              leading: Icon(
+                                  isActive
+                                      ? Icons.folder_open
+                                      : Icons.folder_outlined,
+                                  color: isActive
+                                      ? Theme.of(ctx2).colorScheme.primary
+                                      : null),
+                              title: Text(prj.isDefault
+                                  ? '${prj.name}（默认）'
+                                  : prj.name),
+                              subtitle: Text(
+                                '${prj.workspacePath} · '
+                                '${counts[prj.id] ?? 0} 会话',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 11),
+                              ),
+                              trailing: PopupMenuButton<String>(
+                                onSelected: (v) async {
+                                  switch (v) {
+                                    case 'rename':
+                                      final name = await _promptProjectName(
+                                          ctx2,
+                                          initial: prj.name,
+                                          title: '重命名项目');
+                                      if (name != null) {
+                                        await notifier.rename(prj.id, name);
+                                      }
+                                    case 'open':
+                                      _openInExplorer(prj.workspacePath);
+                                    case 'remove':
+                                      final ok = await showDialog<bool>(
+                                        context: ctx2,
+                                        builder: (d) => AlertDialog(
+                                          title:
+                                              Text('移除项目「${prj.name}」？'),
+                                          content: const Text(
+                                              '只移除项目记录，会话与数据目录保留在磁盘上。'),
+                                          actions: [
+                                            TextButton(
+                                                onPressed: () =>
+                                                    Navigator.pop(d, false),
+                                                child: const Text('取消')),
+                                            FilledButton(
+                                                onPressed: () =>
+                                                    Navigator.pop(d, true),
+                                                child: const Text('移除')),
+                                          ],
+                                        ),
+                                      );
+                                      if (ok == true) {
+                                        await notifier.remove(prj.id);
+                                        setState(() {});
+                                      }
+                                  }
+                                  setSheet(() {});
+                                },
+                                itemBuilder: (_) => [
+                                  const PopupMenuItem(
+                                      value: 'rename', child: Text('重命名')),
+                                  const PopupMenuItem(
+                                      value: 'open',
+                                      child: Text('打开所在文件夹')),
+                                  if (!prj.isDefault)
+                                    const PopupMenuItem(
+                                        value: 'remove',
+                                        child: Text('移除项目（保留数据）')),
+                                ],
+                              ),
+                              onTap: () async {
+                                await notifier.setActive(prj.id);
+                                setState(() {});
+                                setSheet(() {});
+                              },
+                            );
+                          },
+                        );
+                      },
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   /// 会话面板主体（原 Drawer 内容，2026-10-24 起由左栏「会话」面板承载）。
   Widget _buildConversationDrawerBody() {
     final conversations = ref.watch(conversationsProvider);
@@ -3097,6 +3398,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       right: false,
       child: Column(
         children: [
+          _buildProjectHeader(),
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
             child: Row(children: [

@@ -9,6 +9,7 @@ import '../agent/dev/ssh/ssh_credentials.dart' show SshConfig;
 import '../agent/mcp/mcp_client.dart' show McpServerConfig;
 import '../models/agent_persona.dart';
 import '../models/api_model.dart';
+import '../models/local_model.dart';
 
 /// 推理引擎相关的用户设置（GPU 加速开??+ 卸载层数 + 后端选择 + 上下文大小）??
 ///
@@ -33,60 +34,16 @@ const List<String> kHighRiskEngineIds = ['sogou', 'baidu', 'quark'];
 const List<String> kDefaultDirectEngines = kDirectEngineIds;
 
 class InferenceSettings {
-  final bool enableGpu;
   final int gpuLayers;
   final int contextSize;
 
   /// 是否允许 Qwen3 思考模式（<think> 链）。默认关??= 直接作答，响应更快??
   final bool enableThinking;
 
-  /// GPU 后端选择??cpu' / 'vulkan' / 'opencl' / 'auto'??
-  /// 默认 'auto'：优??OpenCL（Adreno 825 ??OpenCL 驱动高度优化，与 Vulkan
-  /// 实测吞吐几乎等价；两者均经真机验证可正常输出，无数值崩坏）。用户可切到
-  /// Vulkan 对比。llama.rn ??Android 上即??OpenCL 后端，Adreno 700+ 可用??
-  final String gpuBackend;
-
-  /// 是否启用 MTP（多 token 预测）加速，按模??id 逐个开关（默认全关）??
-  /// 仅对??NextN 头的模型生效——MTP ??draft/verify/process 三次完整前向
-  /// 开销在端侧通常不划算，用户可在模型列表对每个支持的模型手动开启，
-  /// 互不影响??
-  final Map<String, bool> mtpEnabledByModel;
-
-  /// 全局 MTP 功能总开关（默认关闭）。用于控制整??APP ??MTP 是否
-  /// 「可见可用」：
-  /// - 关闭（默认）：模型卡片不显示各模型的 MTP 开关，加载模型时也强制
-  ///   不启??MTP（即使某模型曾配置开启）??
-  /// - 开启：模型列表卡片显示各支??MTP 模型的开关，用户可逐个配置??
-  ///   加载时按 `enableMtpFeature && mtpEnabled(modelId)` 决定是否启用??
-  /// 端侧 MTP 性能差收益差，故默认关闭，仅高端机用户按需打开测试??
-  final bool enableMtpFeature;
-
-  /// 是否启用 dspark 投机加速，按模??id 逐个开关（默认全关）??
-  /// 仅对目录声明 dspark 草稿头（config.dspark）且草稿文件已下载完整的模型
-  /// 生效——与 MTP 互斥（原生层二选一），互不影响??
-  final Map<String, bool> dsparkEnabledByModel;
-
-  /// 智能 MoE 热专家 bank（槽数）手动覆写，按模型 id 持久化（8–64）。
-  /// 无条目 = 自动：按机型 MemAvailable 与 manifest slot 字节估算
-  /// （见 model_provider 的 auto MoE bank 预算公式，2026-10-15）。
-  final Map<String, int> moeBankOverrideByModel;
-
   /// 视觉投影器（mmproj）按模型开关（2026-10-15，方案 P4）。
   /// 有条目 = 用户显式配置（开→加载视觉塔，关→纯文本省 ~0.9GB）；
   /// 无条目回退全局 autoLoadMmproj，保持既有用户行为不变。
   final Map<String, bool> visionEnabledByModel;
-
-  /// 全局 dspark 功能总开关（默认关闭）。用于控制整??APP ??dspark 是否
-  /// 「可见可用」：
-  /// - 关闭（默认）：模型卡片不显示各模型的 dspark 开关，加载模型时也强制
-  ///   不启用（即使某模型曾配置开启）??
-  /// - 开启：模型列表卡片显示声明了草稿头模型??dspark 开关，用户可逐个
-  ///   配置；加载时??`enableDsparkFeature && dsparkEnabled(modelId)` 决定
-  ///   是否带上草稿模型??
-  /// 端侧 Q1_0 等低比特模型??dspark 收益有限（验证批摊不动权重读取，
-  /// 净吞吐≈基线甚至更低），故默认关闭，按需开启??
-  final bool enableDsparkFeature;
-
   /// 启动后自动加载的「默认模型」id。null = 未设置??
   /// 用户在模型管理页对某个已缓存模型勾选「设为默认」后持久化；
   /// 启动进入首页时若该模型已缓存则自动加载，保证开箱即用??
@@ -94,6 +51,19 @@ class InferenceSettings {
 
   /// 已配置的 OpenAI 兼容远程模型列表（可配多个，密钥明文存本地）??
   final List<ApiModelConfig> apiModels;
+
+  /// 已登记的本地 GGUF 模型（桌面独立版 v0.0.3 / Phase 2）：
+  /// 磁盘上已存在的 .gguf + 加载配置（引擎绑定/视觉塔/草稿/参数覆盖）。
+  /// `defaultModelId` 可直接引用其中条目的 id 作为开机自动加载的默认模型。
+  final List<LocalModelConfig> localModels;
+
+  /// 引擎安装目录（Phase 3c 按需下载）：null = 默认数据区
+  /// （%APPDATA%\WangCai\engines）；用户自选目录时存绝对路径。
+  final String? enginesDir;
+
+  /// 引擎下载镜像前缀（Phase 3c）：GitHub 不稳时配 ghproxy 类前缀；
+  /// null = 仅官方直连。下载时官方永远排第一位试。
+  final String? engineMirror;
 
   /// 当前激活的 API 模型 id。null = 停用 API 接入（仅用本地模型）??
   /// 路由策略：本地模型优先，仅当本地模型未加??加载失败时才走激活的 API??
@@ -371,46 +341,37 @@ class InferenceSettings {
   /// OOM 内存守卫总开关（设置→推理引擎→内存守卫）。默认开启：加载前预检
   /// 「模型体??+ 预检余量」是否超出可用内存，超出则拒绝加载，防止 UMA 手机
   /// 整机硬死机。关??= 完全跳过守卫拒绝（高级用户排障用，有死机风险）??
-  final bool oomGuardEnabled;
 
   /// OOM 预检余量（MB，默??768）。加载前 MemAvailable 扣除该余量后再与
   /// 模型体积比较；调小更容易放过接近极限的大模型，调大更保守??
-  final int oomPreHeadroomMb;
 
   /// OOM 加载后余量（MB，默??1536）。加载完成后 KV cache / 图计算缓冲的
   /// 内存预算 = MemAvailable - 该余量；调小可给 KV 更大空间，调大更保守??
-  final int oomPostHeadroomMb;
 
   /// KV 缓存精度（设置→推理引擎→KV 精度）：'q4_0'（默认）或 'q8_0'。
   /// 端侧内存必须量化：默认 Q4。仅量化 K；V 恒为 F16——V 量化要求开启
   /// flash attention，本 app 保持关闭（上游会硬报错）。改后重新加载模型生效。
-  final String kvCacheType;
 
   /// [dspark 2026-10-14] flash attention（设置→推理引擎）。默认关（历史原因：
   /// 统一 KV + FA + 每轮 seq_rm 曾在真机 turn 2 出乱码）。开启后 V 跟随 K 的
   /// 量化格式；hybrid（recurrent 层）架构原生层会强制关闭。改后重新加载生效。
-  final bool flashAttn;
 
   /// GPU 推理时限制刷新率（防闪纹，2026-10-07 小米13 定案）：模型加载/
   /// prefill 的瞬时显存带宽会挤占显示供帧（Adreno UMA），期间临时锁 60Hz、
   /// 回合结束恢复。默认开；CPU 后端无此现象（chat_provider 侧跳过）。
-  final bool inferenceLimitRefreshRate;
 
   /// prefill 宽度 n_ubatch：0 = 自动（统一 512，默认行为）；32~512 = 拆小单次
   /// dispatch 计算 burst，缓解 Adreno 持续满血计算触发的 GPU 挂死（代价：
   /// prefill 变慢）。2026-10-16 起对任意后端生效（CPU 恒 16 已证伪废除）。
-  final int gpuNUbatch;
 
   /// Vulkan 禁用 subgroup 扩展（GGML_VK_NO_SUBGROUP）：turnip 在部分芯片
   /// （Adreno 740 等）的 GPU 挂死嫌疑源之一。默认关；切换后需重启 app
   /// 生效（vulkan 设备初始化每进程仅一次）。
-  final bool vkNoSubgroup;
 
   /// 智能 MoE 加载（超大 MoE 统一架构，2026-10-14）：内存预算路由。
   /// 开启（默认）= 拆分 MoE 模型走专家 slot 动态加载（dense 常驻 + 专家按需
   /// preadv 流式读入）；关闭 = 走整包全加载（-les 剥离版主文件缺专家，会失败
   /// 并提示开启本开关）。
-  final bool smartMoeEnabled;
 
   /// 按模型启用的工具清单：`{modelId: [toolName]}`。空 = 使用该模??
   /// 目录声明的默认工具集（agentDefaults.enabledTools）??
@@ -481,19 +442,15 @@ class InferenceSettings {
     // 默认开??GPU：与 gpuLayers=100 全量卸载一致；??settingsProvider
     // 异步 _load() 完成前，UI/加载逻辑若读取默认值，仍应??GPU 路径??
     // 避免启动后首次加载模型意外落??CPU??
-    this.enableGpu = true,
     this.gpuLayers = 100,
     this.contextSize = 4096,
     this.enableThinking = false,
-    this.gpuBackend = 'auto',
-    Map<String, bool>? mtpEnabledByModel,
-    this.enableMtpFeature = false,
-    Map<String, bool>? dsparkEnabledByModel,
-    Map<String, int>? moeBankOverrideByModel,
     Map<String, bool>? visionEnabledByModel,
-    this.enableDsparkFeature = false,
     this.defaultModelId,
     List<ApiModelConfig>? apiModels,
+    List<LocalModelConfig>? localModels,
+    this.enginesDir,
+    this.engineMirror,
     this.activeApiModelId,
     // ---- 智能体（Agent??---
     this.agentEnabled = true,
@@ -570,15 +527,6 @@ class InferenceSettings {
     this.showResourceMonitor = true,
     this.resourceSampleIntervalSec = 1,
     // OOM 内存守卫默认开启，余量默认与原生层常量一致（768 / 1536 MB）??
-    this.oomGuardEnabled = true,
-    this.inferenceLimitRefreshRate = true,
-    this.gpuNUbatch = 0,
-    this.vkNoSubgroup = false,
-    this.smartMoeEnabled = true,
-    this.oomPreHeadroomMb = 768,
-    this.oomPostHeadroomMb = 1536,
-    this.kvCacheType = 'q4_0',
-    this.flashAttn = false,
     Map<String, List<String>>? agentToolsByModel,
     Map<String, Map<String, dynamic>>? agentByModel,
     List<AgentPersona>? agentPersonas,
@@ -593,11 +541,9 @@ class InferenceSettings {
     this.devToolToggles = const {},
   })  : sshConfigs = sshConfigs ?? const [],
         adbTargets = adbTargets ?? const [],
-        mtpEnabledByModel = mtpEnabledByModel ?? const {},
-        dsparkEnabledByModel = dsparkEnabledByModel ?? const {},
-        moeBankOverrideByModel = moeBankOverrideByModel ?? const {},
         visionEnabledByModel = visionEnabledByModel ?? const {},
         apiModels = apiModels ?? const [],
+        localModels = localModels ?? const [],
         agentToolsByModel = agentToolsByModel ?? const {},
         agentByModel = agentByModel ?? const {},
         agentPersonas = agentPersonas ?? const [];
@@ -610,17 +556,6 @@ class InferenceSettings {
     }
     return null;
   }
-
-  /// 便捷读取：某个模型是否启??MTP（未配置视为关闭）??
-  bool mtpEnabled(String modelId) => mtpEnabledByModel[modelId] ?? false;
-
-  /// 便捷读取：某个模型是否启??dspark（未配置视为关闭）??
-  bool dsparkEnabled(String modelId) => dsparkEnabledByModel[modelId] ?? false;
-
-  /// 便捷读取：某模型的手动 MoE bank 覆写（未配置 = null = 自动分档）。
-  /// 通配键 '*' 为全局覆写（设置页滑条），按模型条目优先于通配。
-  int? moeBankOverride(String modelId) =>
-      moeBankOverrideByModel[modelId] ?? moeBankOverrideByModel['*'];
 
   /// 便捷读取：视觉模型是否加载 mmproj 视觉塔。按模型显式配置优先，
   /// 未配置回退全局 autoLoadMmproj（既有默认行为不变）。
@@ -675,22 +610,20 @@ class InferenceSettings {
         );
 
   InferenceSettings copyWith({
-    bool? enableGpu,
     int? gpuLayers,
     int? contextSize,
     bool? enableThinking,
-    String? gpuBackend,
-    Map<String, bool>? mtpEnabledByModel,
-    bool? enableMtpFeature,
-    Map<String, bool>? dsparkEnabledByModel,
-    Map<String, int>? moeBankOverrideByModel,
     Map<String, bool>? visionEnabledByModel,
-    bool? enableDsparkFeature,
     String? defaultModelId,
     // defaultModelId 为可??String，无法用 `?? this` 区分「未传」与「清空」，
     // 故增加显式清空标记，供取消默认模型时使用??
     bool clearDefaultModel = false,
     List<ApiModelConfig>? apiModels,
+    List<LocalModelConfig>? localModels,
+    String? enginesDir,
+    String? engineMirror,
+    bool clearEnginesDir = false,
+    bool clearEngineMirror = false,
     String? activeApiModelId,
     // activeApiModelId 同样可空，需显式标记以区分「未传」与「停用」??
     bool clearActiveApiModel = false,
@@ -765,15 +698,6 @@ class InferenceSettings {
     bool? autoLoadMmproj,
     bool? showResourceMonitor,
     int? resourceSampleIntervalSec,
-    bool? oomGuardEnabled,
-    bool? inferenceLimitRefreshRate,
-    int? oomPreHeadroomMb,
-    int? oomPostHeadroomMb,
-    String? kvCacheType,
-    bool? flashAttn,
-    int? gpuNUbatch,
-    bool? vkNoSubgroup,
-    bool? smartMoeEnabled,
     Map<String, List<String>>? agentToolsByModel,
     Map<String, Map<String, dynamic>>? agentByModel,
     List<AgentPersona>? agentPersonas,
@@ -789,21 +713,17 @@ class InferenceSettings {
     bool clearSshConfig = false,
   }) {
     return InferenceSettings(
-      enableGpu: enableGpu ?? this.enableGpu,
       gpuLayers: gpuLayers ?? this.gpuLayers,
       contextSize: contextSize ?? this.contextSize,
       enableThinking: enableThinking ?? this.enableThinking,
-      gpuBackend: gpuBackend ?? this.gpuBackend,
-      mtpEnabledByModel: mtpEnabledByModel ?? this.mtpEnabledByModel,
-      enableMtpFeature: enableMtpFeature ?? this.enableMtpFeature,
-      dsparkEnabledByModel: dsparkEnabledByModel ?? this.dsparkEnabledByModel,
-      moeBankOverrideByModel:
-          moeBankOverrideByModel ?? this.moeBankOverrideByModel,
       visionEnabledByModel: visionEnabledByModel ?? this.visionEnabledByModel,
-      enableDsparkFeature: enableDsparkFeature ?? this.enableDsparkFeature,
       defaultModelId:
           clearDefaultModel ? null : defaultModelId ?? this.defaultModelId,
       apiModels: apiModels ?? this.apiModels,
+      localModels: localModels ?? this.localModels,
+      enginesDir: clearEnginesDir ? null : enginesDir ?? this.enginesDir,
+      engineMirror:
+          clearEngineMirror ? null : engineMirror ?? this.engineMirror,
       activeApiModelId: clearActiveApiModel
           ? null
           : activeApiModelId ?? this.activeApiModelId,
@@ -900,16 +820,6 @@ class InferenceSettings {
       showResourceMonitor: showResourceMonitor ?? this.showResourceMonitor,
       resourceSampleIntervalSec:
           resourceSampleIntervalSec ?? this.resourceSampleIntervalSec,
-      oomGuardEnabled: oomGuardEnabled ?? this.oomGuardEnabled,
-      inferenceLimitRefreshRate:
-          inferenceLimitRefreshRate ?? this.inferenceLimitRefreshRate,
-      gpuNUbatch: gpuNUbatch ?? this.gpuNUbatch,
-      vkNoSubgroup: vkNoSubgroup ?? this.vkNoSubgroup,
-      smartMoeEnabled: smartMoeEnabled ?? this.smartMoeEnabled,
-      oomPreHeadroomMb: oomPreHeadroomMb ?? this.oomPreHeadroomMb,
-      oomPostHeadroomMb: oomPostHeadroomMb ?? this.oomPostHeadroomMb,
-      kvCacheType: kvCacheType ?? this.kvCacheType,
-      flashAttn: flashAttn ?? this.flashAttn,
       agentToolsByModel: agentToolsByModel ?? this.agentToolsByModel,
       agentByModel: agentByModel ?? this.agentByModel,
       agentPersonas: agentPersonas ?? this.agentPersonas,
@@ -926,22 +836,18 @@ class InferenceSettings {
   }
 
   Map<String, dynamic> toJson() => {
-        'enableGpu': enableGpu,
         'gpuLayers': gpuLayers,
         'contextSize': contextSize,
         'enableThinking': enableThinking,
-        'gpuBackend': gpuBackend,
-        'mtpEnabledByModel': mtpEnabledByModel,
-        'enableMtpFeature': enableMtpFeature,
-        'dsparkEnabledByModel': dsparkEnabledByModel,
         // V2（2026-10-16）：旧键里存的手动 bank 值基于已被证伪的
         // 「slot=54MB×bank」内存口径（当时被告知 64 是上限），全部失真——
         // 换新键一次性失效，让用户在新物理模型下重新覆写。
-        'moeBankOverrideByModelV2': moeBankOverrideByModel,
         'visionEnabledByModel': visionEnabledByModel,
-        'enableDsparkFeature': enableDsparkFeature,
         'defaultModelId': defaultModelId,
         'apiModels': apiModels.map((m) => m.toJson()).toList(),
+        'localModels': localModels.map((m) => m.toJson()).toList(),
+        'enginesDir': enginesDir,
+        'engineMirror': engineMirror,
         'activeApiModelId': activeApiModelId,
         // ---- 智能体（Agent??---
         'agentEnabled': agentEnabled,
@@ -1014,15 +920,6 @@ class InferenceSettings {
         'autoLoadMmproj': autoLoadMmproj,
         'showResourceMonitor': showResourceMonitor,
         'resourceSampleIntervalSec': resourceSampleIntervalSec,
-        'oomGuardEnabled': oomGuardEnabled,
-        'inferenceLimitRefreshRate': inferenceLimitRefreshRate,
-        'gpuNUbatch': gpuNUbatch,
-        'vkNoSubgroup': vkNoSubgroup,
-        'smartMoeEnabled': smartMoeEnabled,
-        'oomPreHeadroomMb': oomPreHeadroomMb,
-        'oomPostHeadroomMb': oomPostHeadroomMb,
-        'kvCacheType': kvCacheType,
-        'flashAttn': flashAttn,
         'agentToolsByModel': agentToolsByModel,
         'agentByModel': agentByModel,
         'agentPersonas': agentPersonas.map((p) => p.toJson()).toList(),
@@ -1041,25 +938,24 @@ class InferenceSettings {
     return InferenceSettings(
       // 缺省/旧文件未存该字段时默认开??GPU：auto 后端会在??GPU 时自??
       // 回落 CPU，V0.1.5 已验??Adreno 825 OpenCL/Vulkan 均正常??
-      enableGpu: json['enableGpu'] as bool? ?? true,
       gpuLayers: (json['gpuLayers'] as num?)?.toInt() ?? 100,
       contextSize: (json['contextSize'] as num?)?.toInt() ?? 4096,
       enableThinking: json['enableThinking'] as bool? ?? false,
-      gpuBackend: json['gpuBackend'] as String? ?? 'auto',
-      // ?ɰ汾?????ȫ?? bool enableMtp?????????????ӳ??Ϊ????֧??ģ?͵?
-      // 默认值，保证老配置不丢??
-      mtpEnabledByModel: _migrateLegacyMtp(json),
-      // 全局 MTP 开关：旧配置无此字段时默认关闭（向后兼容）??
-      enableMtpFeature: json['enableMtpFeature'] as bool? ?? false,
-      // dspark：按模型 map + 全局开关，旧配置无此字段时默认全关（向后兼容）??
-      dsparkEnabledByModel: _parseBoolMap(json['dsparkEnabledByModel']),
-      // V2 键（2026-10-16 bank 物理模型修正后一次性迁移，旧键弃用）。
-      moeBankOverrideByModel: _parseIntMap(json['moeBankOverrideByModelV2']),
+      // （v0.0.3 Phase 4：MTP/dspark/MoE bank/oomGuard/GPU 后端等手机端引擎
+      // 配置的 JSON key 在此**静默忽略**——老 settings 文件照读不炸，字段已删。）
       visionEnabledByModel: _parseBoolMap(json['visionEnabledByModel']),
-      enableDsparkFeature: json['enableDsparkFeature'] as bool? ?? false,
       defaultModelId: json['defaultModelId'] as String?,
       // 旧配置缺这两个字段时默认空列??+ 停用，向后兼容??
       apiModels: _parseApiModels(json['apiModels']),
+      localModels: _parseLocalModels(json['localModels']),
+      enginesDir: json['enginesDir'] is String &&
+              (json['enginesDir'] as String).trim().isNotEmpty
+          ? (json['enginesDir'] as String).trim()
+          : null,
+      engineMirror: json['engineMirror'] is String &&
+              (json['engineMirror'] as String).trim().isNotEmpty
+          ? (json['engineMirror'] as String).trim()
+          : null,
       activeApiModelId: json['activeApiModelId'] as String?,
       // 智能体（Agent）：旧配置缺字段时用默认值，向后兼容??
       agentEnabled: json['agentEnabled'] as bool? ?? true,
@@ -1193,19 +1089,6 @@ class InferenceSettings {
       showResourceMonitor: json['showResourceMonitor'] as bool? ?? true,
       resourceSampleIntervalSec:
           (json['resourceSampleIntervalSec'] as num?)?.toInt() ?? 1,
-      // OOM 内存守卫：旧配置缺字段时默认开??+ 原生层默认余量（向后兼容）??
-      oomGuardEnabled: json['oomGuardEnabled'] as bool? ?? true,
-      inferenceLimitRefreshRate:
-          json['inferenceLimitRefreshRate'] as bool? ?? true,
-      gpuNUbatch: (json['gpuNUbatch'] as num?)?.toInt() ?? 0,
-      vkNoSubgroup: json['vkNoSubgroup'] as bool? ?? false,
-      smartMoeEnabled: json['smartMoeEnabled'] as bool? ?? true,
-      oomPreHeadroomMb: (json['oomPreHeadroomMb'] as num?)?.toInt() ?? 768,
-      oomPostHeadroomMb: (json['oomPostHeadroomMb'] as num?)?.toInt() ?? 1536,
-      kvCacheType: (const ['q8_0', 'f16']).contains(json['kvCacheType'])
-          ? json['kvCacheType'] as String
-          : 'q4_0',
-      flashAttn: (json['flashAttn'] as bool?) ?? false,
       agentToolsByModel: _parseAgentTools(json['agentToolsByModel']),
       agentByModel: _parseAgentByModel(json['agentByModel']),
       agentPersonas: _parsePersonas(json['agentPersonas']),
@@ -1325,6 +1208,22 @@ class InferenceSettings {
     return list;
   }
 
+  /// 解析本地模型列表（v0.0.3）；坏条目（缺 id/modelPath/类型不对）静默
+  /// 丢弃，老 settings JSON 缺 `localModels` 键时得到空列表。
+  static List<LocalModelConfig> _parseLocalModels(Object? raw) {
+    if (raw is! List) return const [];
+    final list = <LocalModelConfig>[];
+    for (final e in raw) {
+      final map = e is Map<String, dynamic>
+          ? e
+          : (e is Map ? Map<String, dynamic>.from(e) : null);
+      if (map == null) continue;
+      final cfg = LocalModelConfig.fromJson(map);
+      if (cfg != null) list.add(cfg);
+    }
+    return list;
+  }
+
   /// 旧默认值一次性迁移：存量设置里等于旧默认的值抬到新默认（幂等）。
   ///
   /// 用户显式设置过的非默认值不动；旧默认值与"从未改过"不可区分，
@@ -1335,38 +1234,10 @@ class InferenceSettings {
     return stored == oldDefault ? newDefault : stored;
   }
 
-  /// 兼容旧配置：旧字段 `enableMtp`（全局 bool）→ 新的按模型 map。
-  ///
-  /// 关键修复：文件里若已存在 `mtpEnabledByModel`（当前版本标准格式）??
-  /// **必须原样采用**，不能因为缺少顶??`enableMtp` 字段就整体丢弃—??
-  /// 否则每次 reload 都会把用户按模型开启的 MTP 开关清空，导致 MTP 永远不生效??
-  /// 仅当 `mtpEnabledByModel` 缺失（老版本只有全局 `enableMtp:true`）时??
-  /// 因无法定位具体模型而保持默认全关，由用户重新按模型开启??
-  /// 解析按模??bool map（如 dsparkEnabledByModel）；格式非法时返回空 map??
+  /// 解析按模型 bool map（如 visionEnabledByModel）；格式非法时返回空 map。
   static Map<String, bool> _parseBoolMap(Object? raw) {
     if (raw is! Map) return const {};
     return raw.map((k, v) => MapEntry(k.toString(), v as bool? ?? false));
-  }
-
-  /// 解析按模型 int map（如 moeBankOverrideByModel）；非法条目丢弃，空返回空 map。
-  static Map<String, int> _parseIntMap(Object? raw) {
-    if (raw is! Map) return const {};
-    final out = <String, int>{};
-    raw.forEach((k, v) {
-      final iv = v is int ? v : int.tryParse(v?.toString() ?? '');
-      if (iv != null) out[k.toString()] = iv;
-    });
-    return out;
-  }
-
-  static Map<String, bool> _migrateLegacyMtp(Map<String, dynamic> json) {
-    final map = json['mtpEnabledByModel'] as Map<String, dynamic>?;
-    if (map != null) {
-      return map.map((k, v) => MapEntry(k, v as bool? ?? false));
-    }
-    // 仅有旧版全局 enableMtp 时保持默认全关：无法定位具体模型（不迁移为开??
-    // ??AGENTS.md 约定），由用户在模型列表重新逐个开启??
-    return const {};
   }
 
   /// Map<String, List<String>> 容错解析（热词差量覆盖等字段共用）。
