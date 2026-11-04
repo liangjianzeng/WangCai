@@ -64,7 +64,10 @@ import '../agent/session/store.dart'
         encodeAgentTraceMessage,
         planStorageCompaction;
 import '../agent/session/event.dart'
-    show kEventAssistantMessage, kEventCompactionSummary;
+    show
+        kEventAssistantMessage,
+        kEventCompactionSummary,
+        kEventSystemMessage;
 import '../agent/metrics/turn_metrics.dart'
     show TurnMetrics, TurnMetricsStore;
 import '../agent/session/trace_export.dart' as trace_export;
@@ -1595,8 +1598,29 @@ class ChatNotifier extends StateNotifier<bool> {
     // 其余 🔧 活动消息（纯 UI 用）照旧排除。
     final allMessages = await _storage.getMessages(conversationId, limit: 200);
     final history = _messagesForModelContext(allMessages);
-    final sessionLog =
-        _sessionStore.importFromMessages(conversationId, history);
+    // v0.0.4 Phase 2：本轮用户消息由 agent.kick 内统一 append（loop/agent.dart
+    // user/message 事件，内容是附件增强后的 effectivePrompt）。SQLite 已落库
+    // 的是基础 prompt——不剔除会双份进模型上下文（连带图片 token 翻倍），
+    // 且 write-through 会把重复永久写进 JSONL、fast path 逐回合放大。剔除
+    // 尾部同文 user 消息（通常恰一条）。
+    while (history.isNotEmpty &&
+        history.last.role == MessageRole.user &&
+        history.last.content == prompt) {
+      history.removeLast();
+    }
+    // v0.0.4 Phase 2（真相源通电）：JSONL fast path 优先（header cwd 权威）；
+    // 未命中/落后 → SQLite 导入并整体回写项目树（首回合通电）。
+    final sessionLog = await _sessionStore
+        .loadOrImport(conversationId, history, writeback: true);
+
+    // v0.0.4 write-through：回合内事件逐条落 JSONL（append-only，store 侧
+    // future 链保序）。system/message 每轮由 loop 派生，不落盘（对齐 DSH
+    // 「消息是派生物」语义）。落盘失败不阻塞回合——SQLite 仍兜底。
+    final jsonlSub = sessionLog.events
+        .where((e) => e.type != kEventSystemMessage)
+        .listen((e) {
+      _sessionStore.appendEvent(conversationId, e).catchError((Object _) {});
+    });
 
     // Phase 6：UI 活动状态订阅本 turn 事件流（工具卡片/压缩/重试/徽章）。
     _ref.read(agentUiStateProvider.notifier).attach(conversationId, sessionLog);
@@ -1943,6 +1967,7 @@ class ChatNotifier extends StateNotifier<bool> {
       _ref.read(agentUiStateProvider.notifier).detach(conversationId);
       agentUi.setToolGen(conversationId, chars: 0); // WP5：清工具参数生成提示
       sub?.cancel();
+      await jsonlSub.cancel(); // write-through 收流（Phase 2）
       await thinkingSub.cancel();
       await statusSub.cancel();
       tokenController.close();
@@ -2292,8 +2317,10 @@ class ChatNotifier extends StateNotifier<bool> {
 
       final all = await _storage.getMessages(conversationId, limit: 200);
       if (all.isEmpty) return;
-      final log = _sessionStore
-          .importFromMessages(conversationId, _messagesForModelContext(all));
+      // v0.0.4：fast path 读 JSONL（只读，不触发回写）。
+      final log = await _sessionStore.loadOrImport(
+          conversationId, _messagesForModelContext(all),
+          writeback: false);
       final est = estimateContextTokens(log.deriveModelMessages());
       if (est <= 0) return;
 

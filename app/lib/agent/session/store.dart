@@ -28,6 +28,10 @@ import '../../platform/wangcai_paths.dart';
 final class JsonlSessionStore {
   JsonlSessionStore({ProjectStore? projects}) : _projects = projects;
 
+  /// write-through 写队列：同步事件流逐条进来，落盘是异步的——用 future 链
+  /// 串行化保证文件内顺序（append-only 的前提）；单条失败不毒化队列。
+  Future<void> _appendQueue = Future<void>.value();
+
   final ProjectStore? _projects;
   ProjectStore get _store => _projects ?? ProjectStore.resolve();
 
@@ -117,8 +121,17 @@ final class JsonlSessionStore {
     );
   }
 
-  /// 追加事件到磁盘（append-only；落项目树）。
+  /// 追加事件到磁盘（write-through 入口，v0.0.4 Phase 2 通电）。
+  /// 经 [_appendQueue] 串行化：事件流的同步广播 → 异步落盘，必须保序。
   Future<void> appendEvent(String conversationId, SessionEvent event,
+      {String? workspacePath, String? cwd}) {
+    final f = _appendQueue.then((_) => _appendEventNow(conversationId, event,
+        workspacePath: workspacePath, cwd: cwd));
+    _appendQueue = f.catchError((Object _) {});
+    return f;
+  }
+
+  Future<void> _appendEventNow(String conversationId, SessionEvent event,
       {String? workspacePath, String? cwd}) async {
     final target = File(await pathFor(conversationId));
     if (!target.existsSync()) {
@@ -152,6 +165,45 @@ final class JsonlSessionStore {
       sb.writeln(e.toJsonLine());
     }
     await file.writeAsString(sb.toString());
+  }
+
+  /// v0.0.4 Phase 2（真相源通电）：会话日志统一加载入口。
+  /// - JSONL 命中且**不落后于** SQLite 索引 → 直接用（fast path：header 的
+  ///   cwd/workspacePath 从项目派生，权威）；
+  /// - 未命中或日志落后（写入半途/失败）→ 从 SQLite 历史导入，[writeback]
+  ///   为真时整体回写项目树（首回合通电；只读调用点传 false 不触发写）。
+  /// 对账口径：log 的 user/assistant 消息事件数 ≥ history 可导入消息数，
+  /// 否则视为日志落后——SQLite 兜底，绝不丢历史。
+  Future<SessionLog> loadOrImport(
+    String conversationId,
+    List<ChatMessage> history, {
+    required bool writeback,
+  }) async {
+    final log = await load(conversationId);
+    if (log.rawEvents.isNotEmpty) {
+      var msgEvents = 0;
+      for (final e in log.rawEvents) {
+        if (e.type == kEventUserMessage || e.type == kEventAssistantMessage) {
+          msgEvents++;
+        }
+      }
+      var importable = 0;
+      for (final m in history) {
+        if (m.role == MessageRole.user || m.role == MessageRole.assistant) {
+          importable++;
+        }
+      }
+      if (msgEvents >= importable) return log;
+    }
+    final imported = importFromMessages(conversationId, history);
+    if (writeback && imported.rawEvents.isNotEmpty) {
+      try {
+        await rewrite(conversationId, imported);
+      } catch (_) {
+        // 回写失败不阻塞回合：本次走内存导入，下回合对账仍会重试。
+      }
+    }
+    return imported;
   }
 
   /// 从旧 SQLite ChatMessage 列表导入为 v1 日志（一次性迁移）。
