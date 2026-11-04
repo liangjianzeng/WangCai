@@ -3,7 +3,6 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:image_picker/image_picker.dart';
 import '../asr/hold_to_talk.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart'
@@ -126,7 +125,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   /// 智能体附件（≤5 个，WP-A）。
   final List<String> _selectedFilePaths = [];
-  final ImagePicker _picker = ImagePicker();
 
   // 语音拾音（按住说话）状态 —— 用 ValueNotifier 而非 setState 驱动，避免
   // 录音中重建 GestureDetector 导致「松手」手势丢失（此前重建会杀掉 onLongPressEnd）。
@@ -283,75 +281,24 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  /// Pick image from camera or gallery（多图，≤10）。
-  /// [source] 为空时弹选择对话框（拍照/相册）；已指定则直接走对应来源。
-  Future<void> _pickImage([ImageSource? source]) async {
-    source ??= await showDialog<ImageSource>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('选择图片来源（最多 10 张）'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.camera_alt),
-              title: const Text('拍照'),
-              onTap: () => Navigator.pop(ctx, ImageSource.camera),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library),
-              title: const Text('相册（可多选）'),
-              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
-            ),
-          ],
-        ),
-      ),
-    );
-
-    if (source == null) return;
-
-    // 相机需要权限（无论从哪个入口进入都先检查）。
-    if (source == ImageSource.camera) {
-      final hasPermission =
-          await StoragePermissionService.requestCameraPermission();
-      if (!hasPermission) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('相机权限被拒绝，请在设置中授予')),
-          );
-        }
-        return;
-      }
-    }
-
+  /// 选图（v0.0.4 桌面化）：file_picker 多选（≤10），存**原图**路径。
+  /// 手机线（image_picker 拍照/相册）已随 Windows 单平台退役——桌面无摄像头。
+  /// 长图切块仍由发送时后端做（chat_provider._prepareVisionPaths）。
+  Future<void> _pickImage() async {
     try {
-      // 选图 = 用户视角：存**原图**路径（imageQuality 只压体积不改构图，
-      // 1280 宽长截图仍是完整一张）。长图切块是发给模型时后端做的
-      // （chat_provider._prepareVisionPaths），用户全程只见原图。
-      // 注：不要恢复旧的 maxWidth/maxHeight=768——那会把长截图挤成糊图，
-      // 模型反馈「分辨率太低无法识别」。
-      if (source == ImageSource.gallery) {
-        final images = await _picker.pickMultiImage(imageQuality: 90);
-        if (images.isEmpty) return;
-        setState(() {
-          for (final img in images) {
-            if (_selectedImagePaths.length >= 10) break;
-            _selectedImagePaths.add(img.path);
-          }
-        });
-      } else {
-        final XFile? image = await _picker.pickImage(
-          source: source,
-          imageQuality: 90,
-        );
-        if (image != null) {
-          setState(() {
-            if (_selectedImagePaths.length < 10) {
-              _selectedImagePaths.add(image.path);
-            }
-          });
+      final result = await FilePicker.platform.pickFiles(
+        allowMultiple: true,
+        type: FileType.image,
+      );
+      if (result == null || result.files.isEmpty) return;
+      setState(() {
+        for (final f in result.files) {
+          if (_selectedImagePaths.length >= 10) break;
+          final path = f.path;
+          if (path == null || path.isEmpty) continue;
+          _selectedImagePaths.add(path);
         }
-      }
+      });
       if (_selectedImagePaths.length == 10 && mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('最多 10 张，超出的未添加')),
@@ -391,86 +338,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
-  /// 统一附件入口：图片（拍照/相册）与文件附件（智能体模式）合并为一个
-  /// 「+」按钮，点按弹出选择面板——替代此前输入框右侧「图片」+ 前置
-  /// 「附件」两个独立按钮，收窄消息发送区。
-  ///
-  /// ⚠️ 此前实现把 `showModalBottomSheet<void>` 的返回值丢弃、靠一个从未
-  /// 赋值的暂存字段分发 → 选完什么都不会发生（"附件/拍照上传全坏"根因）。
-  /// 现改为直接消费面板返回的 [_AttachSource]。
+  /// 统一附件入口：图片与文件附件（智能体模式）合并为一个「+」按钮。
+  /// v0.0.4 桌面化：bottom sheet → AlertDialog（手机件清退，计划书 §5.1）；
+  /// 「拍照」随 Windows 单平台退役（桌面无摄像头），图片走 file_picker 多选。
   Future<void> _showAttachSheet() async {
     final agentOn = ref.read(settingsProvider).agentEnabled;
     final theme = Theme.of(context);
-    final source = await showModalBottomSheet<_AttachSource>(
+    final source = await showDialog<_AttachSource>(
       context: context,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => Container(
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surface,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 12),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // 拖拽把手 + 标题
-                Container(
-                  width: 36,
-                  height: 4,
-                  margin: const EdgeInsets.only(bottom: 10),
-                  decoration: BoxDecoration(
-                    color: theme.colorScheme.outlineVariant,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.only(left: 12, bottom: 6),
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text('添加附件',
-                        style: theme.textTheme.titleSmall
-                            ?.copyWith(fontWeight: FontWeight.w600)),
-                  ),
-                ),
-                _AttachOption(
-                  icon: Icons.photo_camera_outlined,
-                  tint: Colors.blue,
-                  title: '拍照',
-                  subtitle: '拍摄一张照片发送（≤10 张）',
-                  onTap: () => Navigator.pop(ctx, _AttachSource.camera),
-                ),
-                _AttachOption(
-                  icon: Icons.photo_library_outlined,
-                  tint: Colors.green,
-                  title: '从相册选择',
-                  subtitle: '可多选图片，一次最多 10 张',
-                  onTap: () => Navigator.pop(ctx, _AttachSource.gallery),
-                ),
-                if (agentOn)
-                  _AttachOption(
-                    icon: Icons.attach_file,
-                    tint: Colors.deepOrange,
-                    title: '文件',
-                    subtitle:
-                        '智能体附件（≤$kMaxAttachments 个）：docx / xlsx / pptx / txt / md / csv 等',
-                    onTap: () => Navigator.pop(ctx, _AttachSource.file),
-                  ),
-                const SizedBox(height: 4),
-              ],
+      builder: (ctx) => AlertDialog(
+        title: const Text('添加附件'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.image_outlined, color: Colors.green),
+              title: const Text('选择图片'),
+              subtitle: const Text('可多选，一次最多 10 张'),
+              onTap: () => Navigator.pop(ctx, _AttachSource.gallery),
             ),
-          ),
+            if (agentOn)
+              ListTile(
+                leading:
+                    const Icon(Icons.attach_file, color: Colors.deepOrange),
+                title: const Text('文件'),
+                subtitle: Text(
+                    '智能体附件（≤$kMaxAttachments 个）：docx / xlsx / pptx / txt / md / csv 等'),
+                onTap: () => Navigator.pop(ctx, _AttachSource.file),
+              ),
+          ],
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, _AttachSource.none),
+            child: const Text('取消'),
+          ),
+        ],
       ),
     );
     if (!mounted || source == null) return;
     switch (source) {
-      case _AttachSource.camera:
-        await _pickImage(ImageSource.camera);
-        break;
       case _AttachSource.gallery:
-        await _pickImage(ImageSource.gallery);
+        await _pickImage();
         break;
       case _AttachSource.file:
         await _pickAttachmentFiles();
@@ -3955,7 +3864,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 }
 
 /// 统一附件面板的选项（拍照 / 相册 / 文件）。
-enum _AttachSource { none, camera, gallery, file }
+enum _AttachSource { none, gallery, file }
 
 /// 附件面板的单行选项：着色圆角图标 + 标题 + 副标题，整行水波纹点按。
 class _AttachOption extends StatelessWidget {

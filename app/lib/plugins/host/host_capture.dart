@@ -5,6 +5,8 @@
 /// 参数与首页保持一致（`imageQuality: 90`、原图构图、相机先过权限）。
 library;
 
+import 'dart:io';
+
 import 'package:image_picker/image_picker.dart';
 import 'package:plugin_kernel/plugin_kernel.dart';
 
@@ -33,7 +35,10 @@ final class ImagePickerPort implements ImagePickPort {
 
   @override
   Future<String?> takePhoto() async {
-    final f = await _picker.pickImage(source: ImageSource.camera, imageQuality: _quality);
+    // v0.0.4 桌面化：Windows 无摄像头（image_picker 相机在桌面直接抛
+    // MissingPluginException）——「拍照」语义降级为单张选图，插件契约不变。
+    final f = await _picker.pickImage(
+        source: ImageSource.gallery, imageQuality: _quality);
     return f?.path;
   }
 
@@ -44,7 +49,11 @@ final class ImagePickerPort implements ImagePickPort {
   }
 
   @override
-  Future<bool> ensureCameraPermission() => StoragePermissionService.requestCameraPermission();
+  Future<bool> ensureCameraPermission() async {
+    // 桌面无相机硬件：如实报不可用（available 语义交给上层开关）。
+    if (!Platform.isAndroid && !Platform.isIOS) return false;
+    return StoragePermissionService.requestCameraPermission();
+  }
 }
 
 /// `app.capture` 的宿主实现。
