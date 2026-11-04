@@ -41,11 +41,27 @@
   **磁盘教训**：4B FOLD=NO 图缓存 ~14 GB/ctx 形状（c4fold 两形状 28 GB）——本轮曾把 D: 盘写满
   （100%），之后所有缓存写入静默失败、实验数字仍有效（编译在内存完成）但复跑全量重编。
   生产发布需在 packaging 文档写明缓存目录预留 ≥20 GB/模型/ctx。
-- [ ] **P13 prefill 逐节点剖析**：静态 prefill 循环原本没有 `dump_ov_profiling_info`（只有 decode
-  分支有）——已补（utils.cpp 两树同步）；prof_prefill 首轮 4 个 CSV 实为 decode 图（剖析桩缺失时
-  的误采，作废）。重跑取 chunk256 prefill 真实构成。
-- [ ] **P14 decode 算子汤手术**（P12 数据出来后定向）：候选 = rope 乘法链折叠、conv 状态
-  Concat/Mod 环操作改造、residual Add 折叠进 SDPA/MatMul、Parameter（状态）绑定合并。
+- [x] **P13 prefill 逐节点剖析（2026-11-04，桩已入二进制）**：静态 prefill 循环原本没有
+  `dump_ov_profiling_info`（只有 decode 分支有）——已补（utils.cpp 两树同步，1bbcc18）。
+  FOLD=NO 下的构成：**1.7B prefill ck256**（剖析总量 2080 ms ≈ 实测 615 ms/chunk × 3.4 放大）：
+  Add 33%（n=82）、MatMul 30%（n=175）、**Multiply 27%（n=196，rope 乘法链，Shave 执行）**、
+  Scatter 3%；**4B prefill ck128**（20286 ms ≈ 实测 ~3 s/chunk × 6.8 放大）：MatMul 40%、
+  Add 21%、Concat 13%、Func 8%（NPUW funcall 边界 ×10）、Scatter 7%。
+  **4B decode lv256**（1157 ms ≈ 实测 112 ms × 10.3 放大，放大倍数随节点数增长，
+  跨模型只比相对占比）：**Add 38%（n=180）+ MatMul 34%（n=289）+ ScatterNDUpdate 19%
+  （n=72 = 每层 K/V 各一）**，Multiply 4%、Transpose 2%。节点名已携带 ggml 名
+  （`ScatterNDUpdate_39717_cache_k_l2 (view)#n80`）。
+- [x] **P16 server 流验证 + warmup 编译毒化定案（2026-11-04）**：FOLD=NO 下两模型 server 流
+  （`--no-warmup` + `-dev OPENVINO3`）三问全过（1.7B c17s2 3/3、4B c4nw2 3/3，零编译失败）。
+  **warmup-on 时 server 首个 warmup 编译失败（`Failed to compile Model0_1`），且毒化后续请求
+  编译（Model9_1/40_1 连环败）**——`--no-warmup` 是硬性要求（P1 的建议从"净赢 2.7 s"升级为
+  "不加则 FOLD=NO 编译毒化"）；网关预热请求（P9）不受影响。
+  另：funcall_for_all=NO 在 4B 上同样无叠加（50.8/8.97 vs FOLD 单独 50.6/8.88）。
+- [ ] **P14 decode 算子汤手术**（数据已齐，候选按杠杆排序）：① **KV scatter 融合**——4B 每层
+  K/V 两个 ScatterNDUpdate（n=72，19%）写 `cache_k_lN (view)`/`cache_v_lN (view)`，若两视图
+  同宿主可合并为单 scatter（ translator 侧检测同父 ScatterNDUpdate 对）；② rope 乘加链折叠
+  （1.7B prefill Multiply 27%、4B decode Add 里 rope 族）；③ conv 状态 Concat/Mod 环操作
+  （1.7B decode 专属）。全部为 translator 改造，工作量数小时/项。
 
 背景：~~decode 已贴权重带宽地板~~（P11 证伪）、prefill chunk256 甜点已交付、预算规则已定案。
 剩余性能空间按性价比排序，逐项执行、证伪也记录、每项独立 commit：
