@@ -174,6 +174,9 @@ static const char * cache_settings[] = {
     "GGML_OPENVINO_NATIVE_SOFTPLUS",
     "GGML_OPENVINO_DISABLE_KV_SLICE",
     "GGML_OPENVINO_MANUAL_GQA_ATTN",
+    // Changes rope's compute domain (f32 vs f16, rope.cpp P14d) -- toggling must not resurrect
+    // blobs compiled with the other lowering.
+    "GGML_OPENVINO_ROPE_F16",
     "GGML_OPENVINO_STATEFUL_EXECUTION",
     "GGML_OPENVINO_DISABLE_KV_STATE_RELAYOUT",
     "GGML_OPENVINO_DISABLE_REMOTE_OUTPUTS",

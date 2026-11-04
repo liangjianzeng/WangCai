@@ -152,6 +152,10 @@ void ggml_openvino_device_config::init() {
         "GGML_OPENVINO_DISABLE_DECODE_LEVELS",
         "GGML_OPENVINO_ENABLE_FALLBACK",
         "GGML_OPENVINO_MANUAL_GQA_ATTN",
+        // 1 = compute rope in f16 for f16 data/out (tables enter f16 once per graph) instead of
+        // the f32 round-trip that pins the mul-mul-add chain to Shave (P14d, rope.cpp). Env-gated
+        // pending the accuracy gates.
+        "GGML_OPENVINO_ROPE_F16",
         "GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN",
         "GGML_OPENVINO_MOE_OP",
         "GGML_OPENVINO_MEMORY_OPTIMIZE",

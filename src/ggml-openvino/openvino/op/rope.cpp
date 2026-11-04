@@ -1,6 +1,8 @@
 #include "../node_context.h"
 #include "../op_table.h"
+#include "../translate_session.h"
 #include "../utils.h"
+#include "ggml-openvino/ggml-openvino-extra.h"
 
 #include <cstdint>
 #include <memory>
@@ -78,7 +80,19 @@ OutputVector translate_rope(const NodeContext & context) {
     }
 
     auto output_type = context.get_output_type();
-    if (data_node->get_element_type() != ov::element::f32) {
+    // P14d (2026-11-04): the default lowering lifts the f16 GEMV result to f32, computes the
+    // mul-mul-add there and converts back -- and that f32 domain is what pins the rope chain
+    // to Shave (P14 re-profile, 4B decode step: the 72 final rope Adds cost 15-17 ms each on
+    // Shave ~= 22% of the step; 1.7B prefill: the Shave Multiply family ~= 31%). With
+    // GGML_OPENVINO_ROPE_F16=1 an f16 data/out rope computes fully in f16: the f32 sin/cos
+    // tables enter f16 once per graph inside the shared P14b table-side chain, the data side
+    // has no converts at all. Env-gated until the accuracy gates (three-question acceptance,
+    // long-generation consistency) have blessed it for default-on.
+    static const bool rope_f16_enabled = ggml_openvino_getenv_int("GGML_OPENVINO_ROPE_F16") > 0;
+    const bool compute_f16 = rope_f16_enabled && !context.is_stateful() &&
+                             data_node->get_element_type() == ov::element::f16 &&
+                             output_type == ov::element::f16;
+    if (!compute_f16 && data_node->get_element_type() != ov::element::f32) {
         data_node = std::make_shared<ov::op::v0::Convert>(data_node, ov::element::f32);
     }
 
@@ -136,18 +150,54 @@ OutputVector translate_rope(const NodeContext & context) {
         // Expand cos/sin from [..., n_dims/2] to [..., n_dims] by repeating each
         // entry twice. Use special_zero on the final Reshape so the seq dim passes
         // through dynamically. Final rank is 4 to satisfy the matcher's predicate.
-        auto expand_cos_sin = [&](const Output<Node>& cs) {
-            auto cs_unsq = std::make_shared<ov::op::v0::Unsqueeze>(
-                cs, ov::op::v0::Constant::create(ov::element::i64, {1}, {-1}));
-            auto bcast_target = ov::op::v0::Constant::create(
-                ov::element::i64, {5}, std::vector<int64_t>{1, 1, 1, half, 2});
-            auto bcast = std::make_shared<ov::op::v3::Broadcast>(
-                cs_unsq, bcast_target, ov::op::BroadcastType::BIDIRECTIONAL);
-            auto flat = ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{0, 0, 0, n_dims});
-            return std::make_shared<ov::op::v1::Reshape>(bcast, flat, true);
-        };
-        Output<Node> cos_full = expand_cos_sin(cos_theta_node);
-        Output<Node> sin_full = expand_cos_sin(sin_theta_node);
+        //
+        // P14b (2026-11-04): the expansion depends only on the shared table (make_sin_cos
+        // via put_shared, or one explicit rope_cos/rope_sin graph input) and `half`, so it
+        // is memoized per graph -- every rope node used to rebuild it (1.7B prefill profiled
+        // Multiply n=196 rope family, 27%). Same session-memo pattern as P14a's scatter-index
+        // chain; hit path shares the identical nodes (the data-side half below stays per node).
+        Output<Node> cos_full;
+        Output<Node> sin_full;
+        {
+            TranslateSession::RopeCSKey memo_key{cos_theta_node.get_node(), half, 0, true, compute_f16};
+            auto * session = context.get_translate_session();
+            if (session) {
+                auto & memo = session->shared_rope_cos_sin();
+                auto it = memo.find(memo_key);
+                if (it != memo.end()) {
+                    cos_full = it->second.first;
+                    sin_full = it->second.second;
+                }
+            }
+            if (!cos_full.get_node()) {
+                auto expand_cos_sin = [&](const Output<Node>& cs) {
+                    auto cs_unsq = std::make_shared<ov::op::v0::Unsqueeze>(
+                        cs, ov::op::v0::Constant::create(ov::element::i64, {1}, {-1}));
+                    auto bcast_target = ov::op::v0::Constant::create(
+                        ov::element::i64, {5}, std::vector<int64_t>{1, 1, 1, half, 2});
+                    auto bcast = std::make_shared<ov::op::v3::Broadcast>(
+                        cs_unsq, bcast_target, ov::op::BroadcastType::BIDIRECTIONAL);
+                    auto flat =
+                        ov::op::v0::Constant::create(ov::element::i64, {4}, std::vector<int64_t>{0, 0, 0, n_dims});
+                    return std::make_shared<ov::op::v1::Reshape>(bcast, flat, true);
+                };
+                Output<Node> cos_src = cos_theta_node;
+                Output<Node> sin_src = sin_theta_node;
+                if (compute_f16) {  // P14d: one f32->f16 convert per graph, shared (inside the memo)
+                    if (cos_src.get_element_type() != ov::element::f16) {
+                        cos_src = std::make_shared<ov::op::v0::Convert>(cos_src, ov::element::f16);
+                    }
+                    if (sin_src.get_element_type() != ov::element::f16) {
+                        sin_src = std::make_shared<ov::op::v0::Convert>(sin_src, ov::element::f16);
+                    }
+                }
+                cos_full = expand_cos_sin(cos_src);
+                sin_full = expand_cos_sin(sin_src);
+                if (session) {
+                    session->shared_rope_cos_sin().emplace(memo_key, std::make_pair(cos_full, sin_full));
+                }
+            }
+        }
 
         auto y1 = std::make_shared<ov::op::v1::Multiply>(rot_data, cos_full);
         auto y2 = std::make_shared<ov::op::v1::Multiply>(x_rotated, sin_full);
@@ -176,12 +226,8 @@ OutputVector translate_rope(const NodeContext & context) {
         const int64_t half = (mode == TYPE_VISION) ? n_dims : (n_dims / 2);
         const int64_t rot_dims = 2 * half;
 
-        if (mode != TYPE_NEOX) {
-            auto cos_sin_shape = std::make_shared<ov::op::v0::Constant>(ov::element::i64, ov::Shape{4},
-                                                                        std::vector<int64_t>{1, -1, 1, half});
-            cos_theta_node = std::make_shared<ov::op::v1::Reshape>(cos_theta_node, cos_sin_shape, true);
-            sin_theta_node = std::make_shared<ov::op::v1::Reshape>(sin_theta_node, cos_sin_shape, true);
-        }
+        // (P14b: the mode != TYPE_NEOX table reshape moved into the memoized table-side
+        // chain below -- cos_theta_node/sin_theta_node are not read after that chain.)
 
         auto axis_last = ov::op::v0::Constant::create(ov::element::i64, {1}, {-1});
         auto step_one = ov::op::v0::Constant::create(ov::element::i64, {1}, {1});
@@ -204,39 +250,83 @@ OutputVector translate_rope(const NodeContext & context) {
         auto x2_neg = std::make_shared<ov::op::v1::Multiply>(x2, neg_one_f);
         auto x_rotate_half = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{x2_neg, x1}, -1);
 
-        ov::Output<ov::Node> cos_full =
-                std::make_shared<ov::op::v0::Concat>(ov::OutputVector{cos_theta_node, cos_theta_node}, -1);
-        ov::Output<ov::Node> sin_full =
-                std::make_shared<ov::op::v0::Concat>(ov::OutputVector{sin_theta_node, sin_theta_node}, -1);
-
-        // NPU device defect (static decode graphs): the numpy head-axis broadcast of the
-        // [1,1,1,head/2*2] cos/sin tables onto the [1,1,n_head_kv,head] GEMV output comes back
-        // with the odd KV heads garbled -- graph-output dumps show the rope input correct
-        // (post-norm K cos 0.997+ vs CPU) while the rope output has h0/h2 identical and h1/h3
-        // destroyed with inflated norms, at position 0 where rope must be the identity. The
-        // same lowering is correct for the [1,256,4,128] prefill shape and in isolation
-        // (minrepro), so tile the tables explicitly along the head axis: replication is
-        // exactly what the numpy broadcast does, so this is bit-neutral wherever the device
-        // is not defective.
+        // P14b (2026-11-04): the table-side half of this lowering -- the non-NEOX reshape,
+        // the duplication Concats and the static-decode head-axis tile -- depends only on the
+        // (already shared) cos/sin table, `half` and the data head count. Every rope node
+        // used to rebuild all of it (4B decode: 4 table-side Concats per rope node x 72 rope
+        // nodes, feeding the Add-38%/Multiply families P13 profiled); one pair per
+        // (table, half, tile width, lowering) is shared per graph via the translate session.
+        // The data-side half (slice/split/rotate-half and the final mul-mul-add) stays per node.
+        int64_t tile_heads_n = 0;
         if (context.is_static() && !context.is_prefill() && !context.is_stateful()) {
             const auto data_ps = data_node->get_output_partial_shape(0);
             if (data_ps.rank().is_static() && data_ps.rank().get_length() == 4 &&
                 data_ps[2].is_static() && data_ps[2].get_length() > 1) {
-                const int64_t n_heads = data_ps[2].get_length();
-                auto tile_heads = [&](ov::Output<ov::Node> & t) {
-                    auto ps = t.get_partial_shape();
-                    if (!ps.rank().is_static() || ps.rank().get_length() != 4 || !ps[2].is_static() ||
-                        ps[2].get_length() != 1) {
-                        return;
+                tile_heads_n = data_ps[2].get_length();
+            }
+        }
+        Output<Node> cos_full;
+        Output<Node> sin_full;
+        {
+            TranslateSession::RopeCSKey memo_key{cos_theta_node.get_node(), half, tile_heads_n, false,
+                                                 compute_f16};
+            auto * session = context.get_translate_session();
+            if (session) {
+                auto & memo = session->shared_rope_cos_sin();
+                auto it = memo.find(memo_key);
+                if (it != memo.end()) {
+                    cos_full = it->second.first;
+                    sin_full = it->second.second;
+                }
+            }
+            if (!cos_full.get_node()) {
+                Output<Node> cos_t = cos_theta_node;
+                Output<Node> sin_t = sin_theta_node;
+                if (compute_f16) {  // P14d: one f32->f16 convert per graph, shared (inside the memo)
+                    if (cos_t.get_element_type() != ov::element::f16) {
+                        cos_t = std::make_shared<ov::op::v0::Convert>(cos_t, ov::element::f16);
                     }
-                    ov::OutputVector parts;
-                    for (int64_t h = 0; h < n_heads; ++h) {
-                        parts.push_back(t);
+                    if (sin_t.get_element_type() != ov::element::f16) {
+                        sin_t = std::make_shared<ov::op::v0::Convert>(sin_t, ov::element::f16);
                     }
-                    t = std::make_shared<ov::op::v0::Concat>(std::move(parts), 2);
-                };
-                tile_heads(cos_full);
-                tile_heads(sin_full);
+                }
+                if (mode != TYPE_NEOX) {
+                    auto cos_sin_shape = std::make_shared<ov::op::v0::Constant>(
+                        ov::element::i64, ov::Shape{4}, std::vector<int64_t>{1, -1, 1, half});
+                    cos_t = std::make_shared<ov::op::v1::Reshape>(cos_t, cos_sin_shape, true);
+                    sin_t = std::make_shared<ov::op::v1::Reshape>(sin_t, cos_sin_shape, true);
+                }
+                cos_full = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{cos_t, cos_t}, -1);
+                sin_full = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{sin_t, sin_t}, -1);
+
+                // NPU device defect (static decode graphs): the numpy head-axis broadcast of the
+                // [1,1,1,head/2*2] cos/sin tables onto the [1,1,n_head_kv,head] GEMV output comes back
+                // with the odd KV heads garbled -- graph-output dumps show the rope input correct
+                // (post-norm K cos 0.997+ vs CPU) while the rope output has h0/h2 identical and h1/h3
+                // destroyed with inflated norms, at position 0 where rope must be the identity. The
+                // same lowering is correct for the [1,256,4,128] prefill shape and in isolation
+                // (minrepro), so tile the tables explicitly along the head axis: replication is
+                // exactly what the numpy broadcast does, so this is bit-neutral wherever the device
+                // is not defective.
+                if (tile_heads_n > 0) {
+                    auto tile_heads = [&](ov::Output<ov::Node> & t) {
+                        auto ps = t.get_partial_shape();
+                        if (!ps.rank().is_static() || ps.rank().get_length() != 4 || !ps[2].is_static() ||
+                            ps[2].get_length() != 1) {
+                            return;
+                        }
+                        ov::OutputVector parts;
+                        for (int64_t h = 0; h < tile_heads_n; ++h) {
+                            parts.push_back(t);
+                        }
+                        t = std::make_shared<ov::op::v0::Concat>(std::move(parts), 2);
+                    };
+                    tile_heads(cos_full);
+                    tile_heads(sin_full);
+                }
+                if (session) {
+                    session->shared_rope_cos_sin().emplace(memo_key, std::make_pair(cos_full, sin_full));
+                }
             }
         }
 
