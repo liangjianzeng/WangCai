@@ -2,7 +2,99 @@
 
 ## 性能攻坚计划（2026-11-03 立项，自主循环逐项做，做完即勾）
 
-背景：decode 已贴权重带宽地板（见 P3 论证）、prefill chunk256 甜点已交付、预算规则已定案。
+- [x] **P11 P3"decode 贴权重带宽地板"被证伪（2026-11-04，本轮最重要发现）**：权重字节判别实验
+  （llama-bench 1.7B p512 tg128 r3，同机同构建，warm）——Q4_K_M（1.02 GiB）14.07 t/s、
+  **Q5_K_M（1.16 GiB，字节 +14%）14.84 t/s、Q8_0（1.71 GiB，字节 +67%）14.96 t/s**：
+  权重字节近乎翻倍、decode 步时零变化 → 步时与权重字节数**无关**，P3 的"15.7 GB/s DMA 地板"
+  是两模型（1.7B 24 层 / 4B 36 层、注意力层数不同）在"每层算子开销 × 层数"上的巧合拟合。
+  逐节点剖析（`GGML_OPENVINO_PROFILING=2`，1.7B lv256 decode 图；剖析总量 236.9 ms ≈ 实测
+  67.7 ms × ~3.5 倍 profiling 放大，相对占比可用）：**MatMul 仅 18%**（n=56，0.76 ms/个——权重流
+  大体被重叠隐藏）、Add 20%（n=28，单节点最高 24.8 ms）、Multiply 18%（n=120！）、Concat 17%
+  （n=20，顶部单个 18.3 ms [DMA]）、Parameter 13%（n=57，状态输入 DMA）、GroupConvolution 6%
+  （n=5）、Mod 4%（n=6，KV 环回绕）——**非 MatMul 算子汤占 ~80%**。
+  **结论：decode 软件侧空间重新打开。** 主攻方向 = 压算子数 / 调度开销 / 状态 I/O，让权重流与
+  计算重叠，理论地板 ~36 ms（1.37 GB ÷ 38 GB/s 实测常量流速率）≈ 27 t/s（对 14.07 基线 +91%）。
+  基线表（本日 bench 口径）：1.7B pp512 406.5 / pp2048 283.7 / tg 14.07；4B pp2048(ck128) 42.8 /
+  pp512(ck256) 135.6 / tg 6.89。
+- [x] **P12 NPUW 编译开关重测 → `NPUW_FOLD=NO` 成为新默认（2026-11-04 定案）**：旧"证伪"是带宽论
+  误判时代（level 图落地前、2.4 t/s 全 ctx 图域）的数据，全部翻案重测。1.7B（bench p512 tg128 r3，
+  对基线 pp 406.5 / tg 14.07）：
+  | 臂 | pp512 | tg128 | 备注 |
+  |---|---:|---:|---|
+  | **FOLD=NO** | **778.9（+91%）** | **22.54（+60%）** | 唯一大杠杆；冷编译 ~10×（blob 缓存吸收） |
+  | FUNCALL_FOR_ALL=NO | 451.6（+11%） | 20.52（+46%） | 机制疑似与 FOLD 同族 |
+  | FUNCALL_ASYNC=NO | 426.8（+5%） | 15.04（+7%） | 边际 |
+  | FOLD+FCALL 组合 | 778.5 | 22.23 | 无叠加，FOLD 单独即最优 |
+  | DQ=NO | — | — | 进程消失（4B 时代即编译失败，复现，未再追） |
+  4B（Spark，对基线 pp2048/ck128 42.8、pp512/ck256 135.6、tg 6.89）：FOLD=NO →
+  pp2048/ck128 50.6（+18%）、**pp512/ck256 192.2（+42%）**、**pp2048/ck256 86.0（+101%，见 P15）**、
+  tg 8.9（+29%）；组合臂 52.3/8.92 无叠加。
+  **精度**：1.7B 三问 3/3（n=96；n=48 时 Beijing 因 CoT 前导截断，语义在轨）、4B 三问 3/3。
+  **默认值已翻转**（extra.cpp NPU 分支 NPUW_FOLD=NO，注释含数字与回退方式；两树同步）。
+- [ ] **P15 预算规则重审**：旧"ctx≥1024 禁止 chunk256"（2026-11-02 定案）在 FOLD=NO 下部分松动——
+  4B chunk256 c2048 **bench 流**三遍全绿且 pp +101%（86.0）；但 **cli -st 流 chunk256 c640 仍 flaky**
+  （三问 1 pass / 2 fail，decode 首 execute "Compute error"——同旧 ZE_UNINITIALIZED 家族签名；
+  干净磁盘 36 GB 复测排除磁盘满伪影）。**生产结论不变：4B 用 chunk128**（新默认下验收 3/3：
+  reg4b128），chunk256 维持"离线 bench/批量 prefill 专用"。待查：lv256@c640 首执行失败后的
+  fallback 缓存交互（Q3 在 Q1/Q2 编译过 fallback 后通过，疑似 fallback 图被盘缓存救活）。
+  音频/视觉 NPU 图未在 FOLD=NO 下复验（不在 v0.0.2 已接受 surface 内，复验挂起）。
+  **磁盘教训**：4B FOLD=NO 图缓存 ~14 GB/ctx 形状（c4fold 两形状 28 GB）——本轮曾把 D: 盘写满
+  （100%），之后所有缓存写入静默失败、实验数字仍有效（编译在内存完成）但复跑全量重编。
+  生产发布需在 packaging 文档写明缓存目录预留 ≥20 GB/模型/ctx。
+- [x] **P13 prefill 逐节点剖析（2026-11-04，桩已入二进制）**：静态 prefill 循环原本没有
+  `dump_ov_profiling_info`（只有 decode 分支有）——已补（utils.cpp 两树同步，1bbcc18）。
+  FOLD=NO 下的构成：**1.7B prefill ck256**（剖析总量 2080 ms ≈ 实测 615 ms/chunk × 3.4 放大）：
+  Add 33%（n=82）、MatMul 30%（n=175）、**Multiply 27%（n=196，rope 乘法链，Shave 执行）**、
+  Scatter 3%；**4B prefill ck128**（20286 ms ≈ 实测 ~3 s/chunk × 6.8 放大）：MatMul 40%、
+  Add 21%、Concat 13%、Func 8%（NPUW funcall 边界 ×10）、Scatter 7%。
+  **4B decode lv256**（1157 ms ≈ 实测 112 ms × 10.3 放大，放大倍数随节点数增长，
+  跨模型只比相对占比）：**Add 38%（n=180）+ MatMul 34%（n=289）+ ScatterNDUpdate 19%
+  （n=72 = 每层 K/V 各一）**，Multiply 4%、Transpose 2%。节点名已携带 ggml 名
+  （`ScatterNDUpdate_39717_cache_k_l2 (view)#n80`）。
+- [x] **P16 server 流验证 + warmup 编译毒化定案（2026-11-04）**：FOLD=NO 下两模型 server 流
+  （`--no-warmup` + `-dev OPENVINO3`）三问全过（1.7B c17s2 3/3、4B c4nw2 3/3，零编译失败）。
+  **warmup-on 时 server 首个 warmup 编译失败（`Failed to compile Model0_1`），且毒化后续请求
+  编译（Model9_1/40_1 连环败）**——`--no-warmup` 是硬性要求（P1 的建议从"净赢 2.7 s"升级为
+  "不加则 FOLD=NO 编译毒化"）；网关预热请求（P9）不受影响。
+  另：funcall_for_all=NO 在 4B 上同样无叠加（50.8/8.97 vs FOLD 单独 50.6/8.88）。
+- [ ] **P14 decode 算子汤手术**（数据已齐，候选按杠杆排序）：
+  ① ' **ScatterND 索引链 per-graph 共享——已落地（2026-11-04，本 commit）**：4B 每层 K/V 两个
+  ScatterNDUpdate（n=72）各自重建的同一条 ~8 节点索引链（Squeeze/Convert/ShapeOf/Broadcast/
+  Concat/Unsqueeze/Mod）改为 translate-session memo（键 = indices 节点 + dst_rows + mod_applied），
+  ~570 小节点 → 4 实例；顺带删除动态分支的不可达 Mod 旧码（注释记录）。NPUW 的 CSE 从不跨子图
+  合并这些链（P13 profiled Concat 计数与 scatter 一一对应为证）。
+  **验收**：1.7B 三问 3/3 + 4B 三问 3/3（n=96，零 ZE）。**bench（暖 blob r3，对 P12 遗产）**：
+  1.7B pp512 746.8 / pp2048 426.7 / tg 20.7–21.9（同量级无回归）；4B pp2048ck128 52.4（50.6→）、
+  pp512ck256 191.4（192.2→）、tg 8.7（8.9→）——4B 噪声级。**对基线（P11 表）判定：1.7B
+  pp512 +84% / pp2048 +50.4% / tg +47~56%（贴线）；4B pp2048 +22% / pp512 +41% / tg +26%——
+  4B 两个轴都还没到 +50%，继续循环。**
+  ①  **KV scatter 融合**（未做）——两视图同宿主可合并为单 scatter（translator 侧检测同父对；
+  注意 K/V 是不同 ggml 缓冲，跨 Parameter 合并不可行，需先核实同宿主前提）；
+  ② **rope 乘加链折叠**（下一刀）——1.7B prefill Multiply 27%、4B decode Add 里 rope 族；
+  每个 rope 节点 ~10 节点中 cos_full/sin_full 双 Concat + decode head-tile 只依赖共享表，
+  照 ①' 模式做 session memo（键 = 表节点 + half + n_heads + tile 标志），两模式（NORMAL expand /
+  NEOX concat）都覆盖；
+  ③ conv 状态 Concat/Mod 环操作（1.7B decode 专属）；④ 现成旋钮 A/B（免代码）：
+  `GGML_OPENVINO_MANUAL_GQA_ATTN=1` 对 NPU decode——绕开 K/V 按头物化广播（tile_kv 的
+  Broadcast+Reshape ×72/图）。
+  **工具**：`ctrl/p14_eval.ps1 -Model 17b|4b`（三问 + bench r1暖+r3测，持久 cache_p14_*）、
+  `ctrl/p14_prof4b.ps1`（PROFILING=2 一次性缓存）。
+  **本轮两条硬教训**：(a) **内存预算**：NPU 冷编译（FOLD=NO ~10×）期间用户 GPU server 占 23 GB
+  → 剩 5.4 GB → 编译僵死；跑重型 NPU 实验前先清出 ≥25 GB 物理（HANDOFF 旧规"大 ctx 前先问"
+  的具体化）。(b) **磁盘预算升级**：4B FOLD=NO 盘缓存实测 **~19 GB/ctx 形状**（旧记 14 GB 低估），
+  两形状即写满 D: ——缓存写满后实验数字仍有效（编译在内存完成）但缓存作废全量重编；
+  复测前先 `df -h /d`，发布文档缓存预留改 **≥20 GB/模型/ctx 形状**。
+  **P14d/P14c 两个 A/B 结案（2026-11-04）**：① `GGML_OPENVINO_ROPE_F16=1`（无状态 f16 rope 全链 f16 域，
+  表在共享链内转一次）——**证伪**：4B 验收 3/3 零 ZE，但两模型全轴持平略负（4B pp2048ck128 51.75±1.14 /
+  pp512ck256 186.4±0.72 / tg 8.52–8.62 vs 默认档 53.1 / 192.3 / 8.96；1.7B 775.6 / 429.1 / 22.0 vs
+  779.0 / 432.6 / 22.6）。rope Add 族被 launch 计数限速，换计算域不改变受限面；默认保持 OFF，开关保留
+  供 rope 实验复现。② `GGML_OPENVINO_MANUAL_GQA_ATTN=1`（4B bench-only）——**不可行**：四臂全灭于 NPU
+  VCL 拒编（`ZE_RESULT_ERROR_INVALID_ARGUMENT` code 0x78000004，"Compilation failed" 无算子级信息，
+  每臂 9–10 s rc=1）；该 lowering 面向 GPU 路径，NPU 静态图不容忍这套组合。至此 4B decode 剩余主攻
+  只剩 **P14e（host 侧 KV 行写出、scatter 出图）**。两臂判据同前（暖 blob r1 暖 + r3 测）；日志存档
+  `ctrl/p14bench_4bF16_*.log(.err)`、`ctrl/p14acc_4bF16_*.log`、`ctrl/p14bench_4bGqa_*.log(.err)`。
+
+背景：~~decode 已贴权重带宽地板~~（P11 证伪）、prefill chunk256 甜点已交付、预算规则已定案。
 剩余性能空间按性价比排序，逐项执行、证伪也记录、每项独立 commit：
 
 - [x] **P1 `--no-warmup` 净赢验证（2026-11-03 定案：赢 2.7 s）**：同暖缓存 A/B × 2 轮（`ctrl/ck_wu_ab.ps1`），

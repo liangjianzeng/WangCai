@@ -288,6 +288,25 @@ public:
 
     const std::map<std::string, ggml_tensor *> & get_model_outputs() const { return m_model_outputs; }
 
+    // ---- P14e (GGML_OPENVINO_KV_HOST_WRITE): out-of-graph KV row writes -------------------
+    // See TranslateSession::kv_unchained_writes for the translator side. Static NPU decode
+    // graphs only: the scatter family plus the level-sized cache output DMA are ~47% of the
+    // 4B decode step (P13/P14 profiles), and both come from the K/V SET_ROWS lowering. On
+    // hybrid SWA models (Spark-4B) only the FULL-attention layers unchain -- their mask columns
+    // are position-linear, so the host craft flips exactly two cells (-inf on the stale cur
+    // row, 0 on the appended cur column); the SWA rings keep their chained writes.
+    struct KvHostWrite {
+        int node_idx;             // the SET_ROWS node whose write left the graph
+        ggml_tensor * cache;      // destination cache tensor (host buffer, rows = ne[1])
+        ggml_tensor * value;      // the cur row: graph output buffer the device filled
+        ggml_tensor * idxs;       // cell-id input; row = (*idxs) % rows
+    };
+    virtual bool kv_host_write_allowed() const override;
+    virtual bool is_unchained_set_rows(int node_idx) const override;
+    bool kv_host_write_active() const { return !m_kv_host_writes.empty(); }
+    const std::vector<KvHostWrite> & kv_host_writes() const { return m_kv_host_writes; }
+    const ggml_tensor * kv_host_write_mask() const { return m_kv_host_write_mask; }
+
     virtual int get_ctx_size() const { return m_model_params.ctx; }
 
     virtual int get_ctx_per_seq() const { return m_model_params.ctx_per_seq; }
@@ -529,6 +548,14 @@ private:
     void compute_model_inputs();
     void compute_model_outputs();
 
+    // Collect the SET_ROWS nodes that qualify for out-of-graph row writes (P14e); fills
+    // m_kv_host_writes and the attention mask pointer used for the per-step mask craft.
+    void build_kv_host_writes();
+
+    // Raw eligibility gate (NPU + env + static decode + non-SWA) WITHOUT the all-or-nothing
+    // build verdict -- only build_kv_host_writes() may use it (it runs before the list exists).
+    bool kv_host_write_gated() const;
+
     // True if tensor is the inp->s_copy index leaf gathered by a recurrent state cache GET_ROWS
     // (possibly through a VIEW), so it gets a dynamic [1,1,1,-1] graph-input shape.
     bool is_s_copy_leaf(const ggml_tensor * tensor) const;
@@ -546,6 +573,8 @@ private:
     std::map<std::string, std::shared_ptr<ov::Node>> m_model_weights;
     std::map<std::string, ggml_tensor *> m_model_outputs;
     std::set<std::string> m_model_output_names;
+    std::vector<KvHostWrite> m_kv_host_writes;
+    ggml_tensor * m_kv_host_write_mask = nullptr;
     std::vector<NodeInfo> m_node_info_list;
     std::map<ggml_tensor *, int> m_node_dynamic_dims;
 

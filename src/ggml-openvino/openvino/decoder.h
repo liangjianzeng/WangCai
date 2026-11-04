@@ -126,6 +126,15 @@ public:
 
     virtual bool is_splited_model() const = 0;
 
+    // P14e (GGML_OPENVINO_KV_HOST_WRITE): true when this decoder's graph wants (full-attention)
+    // KV rows written outside the graph (static NPU decode, env on, all-or-nothing build verdict).
+    // The set_rows translator answers by publishing {cache param, cur row} to
+    // TranslateSession::kv_unchained_writes and returning them as its two outputs; see the
+    // comment there. is_unchained_set_rows narrows it to the individual SET_ROWS node.
+    virtual bool kv_host_write_allowed() const { return false; }
+
+    virtual bool is_unchained_set_rows(int node_idx) const { return false; }
+
     virtual int is_swa_layer(int layer) const = 0;
 
     virtual int32_t get_op_dynamic_dim(int node_idx) const = 0;

@@ -1,5 +1,6 @@
 #include "../node_context.h"
 #include "../op_table.h"
+#include "../translate_session.h"
 #include "../utils.h"
 #include "ggml-openvino/ggml-openvino-extra.h"
 
@@ -17,6 +18,7 @@
 #include <openvino/op/scaled_dot_product_attention.hpp>
 #include <openvino/op/slice.hpp>
 #include <openvino/op/softmax.hpp>
+#include <openvino/op/subtract.hpp>
 #include <openvino/op/transpose.hpp>
 #include <openvino/op/unsqueeze.hpp>
 #include <string>
@@ -134,8 +136,71 @@ OutputVector translate_flash_attn_ext(const NodeContext & context) {
         } else {
             attention_size = context.get_input("attention_size_static");
         }
+
+        // P14e (GGML_OPENVINO_KV_HOST_WRITE): the step's K/V row is no longer inside the
+        // cache parameter -- the set_rows translator un-chained it and published the row
+        // itself (the executor copies it into the host cache after infer). Read the cache
+        // rows [0, attention_size - 1): the stale cur row it would have contributed is
+        // double-covered (the pre-infer zeroing pass wiped it, the executor mask craft puts
+        // -inf on its column), and append the published row back as column
+        // (attention_size - 1), so the SDPA's KV width stays attention_size == mask width.
+        // The decoder's all-or-nothing predicate guarantees K and V are un-chained together;
+        // a half-published pair falls back to the chained path (which then simply finds no
+        // ScatterNDUpdate-free graph and fails loudly at compile, never silently wrong).
+        TranslateSession::KvUnchained * cur_k = nullptr;
+        TranslateSession::KvUnchained * cur_v = nullptr;
+        if (TranslateSession * session = context.get_translate_session()) {
+            // The map only ever contains FULL-attention caches (the decoder keeps SWA ring
+            // writes chained), so a hit is the whole predicate; K and V publish together.
+            auto & unchained = session->kv_unchained_writes();
+            auto lookup = [&](size_t in_idx) -> TranslateSession::KvUnchained * {
+                const size_t view_n = context.get_view_input_size(in_idx);
+                const std::string cache_name =
+                    view_n > 0 ? context.get_view_input_src_name(in_idx, view_n - 1)
+                               : context.get_input_names()[in_idx];
+                auto it = unchained.find(cache_name);
+                return it == unchained.end() ? nullptr : &it->second;
+            };
+            cur_k = lookup(1);
+            cur_v = lookup(2);
+        }
+        if (cur_k != nullptr && cur_v != nullptr) {
+            // Fold the -1 on the host when possible so the K length stays a compile-time
+            // literal through Reshape's new_shape / the NPUW static-shape pipeline.
+            if (auto c = ov::as_type_ptr<ov::op::v0::Constant>(attention_size.get_node_shared_ptr())) {
+                const auto vals = c->cast_vector<int64_t>();
+                if (!vals.empty()) {
+                    attention_size = ov::op::v0::Constant::create(ov::element::i64, c->get_shape(),
+                                                                  std::vector<int64_t>{vals[0] - 1});
+                } else {
+                    attention_size = std::make_shared<ov::op::v1::Subtract>(
+                        attention_size, ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {1}));
+                }
+            } else {
+                attention_size = std::make_shared<ov::op::v1::Subtract>(
+                    attention_size, ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {1}));
+            }
+        }
         k = reshape_flat_kv(k, offset, nb1, n_head, n_state_head, attention_size);
         v = reshape_flat_kv(v, offset, nb1, n_head, n_state_head, attention_size);
+        if (cur_k != nullptr && cur_v != nullptr) {
+            auto append_cur = [](ov::Output<ov::Node> kv, const ov::Output<ov::Node> & cur, int64_t heads,
+                                 int64_t head_sz) -> ov::Output<ov::Node> {
+                // cur row: [1, 1, 1, n_head * head_size] -> [1, heads, 1, head_size] (the same
+                // reshape+transpose reshape_flat_kv applies to the cache rows) -> one extra
+                // column on the KV axis.
+                ov::Output<ov::Node> row = std::make_shared<ov::op::v1::Reshape>(
+                    cur,
+                    ov::op::v0::Constant::create(ov::element::i64, {4},
+                                                 {(int64_t) 1, (int64_t) 1, heads, head_sz}),
+                    false);
+                row = std::make_shared<ov::op::v1::Transpose>(
+                    row, ov::op::v0::Constant::create(ov::element::i64, {4}, {0, 2, 1, 3}));
+                return std::make_shared<ov::op::v0::Concat>(ov::OutputVector{kv, row}, 2);
+            };
+            k = append_cur(k, cur_k->cur_row, n_head, n_state_head);
+            v = append_cur(v, cur_v->cur_row, n_head, n_state_head);
+        }
     }
 
     float * params = reinterpret_cast<float *>(context.get_output_op_params());

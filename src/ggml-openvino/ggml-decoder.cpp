@@ -67,6 +67,7 @@ GgmlOvDecoder::GgmlOvDecoder(ggml_cgraph * cgraph,
     set_input_output();
     compute_node_dynamic_dims();
     compute_model_inputs();
+    build_kv_host_writes();  // before compute_model_outputs: it drops the unchained cache outputs
     compute_model_outputs();
 
     for (int node_n = 0; node_n < cgraph->n_nodes; node_n++) {
@@ -84,6 +85,7 @@ void GgmlOvDecoder::update_io(ggml_cgraph * cgraph) {
     m_node_info_list.clear();
     set_input_output();
     compute_model_inputs();
+    build_kv_host_writes();  // rebinding a new cgraph re-derives the P14e write list too
     compute_model_outputs();
 }
 
@@ -1504,6 +1506,16 @@ void GgmlOvDecoder::compute_model_outputs() {
         if (::is_inplace_op(cur_node) && ggml_nbytes(cur_node) == 0) {
             continue;
         }
+        if (cur_node->op == GGML_OP_SET_ROWS && is_unchained_set_rows(node_n)) {
+            // P14e: the cache leaves the output set entirely (no level-sized write-back DMA);
+            // the graph instead returns the small cur-row buffer, which the decode bind code
+            // copies into the cache host buffer right after infer. Key it under the same name
+            // the translate session aliases the unchained outputs to.
+            const std::string kvcur_name = m_node_info_list[node_n].node_name + "@KVcur";
+            m_model_outputs[kvcur_name] = cur_node->src[0];
+            m_model_output_names.insert(kvcur_name);
+            continue;
+        }
         auto cur_node_use_count = m_cgraph->use_counts[ggml_hash_find(&m_cgraph->visited_hash_set, cur_node)];
         if (cur_node_use_count == 0) {
             // The output of in-place ops is the view_src tensor, which is updated in place. We should use the view_src name as the output name to make sure it can be correctly matched with the later ops that use the view_src.
@@ -2109,8 +2121,131 @@ std::vector<size_t> GgmlOvDecoder::get_output_stride(int node_idx) const {
     return get_stride(ggml_tensor);
 }
 
+// P14e (GGML_OPENVINO_KV_HOST_WRITE): the static NPU decode graph of a non-SWA model writes its
+// K/V rows outside the graph (see TranslateSession::kv_unchained_writes for the translator half).
+// Narrow on purpose: 4B decode spends ~25% of a step in the 72 ScatterNDUpdates and another ~22%
+// streaming the level-sized cache back as the SET_ROWS in-place output (P13/P14 profiles) — both
+// disappear here, the graph only gains one [1,1,1,d] output per row. Non-SWA keeps one mask whose
+// two per-step cells the bind code crafts (-inf on the stale cur cell, 0 on the appended column).
+// The raw eligibility gate: NPU + env on, static non-prefill stateless graph, non-SWA model.
+bool GgmlOvDecoder::kv_host_write_gated() const {
+    const bool dbg = ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE") != 0;
+    if (!ggml_openvino_kv_host_write_enabled()) {
+        if (dbg) {
+            GGML_LOG_WARN("kv_host_write: rejected by env/is_npu (is_npu=%d)\n", (int) ggml_openvino_is_npu());
+        }
+        return false;
+    }
+    if (!m_is_static || m_is_prefill || m_is_stateful) {
+        if (dbg) {
+            GGML_LOG_INFO("kv_host_write: rejected by mode (static=%d prefill=%d stateful=%d)\n",
+                          (int) m_is_static, (int) m_is_prefill, (int) m_is_stateful);
+        }
+        return false;
+    }
+    // Hybrid SWA models (Spark-4B: window 512, 3:1 pattern) are handled per-layer: the
+    // full-attention scatters unchain, the SWA ring writes stay chained (their mask columns
+    // are ring-position-mapped and the merged write index carries the Mod wrap -- the
+    // append-a-column trick does not transfer). build_kv_host_writes enforces the all-or-nothing
+    // over the FULL side; a model whose full side cannot unchain falls back fully chained.
+    return true;
+}
+
+// What the translators (set_rows.cpp un-chaining, flash_attn_ext.cpp cur-column Concat) and
+// the executor (mask craft, host write-back) all ask. Folded with the build's all-or-nothing
+// verdict so the graph topology and the executor behavior can never disagree: a decoder whose
+// write list got cleared (missing mask, partial scatter family) translates fully chained.
+bool GgmlOvDecoder::kv_host_write_allowed() const {
+    return kv_host_write_gated() && !m_kv_host_writes.empty();
+}
+
+void GgmlOvDecoder::build_kv_host_writes() {
+    m_kv_host_writes.clear();
+    m_kv_host_write_mask = nullptr;
+    if (!kv_host_write_gated()) {
+        return;
+    }
+    const bool dbg = ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE") != 0;
+    int full_cache_writes = 0;   // SET_ROWS on full-attention caches (the unchain population)
+    int unclassifiable = 0;      // cache leaves with no parseable layer: conservative fallback
+    for (int i = 0; i < m_cgraph->n_nodes; i++) {
+        ggml_tensor * node = m_cgraph->nodes[i];
+        if (node->op == GGML_OP_FLASH_ATTN_EXT && node->src[3] != nullptr && m_kv_host_write_mask == nullptr) {
+            // The FULL mask only: the SWA module's mask (_swa-named) belongs to ring writes that
+            // stay chained, and its columns are ring-position mapped (not craftable this way).
+            const char * mname = node->src[3]->name ? node->src[3]->name : "";
+            if (strstr(mname, "swa") == nullptr) {
+                m_kv_host_write_mask = node->src[3];
+            }
+        }
+        if (node->op != GGML_OP_SET_ROWS) {
+            continue;
+        }
+        ggml_tensor * cache = node->src[2];
+        while (cache != nullptr && cache->op == GGML_OP_VIEW && cache->src[0] != nullptr) {
+            cache = cache->src[0];  // set_rows may take a VIEW of the cache (see get_tensor_graph_input_ov_name)
+        }
+        if (cache == nullptr || cache->buffer == nullptr ||
+            cache->buffer->usage != GGML_BACKEND_BUFFER_USAGE_ANY || is_recurrent_cache(cache)) {
+            continue;
+        }
+        const auto layer = extract_layer_from_name(cache->name ? cache->name : "");
+        if (!layer.has_value()) {
+            unclassifiable++;
+            continue;
+        }
+        if (is_swa_layer(layer.value())) {
+            continue;  // SWA ring writes stay chained: merged-index Mod wrap + ring-position mask
+        }
+        full_cache_writes++;
+        if (cache->ne[1] <= 1 || !ggml_is_contiguous(cache)) {
+            continue;  // flat/1-D or strided buffer: host row write would need the scatter anyway
+        }
+        if (node->src[0] == nullptr || node->src[1] == nullptr) {
+            continue;
+        }
+        m_kv_host_writes.push_back({i, cache, node->src[0], node->src[1]});
+    }
+    // All-or-nothing on the FULL side: the full mask is crafted once per step assuming every
+    // full-attention layer appends the cur column, so a graph where some full caches stayed
+    // chained (or a layer whose SWA-ness is unparseable) would mask wrong for everyone.
+    const bool bad = m_kv_host_writes.empty() || m_kv_host_write_mask == nullptr || unclassifiable > 0 ||
+                     (int) m_kv_host_writes.size() != full_cache_writes;
+    if (bad) {
+        if (dbg) {
+            GGML_LOG_INFO("kv_host_write: gated but cleared (unchained=%d full_writes=%d unclassifiable=%d mask=%p)\n",
+                          (int) m_kv_host_writes.size(), full_cache_writes, unclassifiable,
+                          (void *) m_kv_host_write_mask);
+        }
+        m_kv_host_writes.clear();
+        m_kv_host_write_mask = nullptr;
+    } else if (dbg) {
+        GGML_LOG_INFO("kv_host_write: ACTIVE with %d unchained full-layer row writes (%d SWA stay chained)\n",
+                      (int) m_kv_host_writes.size(), (int) m_model_params.swa_layers.size());
+    }
+}
+
+bool GgmlOvDecoder::is_unchained_set_rows(int node_idx) const {
+    for (const auto & w : m_kv_host_writes) {
+        if (w.node_idx == node_idx) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::vector<std::string> GgmlOvDecoder::get_output_names(int node_idx) const {
     auto * node = m_node_info_list[node_idx].node;
+    if (node->op == GGML_OP_SET_ROWS && is_unchained_set_rows(node_idx)) {
+        // Output 0 KEEPS the node's default name (attention consumes the SET_ROWS output under it;
+        // renaming to the cache leaf would orphan every consumer reference) but carries the plain
+        // cache parameter instead of the scatter result -- the translate session's in-place rewrite
+        // (tensor_map[inplace_src] = outputs[0]) additionally aliases the cache leaf name to the
+        // same parameter, so attention reads rows [0, level-1) from it. Output 1 is the small
+        // cur-row buffer the host copies into the cache after infer.
+        const std::string & out0 = m_node_info_list[node_idx].node_name;
+        return {out0, out0 + "@KVcur"};
+    }
     if (node->op == GGML_OP_GATED_DELTA_NET && !m_model_params.has_rs_rollback) {
         std::string attn_name;
         std::string state_name;

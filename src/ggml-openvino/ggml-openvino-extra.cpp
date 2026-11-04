@@ -152,6 +152,15 @@ void ggml_openvino_device_config::init() {
         "GGML_OPENVINO_DISABLE_DECODE_LEVELS",
         "GGML_OPENVINO_ENABLE_FALLBACK",
         "GGML_OPENVINO_MANUAL_GQA_ATTN",
+        // 1 = compute rope in f16 for f16 data/out (tables enter f16 once per graph) instead of
+        // the f32 round-trip that pins the mul-mul-add chain to Shave (P14d, rope.cpp). Env-gated
+        // pending the accuracy gates.
+        "GGML_OPENVINO_ROPE_F16",
+        // 1 = write the step's K/V rows outside the decode graph (executor memcpy after
+        // infer) instead of through ScatterNDUpdate; attention Concat's the row back in
+        // (P14e, set_rows.cpp / flash_attn_ext.cpp). Static NPU decode graphs of non-SWA
+        // models only; the decoder gate enforces the rest.
+        "GGML_OPENVINO_KV_HOST_WRITE",
         "GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN",
         "GGML_OPENVINO_MOE_OP",
         "GGML_OPENVINO_MEMORY_OPTIMIZE",
@@ -190,7 +199,13 @@ void ggml_openvino_device_config::init() {
             {"NPU_COMPILER_DYNAMIC_QUANTIZATION", "YES"   },
             {"NPU_USE_NPUW",                      "YES"   },
             {"NPUW_DEVICES",                      "NPU"   },
-            {"NPUW_FOLD",                         "YES"   },
+            // FOLD=NO since 2026-11-04 (P12): NPUW weight folding materializes dequant
+            // "cluster" patterns that serialize the step into eltwise/concat soup -- with
+            // folding off, llama-bench 1.7B jumps pp512 406->778 / tg 14.1->22.5 t/s and 4B
+            // pp2048(chunk256) 42.8->86 / tg 6.9->8.9 t/s, with 3-question acceptance green
+            // on both models. Compile is ~10x slower cold (blob cache absorbs it). Override
+            // with GGML_OPENVINO_NPU_COMPILE_OVERRIDES=NPUW_FOLD=YES to restore.
+            {"NPUW_FOLD",                         "NO"    },
             {"NPUW_WEIGHTS_BANK",                 "shared"},
             {"NPUW_FUNCALL_FOR_ALL",              "YES"   },
             {"NPUW_FUNCALL_ASYNC",                "YES"   },
@@ -373,6 +388,13 @@ bool ggml_openvino_release_weights_enabled() {
 // Check if running on NPU
 bool ggml_openvino_is_npu() {
     return ggml_openvino_get_device_config().is_npu;
+}
+
+// P14e: un-chained host-side K/V row writes (see TranslateSession::kv_unchained_writes).
+// NPU-only: the payoff is the ScatterNDUpdate family and the level-sized cache output DMA
+// that NPUW schedules per step; other devices keep the chained translation untouched.
+bool ggml_openvino_kv_host_write_enabled() {
+    return ggml_openvino_is_npu() && ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE") != 0;
 }
 
 bool ggml_openvino_is_gpu() {

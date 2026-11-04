@@ -72,11 +72,11 @@ Honest, measured, tracked in [docs/status.md](docs/status.md).
 | Hybrid (short-conv + SWA + full) attention addressing its KV rings correctly | ✅ done |
 | Continuation task byte-identical to the CPU reference | ✅ done (Q4_0 weights) |
 | Numerical parity on an **instruction-following** task | ✅ **done (v0.0.1 closing fix)** — root cause: decode-graph RoPE cos/sin head-axis broadcast; 3-question acceptance 3/3 |
-| Prefill competitive with CPU | 🟡 73% of the reference; headroom still unexplained |
-| Decode competitive with CPU | 🟡 **multi-extent decode graphs landed (2026-11-01): 14–15 t/s, context-independent** (c=8192 up 17× from 0.9 t/s); ~1.5–2× behind the OV-CPU reference 21.7–29.2. Follow-up levers all probed and settled (stateful 7× slower, u4 lm_head 5× slower, compiled-model cache collides with the weights bank) — the decode push is closed |
+| Prefill competitive with CPU | ✅ **ahead of the references (2026-11-04 performance round)**: with `NPUW_FOLD=NO` as the NPU default (P12) plus per-graph sharing of duplicated small chains (P14a/b), pp512 406→**779 t/s** (+92%) and pp2048 284→**433 t/s** (+52%, both vs the P11 baseline, warm blob, `-r 3`) — past the native CPU reference (570 t/s) and OV-CPU dynamic (610 t/s) |
+| Decode competitive with CPU | 🟡 **P11 falsified the "bandwidth floor" verdict and reopened the decode push (2026-11-04)**: Q8_0's +67% weight bytes leave step time unchanged, and the per-node profile puts MatMul at only 18–23% of a step — the rest is eltwise/state op soup. With FOLD=NO + P14a/b, 1.7B tg is **22.6 t/s** (+61% vs baseline 14.07; all three axes ≥+50%, target met), inside the lower edge of the OV-CPU reference band (21.7–29.2). The earlier "decode push closed" conclusion has been superseded |
 | LFM3 omni modalities (audio in / vision in) | 🟡 **both audio and vision run end-to-end on the NPU (2026-11-01)**: audio byte-identical to the native Q8_0 reference; vision fixed via two root causes (cacheless `input_len=-1` plane overread + the NPUW `FOLD×FUNCALL_FOR_ALL` config interaction corrupting the clip graph) — the NPU description now matches native, text 3-question gate 3/3; vision throughput (2026-11-02): warm encode 12.6 s → **sub-second (542 ms steady / 896 ms FS-cold)** (vs native 435 ms) — root cause: the NPU branch now also sets `ov::cache_dir` (plugin blob cache), since the clip graph's baked `ov::Constants` weights never hit the NPUW cache and were fully recompiled every process |
 | **Secondary target: cross-model validation (Spark-X2.6-4B + Qwen3-4B)** | ✅ **two external model families run end-to-end (2026-11-01)**: iFlytek Spark-X2.6-4B and Qwen3-4B (both dense Transformers, unrelated to the LFM3 hybrid) pass the 3-question acceptance on the NPU 3/3. The secondary target surfaced two cross-cutting fixes — u4 weights could not wrap host memory (which blocked every asymmetric 4-bit path) and rounded integer zero points (which degraded static-graph accuracy); Q4_K_M checkpoints now run on OV-CPU out of the box. 4B needs `PREFILL_CHUNK_SIZE=128` on the llama-cli/server flows (budget rule: the prefill graph plus the LARGEST decode-level graph must fit together -- see HANDOFF 2026-11-02 late night; chunk256 is verified fine for ctx<=512 with pp +55–59%) -- llama-bench runs chunk256 freely (its decode mask never exceeds 256) |
-| **NPU decode performance (4B)** | 🟡 **2.4 → ~6 t/s steady-state (2026-11-01 performance round)**: root cause was a three-graph device-budget over-commit — prefill + legacy full-ctx decode + the level graph each carry a weights bank (a 1.7B model fits three, so LFM3 never exposed it); the level graph died on its first execute and every step silently ran the full-ctx graph. After the fix the level graphs actually run (raw infer 436→~145 ms, at 85% of the ~7 t/s weight-bandwidth floor for 2.3 GB; measure with a warm cache and n≥128 — the n=64 headline undercounts). The remainder is 36-layer standard-attention op overhead plus upstream dependencies — see the HANDOFF performance round |
+| **NPU decode performance (4B)** | 🟡 **6.9 → 8.96 t/s (+30%); 4B three axes +24–42%, loop continues (2026-11-04 performance round)**: the P3-era "~6 t/s at 85% of the bandwidth floor" closing verdict was falsified by P11 (+67% weight bytes, unchanged step time). With FOLD=NO + P14a/b: tg **8.96**, pp2048(ck128) **53.1**, pp512(ck256) **192.3 t/s**. The 4B decode step decomposes (P14 profile) as kv-scatter family 25% + MatMul 23% + rope Add family 22% (launch-bound) + residual Adds 22%; the f16-rope A/B (`GGML_OPENVINO_ROPE_F16`) is falsified (flat-to-slightly-negative on all axes, stays off by default) and MANUAL_GQA is not viable on the NPU (VCL rejects the composite graph at compile); the remaining 4B lever is P14e (host-side out-of-graph KV row write), in progress — see HANDOFF P14 |
 | **On-device multimodal assistant "WangCai" (v0.0.2)** | ✅ **M1–M4 complete (2026-11-02/03, dev-machine verified)**: `app/` Flutter Windows shell (TongYi-Lite Dart vendored at the same paths, fork ledger `app/UPSTREAM.md`) + llama-server subprocess gateway; three engines wired — engine store pinned to official llama.cpp b12034 (Vulkan + CUDA, sha256 whitelist) + OpenAI-compatible remote + binding table with measured t/s write-back + three routing tiers — **DoD four lines green 5/5 on real hardware** (NPU 1.7B / CUDA 4B at 117.6 t/s / Vulkan dual-GPU / remote protocol); tray residency + power awareness + HKCU autostart; **vision DoD achieved** (SmolVLM2-500M + store CUDA engine, accurate semantic description through the shell gateway in 20 s; the NPU vision-encode defect is archived in [docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md) — the NPU line is text-only); agent `--jinja` tool-calling regression green (tools 200, agent c4096); portable `WangCai-0.0.2-win-x64-portable.zip` (clean-process self-test, DLL closure) + Inno Setup script. ⬜ clean-machine install verification pending (manual, `packaging/README.md`) |
 
 The hunt for the main accuracy defect is one of the most valuable assets in this repo: starting from
@@ -139,11 +139,12 @@ loading, per-token callbacks, MTP speculative decoding and mtmd vision encoding.
 
 ### Why the NPU (low power)
 
-Decode is memory-bound, and that is where the NPU is strong: **very low power, CPU cores left free for
-the rest of the system**. NPU prefill on LFM3 reaches **415 t/s** (73% of the CPU reference) with the CPU
-idle. Decode is now **14–15 t/s, context-independent** (multi-extent decode graphs, 2026-11-01) —
-that, plus prefill headroom, is the next target (accuracy was fixed in v0.0.1;
-[docs/status.md](docs/status.md)).
+The NPU is the honors student for memory-bound workloads: **very low power, CPU cores left free for
+the rest of the system**. NPU prefill on LFM3 reaches **779 t/s** — above the native CPU reference of
+570 (2026-11-04 performance round) — with the CPU idle. Decode, via the multi-extent graph set +
+`FOLD=NO` default + shared small chains, is at **22.6 t/s, context-independent**; the 1.7B model now
+passes ≥+50% on all three axes vs baseline while 4B (+24–42%) continues along the P14 profile
+(accuracy was fixed in v0.0.1; [docs/status.md](docs/status.md)).
 
 > Stated honestly: **this machine exposes no NPU counters, has no battery, and is on the "high
 > performance" power plan**, so there is no performance-per-watt number yet. What the roadmap commits to is
@@ -190,18 +191,19 @@ LFM3-1.7B `Q4_K_M` (1049 MB) · 24 layers (13 gated short-conv, 5 sliding-window
 
 | Execution path | Prefill (`llama-bench pp512`) | Decode | Notes |
 |---|---:|---:|---|
-| `ggml` CPU reference (`-dev none`) | 570 t/s | 54.1 t/s | coherence reference |
-| OpenVINO · CPU device, dynamic graphs | 610 t/s | 21.7–29.2 t/s | coherent |
-| **OpenVINO · NPU device, static graphs** | **415 t/s** | **14–15 t/s (context-independent)** | multi-extent decode graphs (2026-11-01); c=8192 up 17× from 0.9 t/s |
-| OpenVINO · NPU, first graph compile (cold) | — | — | ~36 s one-off, then cached |
+| `ggml` CPU reference (`-dev none`) | 570 t/s | 54.1 t/s | coherence reference (measured in the early `-r 1` era, not re-run under the new protocol) |
+| OpenVINO · CPU device, dynamic graphs | 610 t/s | 21.7–29.2 t/s | coherent (same) |
+| **OpenVINO · NPU device, static graphs** | **779 t/s** | **22.6 t/s (context-independent)** | 2026-11-04 performance round (`NPUW_FOLD=NO` default + P14a/b shared chains): pp512 +92%, pp2048 433 t/s (+52%), tg +61% vs the P11 baseline; warm blob, `-r 3` — see [docs/benchmarks.md](docs/benchmarks.md) |
+| OpenVINO · NPU, first graph compile (cold) | — | — | under `FOLD=NO` cold compile is ~10× the old config (the blob cache absorbs it); the compile cache costs **~19 GB of disk per model/ctx shape on 4B** — reserve ≥20 GB; heavy compiles need ≥25 GB free physical RAM |
 
 Two things worth stating plainly:
 
-- **Prefill on the NPU is not the problem** — 415 t/s is 73% of the CPU reference. Decode is the
-  performance target: the multi-extent decode graphs brought it to 14–15 t/s, independent of context
-  length, ~1.5–2× behind the OV-CPU dynamic path. The next independent lever is lm_head (11 ms/step);
-  the KV state round trip has been shrunk by level trimming, and the stateful route was refuted by
-  probe (7× slower than parameter binding).
+- **NPU prefill went from chasing to ahead**: pp512 779 t/s now passes both references (native 570 /
+  OV-CPU 610 — those are early single-run measurements; a same-protocol re-run is pending), and decode
+  at 22.6 t/s lands inside the lower edge of the OV-CPU band (21.7–29.2). The P11 per-node profile
+  (MatMul is only 18–23% of a step) pins the bottleneck as op soup, not weight bandwidth — the P3
+  "bandwidth floor, decode closed" verdict is falsified; the push continues along the profile
+  (P14 series, HANDOFF 2026-11-04).
 - **Short-prompt prompt-throughput on the NPU is meaningless as reported.** The static prefill graph
   is always 256 columns wide, so 4 useful tokens pay for 256 while llama.cpp reports useful tokens per
   second: the same 0.66 s chunk reads as ~6 t/s. Measure `pp512` or larger, or tune
@@ -246,11 +248,16 @@ Hard constraints in the run line: `-dev OPENVINO3` selects the backend device (`
 confirm); `-fa 1` is mandatory (`-fa 0` produces a V write-back shape the OpenVINO scatter lowering
 rejects); `-np 1` is mandatory (the static path is single-sequence); `-st` routes the prompt through
 the chat template (raw continuation degrades any backend, including the CPU reference);
-`GGML_OPENVINO_CACHE_DIR` must be persistent (it caches the ~36 s graph compile) and **separate per
-configuration** — a stale compiled graph silently wins otherwise; `-c` up to 8192 verified (decode
-speed is context-independent since the multi-extent decode graphs — 14.1 t/s at c=8192).
+`GGML_OPENVINO_CACHE_DIR` must be persistent (it absorbs the cold compile, ~10× the old config under
+`FOLD=NO`) and **separate per configuration** — a stale compiled graph silently wins otherwise; the
+4B compile cache costs ~19 GB per ctx shape, reserve ≥20 GB. `-c` up to 8192 verified (decode speed is
+context-independent since the multi-extent decode graphs).
 `llama-server.exe` builds too and serves an OpenAI-compatible HTTP API with the same env vars and the
-same constraints. Full details, expected first-run logs and the three classic pitfalls:
+same constraints — **`--no-warmup` is a hard requirement on the server (P16, 2026-11-04)**: the startup
+warmup eval poisons the following NPUW compiles (`Model0_1` cascade; both models are green on the
+server only with `--no-warmup`) and does not warm the decode graphs anyway (A/B: 2.7 s faster to first
+answer; HANDOFF 2026-11-03 P1 / 2026-11-04 P16). Bench/acceptance llama-cli runs pass `--no-warmup`
+too, to keep measurements uncontaminated. Full details, expected first-run logs and the three classic pitfalls:
 [docs/getting-started.md](docs/getting-started.md); every env var: [docs/env-vars.md](docs/env-vars.md).
 
 Models are **not distributed with this repository** (GGUF files run 1–2 GB, far beyond what git or LFS
@@ -296,7 +303,8 @@ src/llama/            vendored llama.cpp (git-ignored, produced by bootstrap)
 | SoC | Intel Core Ultra (Series 1/2) with `Intel(R) AI Boost` — `PCI\VEN_8086&DEV_AD1D` class device |
 | Driver | Intel NPU driver matching the installed OpenVINO release |
 | OS | Windows 11 (the Linux path is upstream-supported; untested here) |
-| RAM | ≥ 8 GB free per 2 GB of model; 16 GB comfortable for 1–4 B models |
+| RAM | ≥ 8 GB free per 2 GB of model; 16 GB comfortable for 1–4 B models; **heavy NPU cold compiles need ≥25 GB free physical** (insufficient free memory shows up as a silent compile hang — P14 lesson) |
+| Disk | compile cache is per model × ctx shape — ~19 GB per set measured on 4B: **reserve ≥20 GB per model per ctx** when packaging/deploying |
 
 ## Contributing
 

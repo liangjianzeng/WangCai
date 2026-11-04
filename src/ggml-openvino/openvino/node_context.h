@@ -164,6 +164,10 @@ public:
 
     bool is_stateful() const { return m_decoder->is_stateful(); }
 
+    bool kv_host_write_allowed() const { return m_decoder->kv_host_write_allowed(); }
+
+    bool is_unchained_set_rows() const { return m_decoder->is_unchained_set_rows(m_node_idx); }
+
     int get_ssm_state_size() const { return m_decoder->get_ssm_state_size(); }
 
 private:

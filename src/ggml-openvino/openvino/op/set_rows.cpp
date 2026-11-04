@@ -1,6 +1,7 @@
 #include "../node_context.h"
 #include "ggml-impl.h"
 #include "../op_table.h"
+#include "../translate_session.h"
 #include "../utils.h"
 
 #include <cassert>
@@ -51,6 +52,58 @@ OutputVector translate_set_rows(const NodeContext & context) {
 
     auto axes = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {2});
 
+    // P14e (GGML_OPENVINO_KV_HOST_WRITE): the K/V row leaves the graph instead of being
+    // ScatterNDUpdated into the cache. Publish {cache parameter, converted cur row} to the
+    // session (keyed by the cache leaf's tensor-map name, which is how flash_attn_ext resolves
+    // its k/v views) and return them as the two outputs the decoder named
+    // {cache_name, cache_name+"@KVcur"}: the in-place alias rewrite then maps the cache name to
+    // the plain parameter (attention reads rows [0, level-1) from it and Concat's the cur row),
+    // and the executor copies the row into the host cache buffer after infer. The decoder
+    // predicate already limits this to static NPU decode graphs and to the FULL-attention
+    // caches (SWA rings stay chained); only the ScatterND-family shape prerequisites remain here.
+    const auto & host_write_dst_shape = context.get_input_shape(2);
+    if (context.is_unchained_set_rows() && !multidim_indices && context.is_static() && !context.is_prefill() &&
+        host_write_dst_shape.rank().is_static() && host_write_dst_shape[2].is_static() &&
+        host_write_dst_shape[3].is_static()) {
+        const int64_t row_size_hw = host_write_dst_shape[3].get_length();
+        auto upd = std::make_shared<ov::op::v1::Reshape>(
+            data,
+            ov::op::v0::Constant::create(ov::element::i64, {4}, {(int64_t) 1, (int64_t) 1, (int64_t) 1, row_size_hw}),
+            false);
+        auto session = context.get_translate_session();
+        if (session) {
+            auto & unchained = session->kv_unchained_writes();
+            std::string cache_key = context.get_input_names().at(2);
+            const size_t view_n = context.get_view_input_size(2);
+            if (view_n > 0) {
+                const std::string leaf = context.get_view_input_src_name(2, view_n - 1);
+                if (!leaf.empty()) {
+                    cache_key = leaf;
+                }
+            }
+            unchained[cache_key] = {dst, upd};
+            // llama hands the attention the SET_ROWS OUTPUT tensor (not a cache view) for the
+            // freshly written K/V: register under the output name too so the flash_attn_ext
+            // lookup finds this entry whichever handle the layer wired into its k/v inputs.
+            for (const auto & out_name : context.get_output_names()) {
+                if (out_name.size() > 6 && out_name.compare(out_name.size() - 6, 6, "@KVcur") == 0) {
+                    continue;
+                }
+                unchained[out_name] = {dst, upd};
+            }
+        }
+        // NEVER rename dst here: for the full-attention caches dst IS the cache Parameter
+        // itself, and rename_outputs_with_suffix rewrites the node's friendly_name -- which is
+        // exactly the key the executor binds graph inputs by (param->get_friendly_name() in
+        // ov_graph_compute). The relabelled parameter then misses m_model_inputs/m_inputs and
+        // every decode step dies with "no ggml tensor is bound for graph input
+        // '<cache>_<cache> (view)#n<idx>'" (the double name was this rename). Result names come
+        // from the decoder's output names (translate_session.cpp), not from producer friendly
+        // names, so the rename on dst was purely cosmetic; only the fresh `upd` row keeps the
+        // debug suffix.
+        return { dst, rename_outputs_with_suffix({ upd }, context.get_name())[0] };
+    }
+
     Output<Node> res;
     if (context.is_stateful()) {
         int concat_axis = 1;
@@ -88,12 +141,6 @@ OutputVector translate_set_rows(const NodeContext & context) {
         // ring wrap for the SWA destinations past it.
         const auto & idx_name = context.get_input_names().at(1);
         const auto dst_shape = context.get_input_shape(2);
-        if (context.is_static() && !context.is_prefill() && dst_shape[2].is_static() &&
-            (idx_name == "attn_inp_k_idxs" || idx_name == "attn_inp_v_idxs")) {
-            const auto dst_rows = dst_shape[2].get_length();
-            ind_squeezed = std::make_shared<ov::op::v1::Mod>(
-                ind_squeezed, ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {dst_rows}));
-        }
         auto data_reshaped = std::make_shared<ov::op::v1::Reshape>(
             data,
             ov::op::v0::Constant::create(ov::element::i64, {4},
@@ -119,19 +166,62 @@ OutputVector translate_set_rows(const NodeContext & context) {
             // BOS row at every decode step.
             const int64_t dst_rows = dst_shape[2].get_length();
             const int64_t d = dst_shape[3].get_length();
-            auto idx_i64 = std::make_shared<ov::op::v0::Convert>(ind_squeezed, ov::element::i64);
-            auto n_rows = std::make_shared<ov::op::v3::ShapeOf>(idx_i64, ov::element::i64);
-            auto two = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1}, {2});
-            auto prefix = std::make_shared<ov::op::v3::Broadcast>(
-                ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1, 2}, std::vector<int64_t>{0, 0}),
-                std::make_shared<ov::op::v0::Concat>(OutputVector{n_rows, two}, 0));
-            auto idx_col = std::make_shared<ov::op::v0::Unsqueeze>(idx_i64, ov::op::v0::Constant::create(ov::element::i64, {1}, {1}));
-            auto nd_idx = std::make_shared<ov::op::v0::Concat>(OutputVector{prefix, idx_col}, 1);
+            // The merged index parameter carries the full-attention cache's cell ids, which
+            // outgrow the SWA ring's row count once the sequence passes n_swa -- the exact
+            // out-of-bounds scatter this file used to crash on. Wrap the index in a Mod against
+            // the destination's row count: the identity for every id a decode step can hold
+            // (cells stay below -c), the ring wrap for the SWA destinations past it.
+            //
+            // P14 (2026-11-04): every K/V scatter in the graph rebuilt the identical index
+            // chain below -- 2*n_layer copies of ~8 small nodes that NPUW schedules per
+            // instance (4B decode: 72 scatters ~= 570 nodes, and the profiled Concat count
+            // matched them one-for-one, so the compiler's own CSE never merged them across
+            // subgraphs). The chain depends only on the indices output, the destination row
+            // count and whether the SWA-wrap Mod applies, so one instance per
+            // (indices node, dst_rows, mod) is shared per graph via the translate session.
+            const bool mod_applied = context.is_static() && !context.is_prefill() &&
+                                     (idx_name == "attn_inp_k_idxs" || idx_name == "attn_inp_v_idxs");
+            Output<Node> nd_idx;
+            auto session = context.get_translate_session();
+            bool shared_hit = false;
+            if (session) {
+                TranslateSession::ScatterIdxKey memo_key{indices.get_node(), dst_rows, mod_applied};
+                auto & memo = session->shared_scatter_idx_chain();
+                auto memo_it = memo.find(memo_key);
+                if (memo_it != memo.end()) {
+                    nd_idx = memo_it->second;
+                    shared_hit = true;
+                }
+            }
+            if (!shared_hit) {
+                auto squeezed = ind_squeezed;
+                if (mod_applied) {
+                    squeezed = std::make_shared<ov::op::v1::Mod>(
+                        squeezed, ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {dst_rows}));
+                }
+                auto idx_i64 = std::make_shared<ov::op::v0::Convert>(squeezed, ov::element::i64);
+                auto n_rows = std::make_shared<ov::op::v3::ShapeOf>(idx_i64, ov::element::i64);
+                auto two = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1}, {2});
+                auto prefix = std::make_shared<ov::op::v3::Broadcast>(
+                    ov::op::v0::Constant::create(ov::element::i64, ov::Shape{1, 2}, std::vector<int64_t>{0, 0}),
+                    std::make_shared<ov::op::v0::Concat>(OutputVector{n_rows, two}, 0));
+                auto idx_col = std::make_shared<ov::op::v0::Unsqueeze>(idx_i64, ov::op::v0::Constant::create(ov::element::i64, {1}, {1}));
+                nd_idx = std::make_shared<ov::op::v0::Concat>(OutputVector{prefix, idx_col}, 1);
+                if (session) {
+                    TranslateSession::ScatterIdxKey memo_key{indices.get_node(), dst_rows, mod_applied};
+                    session->shared_scatter_idx_chain().emplace(memo_key, nd_idx);
+                }
+            }
             auto upd_flat = std::make_shared<ov::op::v1::Reshape>(
                 data_reshaped,
                 ov::op::v0::Constant::create(ov::element::i64, ov::Shape{2}, std::vector<int64_t>{-1, d}), false);
             res = std::make_shared<ov::op::v3::ScatterNDUpdate>(dst, nd_idx, upd_flat);
         } else {
+            // The merged-index SWA ring wrap (Mod) lives only in the ScatterND branch above:
+            // it fired for static decode destinations, which this branch can no longer reach
+            // (is_static + static dst_shape[2] always routes to ScatterND), and its old
+            // dynamic-dst placement would have thrown in get_length() before ever wrapping.
+            // Dynamic-path graphs (is_static() == false) never matched the old condition.
             res = std::make_shared<ov::op::v3::ScatterUpdate>(dst, ind_squeezed, data_reshaped, axes);
         }
     }
