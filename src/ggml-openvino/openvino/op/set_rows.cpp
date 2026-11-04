@@ -52,6 +52,58 @@ OutputVector translate_set_rows(const NodeContext & context) {
 
     auto axes = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {2});
 
+    // P14e (GGML_OPENVINO_KV_HOST_WRITE): the K/V row leaves the graph instead of being
+    // ScatterNDUpdated into the cache. Publish {cache parameter, converted cur row} to the
+    // session (keyed by the cache leaf's tensor-map name, which is how flash_attn_ext resolves
+    // its k/v views) and return them as the two outputs the decoder named
+    // {cache_name, cache_name+"@KVcur"}: the in-place alias rewrite then maps the cache name to
+    // the plain parameter (attention reads rows [0, level-1) from it and Concat's the cur row),
+    // and the executor copies the row into the host cache buffer after infer. The decoder
+    // predicate already limits this to static NPU decode graphs and to the FULL-attention
+    // caches (SWA rings stay chained); only the ScatterND-family shape prerequisites remain here.
+    const auto & host_write_dst_shape = context.get_input_shape(2);
+    if (context.is_unchained_set_rows() && !multidim_indices && context.is_static() && !context.is_prefill() &&
+        host_write_dst_shape.rank().is_static() && host_write_dst_shape[2].is_static() &&
+        host_write_dst_shape[3].is_static()) {
+        const int64_t row_size_hw = host_write_dst_shape[3].get_length();
+        auto upd = std::make_shared<ov::op::v1::Reshape>(
+            data,
+            ov::op::v0::Constant::create(ov::element::i64, {4}, {(int64_t) 1, (int64_t) 1, (int64_t) 1, row_size_hw}),
+            false);
+        auto session = context.get_translate_session();
+        if (session) {
+            auto & unchained = session->kv_unchained_writes();
+            std::string cache_key = context.get_input_names().at(2);
+            const size_t view_n = context.get_view_input_size(2);
+            if (view_n > 0) {
+                const std::string leaf = context.get_view_input_src_name(2, view_n - 1);
+                if (!leaf.empty()) {
+                    cache_key = leaf;
+                }
+            }
+            unchained[cache_key] = {dst, upd};
+            // llama hands the attention the SET_ROWS OUTPUT tensor (not a cache view) for the
+            // freshly written K/V: register under the output name too so the flash_attn_ext
+            // lookup finds this entry whichever handle the layer wired into its k/v inputs.
+            for (const auto & out_name : context.get_output_names()) {
+                if (out_name.size() > 6 && out_name.compare(out_name.size() - 6, 6, "@KVcur") == 0) {
+                    continue;
+                }
+                unchained[out_name] = {dst, upd};
+            }
+        }
+        // NEVER rename dst here: for the full-attention caches dst IS the cache Parameter
+        // itself, and rename_outputs_with_suffix rewrites the node's friendly_name -- which is
+        // exactly the key the executor binds graph inputs by (param->get_friendly_name() in
+        // ov_graph_compute). The relabelled parameter then misses m_model_inputs/m_inputs and
+        // every decode step dies with "no ggml tensor is bound for graph input
+        // '<cache>_<cache> (view)#n<idx>'" (the double name was this rename). Result names come
+        // from the decoder's output names (translate_session.cpp), not from producer friendly
+        // names, so the rename on dst was purely cosmetic; only the fresh `upd` row keeps the
+        // debug suffix.
+        return { dst, rename_outputs_with_suffix({ upd }, context.get_name())[0] };
+    }
+
     Output<Node> res;
     if (context.is_stateful()) {
         int concat_axis = 1;

@@ -60,6 +60,24 @@ public:
     };
     std::map<RopeCSKey, std::pair<Output<Node>, Output<Node>>> & shared_rope_cos_sin() { return m_shared_rope_cos_sin; }
 
+    // P14e (2026-11-04, GGML_OPENVINO_KV_HOST_WRITE): KV rows written outside the graph. In a
+    // static NPU decode graph the per-layer K/V SET_ROWS compiled to a ScatterNDUpdate whose
+    // result both fed attention (write-then-read chain) and left the graph as the cache's
+    // in-place output (full level-sized DMA back to the host every step). With this lever the
+    // set_rows translator instead publishes {cache parameter, cur-row} here (keyed by the cache
+    // leaf's tensor-map name, the same key flash_attn_ext resolves its k/v view to), returns
+    // them as the node's two outputs, and the decoder drops the cache output in favor of a
+    // small per-row output the host copies into the cache buffer after infer. flash_attn_ext
+    // reads the parameter rows [0, level-1) and Concat's the cur row as the last column; the
+    // host mask craft (-inf on the stale cur cell, 0 on the appended column) keeps SDPA's
+    // mask/K alignment intact. Gated (decoder->kv_host_write_allowed()) to non-SWA static NPU
+    // decode graphs so the shared-mask ring-wrap entanglement stays out of reach.
+    struct KvUnchained {
+        Output<Node> cache_param;  // the cache graph input (rows stale at the cur cell)
+        Output<Node> cur_row;      // [1,1,1,d] converted K/V row produced by the graph
+    };
+    std::map<std::string, KvUnchained> & kv_unchained_writes() { return m_kv_unchained_writes; }
+
 private:
     std::shared_ptr<Model> apply_transformations(std::shared_ptr<Model> model);
     const frontend::InputModel::Ptr m_input_model;
@@ -68,6 +86,7 @@ private:
     bool m_naive;
     std::map<ScatterIdxKey, Output<Node>> m_shared_scatter_idx_chain;
     std::map<RopeCSKey, std::pair<Output<Node>, Output<Node>>> m_shared_rope_cos_sin;
+    std::map<std::string, KvUnchained> m_kv_unchained_writes;
 };
 
 }  // namespace ggml

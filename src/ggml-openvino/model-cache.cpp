@@ -177,6 +177,10 @@ static const char * cache_settings[] = {
     // Changes rope's compute domain (f32 vs f16, rope.cpp P14d) -- toggling must not resurrect
     // blobs compiled with the other lowering.
     "GGML_OPENVINO_ROPE_F16",
+    // Changes the decode graph's KV topology (host-side row writes vs ScatterNDUpdate through
+    // the graph, set_rows.cpp/flash_attn_ext.cpp P14e) -- toggling must not resurrect blobs
+    // compiled with the other shape.
+    "GGML_OPENVINO_KV_HOST_WRITE",
     "GGML_OPENVINO_STATEFUL_EXECUTION",
     "GGML_OPENVINO_DISABLE_KV_STATE_RELAYOUT",
     "GGML_OPENVINO_DISABLE_REMOTE_OUTPUTS",

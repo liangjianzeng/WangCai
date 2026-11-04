@@ -219,6 +219,10 @@ static uint64_t ggml_openvino_model_cache_extra_cfg(bool stateful, bool recurren
     // F16 constant vs grouped u4) -- it changes graph weight constants, so stale blobs compiled
     // with the other layout must never match (4B lm_head u4 retest, 2026-11-02).
     extra_cfg = extra_cfg * 131 + (ggml_openvino_getenv_int("GGML_OPENVINO_REQUANT_EMBD_Q4") ? 1u : 0u);
+    // P14e un-chained host-side K/V row writes rebuild the decode graph's KV tail (no
+    // ScatterNDUpdate family, attention Concat's the cur row): toggling must not resurrect
+    // blobs compiled with the chained topology.
+    extra_cfg = extra_cfg * 131 + (ggml_openvino_kv_host_write_enabled() ? 1u : 0u);
     // Multi-level static decode graphs (see decode_attention_level): the decode half's baked
     // attention span changed from the whole context to a per-level constant, so older
     // disk-cache blobs must not match. The 4 also covers the vision-encoder fix below
@@ -732,6 +736,39 @@ ov::Tensor get_ov_input_tensor(const std::shared_ptr<GgmlOvDecoder> & ggml_decod
     return input_tensor;
 }
 
+// P14e (GGML_OPENVINO_KV_HOST_WRITE): mask craft for the un-chained decode graph. The step's
+// K/V row never lands in the cache parameter (the executor writes it on the host after infer)
+// and attention reads rows [0, level-1) + the row Concat'd back in as column (level-1). So on
+// the bound mask: column `fill` (the stale cur row the in-graph scatter used to overwrite) gets
+// -inf -- order matters when fill == level-1, the appended column must end up valid -- and
+// column (level-1) gets 0. `cols` is the compiled parameter width (== level; llama pads the
+// mask to the same 256-multiple the level graph was built with).
+static void craft_unchained_kv_mask(const std::shared_ptr<GgmlOvDecoder> & ggml_decoder,
+                                    const ggml_tensor * mask_tensor, void * data, size_t cols) {
+    if (ggml_decoder->kv_host_write_mask() != mask_tensor) {
+        return;
+    }
+    const auto * inp_pos_t = ggml_decoder->get_input_ggml_tensor("inp_pos");
+    const int64_t level = ggml_decoder->get_compute_params().attention_size;
+    if (inp_pos_t == nullptr || inp_pos_t->ne[0] != 1 || inp_pos_t->data == nullptr ||
+        level <= 0 || (size_t) level != cols) {
+        return;
+    }
+    const int64_t fill = *(const int32_t *) inp_pos_t->data;
+    auto set_col = [&](int64_t col, float v) {
+        if (col < 0 || (size_t) col >= cols) {
+            return;
+        }
+        if (mask_tensor->type == GGML_TYPE_F32) {
+            ((float *) data)[col] = v;
+        } else if (mask_tensor->type == GGML_TYPE_F16) {
+            ((ggml_fp16_t *) data)[col] = GGML_FP32_TO_FP16(v);
+        }
+    };
+    set_col(fill, -INFINITY);       // stale cur row: replaced by the appended column
+    set_col(level - 1, 0.0f);       // appended cur column: valid
+}
+
 ov::Tensor get_ov_input_tensor_static_decode(const std::shared_ptr<GgmlOvDecoder> & ggml_decoder,
                                              const std::string & param_name) {
     // NPU decoding stage
@@ -792,12 +829,14 @@ ov::Tensor get_ov_input_tensor_static_decode(const std::shared_ptr<GgmlOvDecoder
         if (ggml_tensor->type == GGML_TYPE_F16) {
             std::vector<ggml_fp16_t> padded_data =
                 pad_input<ggml_fp16_t>(ggml_tensor, 1, context_size, GGML_FP32_TO_FP16(-INFINITY));
+            craft_unchained_kv_mask(ggml_decoder, ggml_tensor, padded_data.data(), context_size);
             ov::Tensor input_tensor(ov::element::f16, ov::Shape{1, 1, 1, context_size});
             std::memcpy(input_tensor.data(), padded_data.data(), padded_data.size() * sizeof(ggml_fp16_t));
             return input_tensor;
         }
 
         std::vector<float> padded_data = pad_input<float>(ggml_tensor, 1, context_size, -INFINITY);
+        craft_unchained_kv_mask(ggml_decoder, ggml_tensor, padded_data.data(), context_size);
         ov::Tensor input_tensor(ov::element::f32, ov::Shape{1, 1, 1, context_size});
         auto * data_ptr = input_tensor.data<float>();
         std::copy(padded_data.begin(), padded_data.begin() + context_size, data_ptr);
@@ -2570,7 +2609,22 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
             if (ggml_nbytes(ggml_tensor) == 0) {
                 continue;
             }
-            auto output_tensor = create_ov_output_tensor(ggml_decoder, infer_request, i, ggml_tensor);
+            // P14e: the "@KVcur" output carries the step's converted K/V row in the cache
+            // element type, while the ggml tensor bound to it is the pre-write value (rope
+            // output, typically f32). Bind with the compiled output's type/shape so the device
+            // writes cache-typed row bytes into the value buffer -- the host write-back below
+            // copies exactly those bytes into the cache row.
+            const std::string & out_name = ov_output_names_local[i];
+            ov::Tensor output_tensor;
+            if (out_name.size() > 6 && out_name.compare(out_name.size() - 6, 6, "@KVcur") == 0) {
+                const auto want = infer_request->get_output_tensor(i);
+                output_tensor = ov::Tensor(want.get_element_type(), want.get_shape(), ggml_tensor->data);
+            } else {
+                output_tensor = create_ov_output_tensor(ggml_decoder, infer_request, i, ggml_tensor);
+            }
+            // The NPU plugin validates set tensors lazily at infer(), so a wrong-type binding
+            // surfaces only as a mid-run Compute error; keep the @KVcur special case above the
+            // single source of the cache-row type.
             infer_request->set_output_tensor(i, output_tensor);
         }
 
@@ -2612,6 +2666,39 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
         }
         dump_ov_outputs_raw(infer_request, ov_output_names_local, "decode");
         dump_ov_profiling_info(*infer_request);
+
+        // P14e (GGML_OPENVINO_KV_HOST_WRITE): finish the un-chained K/V row writes on the
+        // host. The device delivered each converted row (cache element type) into its value
+        // buffer through the "@KVcur" output binding above; copy it into the cache row the
+        // write index selects. The ring-wrap Mod that the in-graph scatter applied for SWA
+        // models is mirrored by the modulo below, and the decoder gate keeps this to non-SWA
+        // static decode graphs -- the modulo stays as the out-of-bounds guard it always was.
+        if (ggml_decoder->kv_host_write_active()) {
+            for (const auto & w : ggml_decoder->kv_host_writes()) {
+                if (w.cache == nullptr || w.cache->data == nullptr || w.value == nullptr ||
+                    w.value->data == nullptr || w.idxs == nullptr || w.idxs->data == nullptr) {
+                    continue;
+                }
+                const int64_t rows = (int64_t) w.cache->ne[1];
+                if (rows <= 0 || w.cache->ne[0] <= 0) {
+                    continue;
+                }
+                int64_t idx = 0;
+                if (w.idxs->type == GGML_TYPE_I64) {
+                    idx = *(const int64_t *) w.idxs->data;
+                } else if (w.idxs->type == GGML_TYPE_I32) {
+                    idx = *(const int32_t *) w.idxs->data;
+                } else {
+                    continue;
+                }
+                int64_t row = idx % rows;
+                if (row < 0) {
+                    row += rows;
+                }
+                const size_t row_bytes = (size_t) w.cache->ne[0] * ggml_type_size(w.cache->type);
+                std::memcpy((char *) w.cache->data + (size_t) row * w.cache->nb[1], w.value->data, row_bytes);
+            }
+        }
     }
 
     if (ggml_openvino_getenv_int("GGML_OPENVINO_PROFILING")) {

@@ -116,6 +116,11 @@ bool ggml_openvino_release_weights_enabled();
 // Check if running on NPU
 bool ggml_openvino_is_npu();
 
+// P14e (GGML_OPENVINO_KV_HOST_WRITE, NPU only): K/V rows are written outside the decode
+// graph (host-side row copy after infer) instead of ScatterNDUpdated through it; the
+// attention Concat's the cur row back in. See TranslateSession::kv_unchained_writes.
+bool ggml_openvino_kv_host_write_enabled();
+
 // Check if running on a GPU (GPU, GPU.0, GPU.1, ...)
 bool ggml_openvino_is_gpu();
 

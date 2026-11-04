@@ -156,6 +156,11 @@ void ggml_openvino_device_config::init() {
         // the f32 round-trip that pins the mul-mul-add chain to Shave (P14d, rope.cpp). Env-gated
         // pending the accuracy gates.
         "GGML_OPENVINO_ROPE_F16",
+        // 1 = write the step's K/V rows outside the decode graph (executor memcpy after
+        // infer) instead of through ScatterNDUpdate; attention Concat's the row back in
+        // (P14e, set_rows.cpp / flash_attn_ext.cpp). Static NPU decode graphs of non-SWA
+        // models only; the decoder gate enforces the rest.
+        "GGML_OPENVINO_KV_HOST_WRITE",
         "GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN",
         "GGML_OPENVINO_MOE_OP",
         "GGML_OPENVINO_MEMORY_OPTIMIZE",
@@ -383,6 +388,13 @@ bool ggml_openvino_release_weights_enabled() {
 // Check if running on NPU
 bool ggml_openvino_is_npu() {
     return ggml_openvino_get_device_config().is_npu;
+}
+
+// P14e: un-chained host-side K/V row writes (see TranslateSession::kv_unchained_writes).
+// NPU-only: the payoff is the ScatterNDUpdate family and the level-sized cache output DMA
+// that NPUW schedules per step; other devices keep the chained translation untouched.
+bool ggml_openvino_kv_host_write_enabled() {
+    return ggml_openvino_is_npu() && ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE") != 0;
 }
 
 bool ggml_openvino_is_gpu() {
