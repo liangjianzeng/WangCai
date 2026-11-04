@@ -60,6 +60,9 @@ public:
     };
     std::map<RopeCSKey, std::pair<Output<Node>, Output<Node>>> & shared_rope_cos_sin() { return m_shared_rope_cos_sin; }
 
+    // P16: NEOX rotate-half's sign flip as a shared swapped-sin table (Concat(-sin1, sin2)).
+    std::map<RopeCSKey, Output<Node>> & shared_rope_sin_swapped() { return m_shared_rope_sin_swapped; }
+
     // P14e (2026-11-04, GGML_OPENVINO_KV_HOST_WRITE): KV rows written outside the graph. In a
     // static NPU decode graph the per-layer K/V SET_ROWS compiled to a ScatterNDUpdate whose
     // result both fed attention (write-then-read chain) and left the graph as the cache's
@@ -86,6 +89,7 @@ private:
     bool m_naive;
     std::map<ScatterIdxKey, Output<Node>> m_shared_scatter_idx_chain;
     std::map<RopeCSKey, std::pair<Output<Node>, Output<Node>>> m_shared_rope_cos_sin;
+    std::map<RopeCSKey, Output<Node>> m_shared_rope_sin_swapped;
     std::map<std::string, KvUnchained> m_kv_unchained_writes;
 };
 
