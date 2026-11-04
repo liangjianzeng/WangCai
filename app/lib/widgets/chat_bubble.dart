@@ -9,6 +9,7 @@ import '../services/share_service.dart';
 import '../tts/edge_tts_service.dart' show EdgeTtsService;
 import 'image_preview.dart';
 import 'todo_card.dart';
+import 'context_menu_region.dart';
 
 /// 消息的 TTS 播放按钮是否正控当前这场播报（决定图标显示停止态、点按即停）。
 ///
@@ -88,7 +89,9 @@ class ChatBubble extends StatelessWidget {
     final Color userBubbleColor =
         dark ? const Color(0xFF9B8CFF) : const Color(0xFF6D4FE0);
     final Color userBubbleFg = dark ? Colors.black87 : Colors.white;
-    return Padding(
+    // v0.0.4 Phase 3：右键复制全文（桌面件；纯文本卡片才有意义，工具活动/
+    // 思考存档等特殊卡不加）。SelectionArea 内部文本选择菜单不受影响。
+    final Widget body = Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       child: Row(
         mainAxisAlignment:
@@ -408,6 +411,26 @@ class ChatBubble extends StatelessWidget {
           ),
         ],
       ),
+    );
+    if (_isToolActivity || _isThinkingPlaceholder) return body;
+    return ContextMenuRegion(
+      contextMenuBuilder: (ctx, offset) =>
+          AdaptiveTextSelectionToolbar.buttonItems(
+        anchors: TextSelectionToolbarAnchors(primaryAnchor: offset),
+        buttonItems: [
+          ContextMenuButtonItem(
+            label: '复制全文',
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              Clipboard.setData(ClipboardData(text: content));
+              ScaffoldMessenger.maybeOf(ctx)?.showSnackBar(
+                const SnackBar(content: Text('已复制全文'), duration: Duration(seconds: 1)),
+              );
+            },
+          ),
+        ],
+      ),
+      child: body,
     );
   }
 }

@@ -8,6 +8,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'agent/session/store.dart' show JsonlSessionStore;
 import 'project/migration.dart' show migrateLegacySessions;
@@ -17,6 +18,7 @@ import 'providers/settings_provider.dart' show settingsProvider;
 import 'screens/home_screen.dart';
 import 'platform/inference_gateway.dart';
 import 'platform/wangcai_paths.dart';
+import 'platform/window_geometry.dart';
 import 'services/model_manager.dart';
 import 'services/storage_service.dart' show StorageService;
 import 'asr/sherpa_streaming_asr.dart';
@@ -31,6 +33,31 @@ Future<void> _requestNotificationPermission() async {
     await Permission.notification.request();
   } catch (_) {
     // 非 Android 平台/插件未就绪：静默跳过（通知仅为可见性增强）。
+  }
+}
+
+/// v0.0.4 Phase 3（计划书 §4.1）：Windows 窗口基本件——真标题、最小尺寸、
+/// 几何记忆（尺寸+最大化；位置刻意不记，多显示器陷阱见 window_geometry.dart）。
+/// runner main.cpp 另配单实例互斥（第二个进程只前置已有窗口）。
+Future<void> _initDesktopWindow() async {
+  if (!Platform.isWindows) return;
+  try {
+    await windowManager.ensureInitialized();
+    final geo = WindowGeometry.load();
+    await windowManager.waitUntilReadyToShow(
+      WindowOptions(
+        title: '汪柴 WangCai',
+        minimumSize: const Size(520, 480),
+        size: geo?.size ?? const Size(1280, 800),
+      ),
+      () async {
+        if (geo?.maximized ?? false) await windowManager.maximize();
+        await windowManager.show();
+        await windowManager.focus();
+      },
+    );
+  } catch (_) {
+    // 窗口管理器初始化失败不阻塞启动（runner 默认尺寸兜底）。
   }
 }
 
@@ -85,6 +112,7 @@ Future<void> main() async {
   // 模型目录 / 原生引擎的初始化改在启动画面内异步进行（见 AppStartupGate）。
   // 注入沙箱升级审批通道（对照 DSH ctx.approval）：用户开启「完整文件访问
   // 授权」后，智能体请求完整文件系统时弹确认框逐次批准。
+  await _initDesktopWindow();
   runApp(
     ProviderScope(
       overrides: [

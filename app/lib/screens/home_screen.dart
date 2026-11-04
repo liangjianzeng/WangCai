@@ -59,6 +59,7 @@ import '../providers/agent_state_provider.dart'
     show agentUiStateProvider, AgentUiState, ToolActivityUi;
 import '../models/chat_message.dart' show ChatMessage;
 import '../widgets/conversation_stats_bar.dart';
+import '../widgets/context_menu_region.dart';
 import 'settings_screen.dart';
 // 插件平台（P2）：宿主在这里只"挖洞"，不认识任何具体插件。
 import '../plugins/plugin_host.dart';
@@ -70,6 +71,23 @@ import '../platform/wangcai_paths.dart';
 /// App-lifetime guard: 启动自动加载默认模型只执行一次。
 /// 放在库作用域，避免首页路由重建时重复触发（与设置页 `_appLaunchScanDone` 同风格）。
 bool _autoLoadDefaultDone = false;
+
+// —— v0.0.4 Phase 3 桌面快捷键 Intents（见 build 顶部的 Shortcuts/Actions）——
+class _NewSessionIntent extends Intent {
+  const _NewSessionIntent();
+}
+
+class _SearchChatsIntent extends Intent {
+  const _SearchChatsIntent();
+}
+
+class _OpenSettingsIntent extends Intent {
+  const _OpenSettingsIntent();
+}
+
+class _ClosePanelIntent extends Intent {
+  const _ClosePanelIntent();
+}
 
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
@@ -151,6 +169,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _scrollController.dispose();
     _textController.dispose();
     _conversationSearchCtrl.dispose();
+    _chatsSearchFocus.dispose();
     _questionController.dispose();
     _railPanel.dispose();
 
@@ -1008,7 +1027,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
     // harness 布局：左栏（能力/配置入口）+ 主区（AppBar + 消息 + composer）。
     // 面板从左滑入、只盖主区（含 AppBar），rail 恒可见。
-    return Scaffold(
+    // v0.0.4 Phase 3：桌面快捷键基础集（键事件自焦点冒泡至此；对话框等
+    // 模态路由先消费 Esc，不冲突）。
+    return Shortcuts(
+      shortcuts: const <ShortcutActivator, Intent>{
+        SingleActivator(LogicalKeyboardKey.keyN, control: true):
+            _NewSessionIntent(),
+        SingleActivator(LogicalKeyboardKey.keyF, control: true):
+            _SearchChatsIntent(),
+        SingleActivator(LogicalKeyboardKey.comma, control: true):
+            _OpenSettingsIntent(),
+        SingleActivator(LogicalKeyboardKey.escape): _ClosePanelIntent(),
+      },
+      child: Actions(
+        actions: <Type, Action<Intent>>{
+          _NewSessionIntent: CallbackAction<_NewSessionIntent>(
+              onInvoke: (_) {
+            _newConversation();
+            return null;
+          }),
+          _SearchChatsIntent: CallbackAction<_SearchChatsIntent>(
+              onInvoke: (_) {
+            _railPanel.open('chats');
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted) _chatsSearchFocus.requestFocus();
+            });
+            return null;
+          }),
+          _OpenSettingsIntent: CallbackAction<_OpenSettingsIntent>(
+              onInvoke: (_) {
+            Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const SettingsScreen()));
+            return null;
+          }),
+          _ClosePanelIntent: CallbackAction<_ClosePanelIntent>(
+              onInvoke: (_) {
+            _railPanel.close();
+            return null;
+          }),
+        },
+        child: Scaffold(
       // 设计稿结构：状态栏条带 = 应用底色，左栏/画布从状态栏下开始——
       // 左栏背景不许捅进状态栏（此前 SafeArea 放在栏内部只挪了内容）。
       body: SafeArea(
@@ -1084,6 +1144,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ],
             ),
           ),
+        ),
+      ),
         ),
       ),
     );
@@ -3111,6 +3173,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   // ---- P2 会话抽屉重构：搜索 / 分组 / 摘要 / 状态徽标 / 行内操作 ----
 
   final TextEditingController _conversationSearchCtrl = TextEditingController();
+
+  /// Ctrl+F（v0.0.4 Phase 3）：开「会话」面板并聚焦搜索框。
+  final FocusNode _chatsSearchFocus = FocusNode();
   String _conversationSearchQuery = '';
 
   /// 各会话最后一条消息摘要（一次批量 SQL；打开抽屉时失效重取）。
@@ -3433,6 +3498,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
             child: TextField(
               controller: _conversationSearchCtrl,
+              focusNode: _chatsSearchFocus,
               onChanged: (v) => setState(() => _conversationSearchQuery = v),
               decoration: InputDecoration(
                 hintText: '搜索会话…',
@@ -3558,6 +3624,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
   }
 
+  /// 会话条目动作（v0.0.4 Phase 3）：trailing 弹出菜单与右键菜单共用。
+  void _conversationTileAction(String action, Conversation c, bool isPinned) {
+    switch (action) {
+      case 'pin':
+        ref.read(settingsProvider.notifier).togglePinnedConversation(c.id);
+        break;
+      case 'rename':
+        _renameConversation(c);
+        break;
+      case 'delete':
+        _confirmDelete(c);
+        break;
+    }
+  }
+
   Widget _buildConversationTile(
       Conversation c, bool isCurrent, bool isPinned, String snippet) {
     final updated = _formatTime(c.updatedAt);
@@ -3565,7 +3646,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final selectionMode = _conversationSelectionMode;
     final selected = _selectedConversations.contains(c.id);
     final running = ref.watch(runningTurnsProvider).containsKey(c.id);
-    return ListTile(
+    // v0.0.4 Phase 3：右键菜单（桌面件；与 trailing 弹出菜单同一动作集）。
+    return ContextMenuRegion(
+      enabled: !selectionMode,
+      contextMenuBuilder: (ctx, offset) =>
+          AdaptiveTextSelectionToolbar.buttonItems(
+        anchors: TextSelectionToolbarAnchors(primaryAnchor: offset),
+        buttonItems: [
+          ContextMenuButtonItem(
+            label: isPinned ? '取消置顶' : '置顶',
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _conversationTileAction('pin', c, isPinned);
+            },
+          ),
+          ContextMenuButtonItem(
+            label: '重命名',
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _conversationTileAction('rename', c, isPinned);
+            },
+          ),
+          ContextMenuButtonItem(
+            label: '删除',
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _conversationTileAction('delete', c, isPinned);
+            },
+          ),
+        ],
+      ),
+      child: ListTile(
       dense: true,
       selected: isCurrent && !selectionMode,
       leading: selectionMode
@@ -3633,21 +3744,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ? null
           : PopupMenuButton<String>(
               icon: const Icon(Icons.more_vert, size: 18),
-              onSelected: (action) {
-                switch (action) {
-                  case 'pin':
-                    ref
-                        .read(settingsProvider.notifier)
-                        .togglePinnedConversation(c.id);
-                    break;
-                  case 'rename':
-                    _renameConversation(c);
-                    break;
-                  case 'delete':
-                    _confirmDelete(c);
-                    break;
-                }
-              },
+              onSelected: (action) =>
+                  _conversationTileAction(action, c, isPinned),
               itemBuilder: (_) => [
                 PopupMenuItem(
                     value: 'pin', child: Text(isPinned ? '取消置顶' : '置顶')),
@@ -3657,6 +3755,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     child: Text('删除', style: TextStyle(color: Colors.red))),
               ],
             ),
+      ),
     );
   }
 

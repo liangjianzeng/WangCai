@@ -6,6 +6,8 @@ import 'dart:io';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'window_geometry.dart';
+
 class TrayService with TrayListener, WindowListener {
   TrayService._();
   static final TrayService instance = TrayService._();
@@ -37,6 +39,7 @@ class TrayService with TrayListener, WindowListener {
   Future<void> quit() async {
     _quitting = true;
     try {
+      await WindowGeometry.saveFromWindow(); // v0.0.4 Phase 3：退出前记忆几何
       await windowManager.setPreventClose(false);
       await windowManager.destroy(); // 正确退出路径（M0-2 实测）
     } catch (_) {
@@ -66,6 +69,7 @@ class TrayService with TrayListener, WindowListener {
     // §3 产品模式：关窗 = 隐藏到托盘（M0-2 实测：挂起 close 请求会段错误，
     // 直接 hide 不悬挂）。_quitting 时放行 → destroy 真退出。
     if (_quitting) return;
+    await WindowGeometry.saveFromWindow(); // v0.0.4 Phase 3：关窗前记忆几何
     await windowManager.hide();
   }
 }
