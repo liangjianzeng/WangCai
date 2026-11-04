@@ -20,8 +20,8 @@
 | **1.1** | **NPU 输出与 CPU 参照数值对齐** | ✅（2026-10-31） | 根因定案并修复：静态 decode 图 RoPE 的 cos/sin 头轴隐式广播在 NPUW 降级下错误 tile（[defect1-rootcause.md](defect1-rootcause.md) 终章）。修复后缓存 row0 四头 cos 0.997+、范数逐位一致 |
 | 1.2 | 贪心解码与参照逐 token 一致 ≥ 64 token | ✅（2026-10-31） | 修复后复测：p220 续写 CPU-static 与 NPU **64 token 逐字节一致**（修复前同等判据即通过、修复中断、现已恢复）；三问验收 3/3；zh 指令生成的 NPU 文本 72 token 连贯无坍塌。注意：自由生成的 top-1 与 f32 参照在第 5 步起分歧（f16 噪声复利，cos 维持 0.5–0.9，无修复前的 0.25 平台期）——判据按"逐 token 一致"以续写路径为准 |
 | 1.3 | CI 里有验收测试 | ✅（2026-10-31） | `tools/accept-smoke.ps1`：三问贪心验收跑在 CPU 静态路径（覆盖 rope tile/rank align/set_rows 等设备无关翻译，requant 对齐 NPU 默认）；CI build job（windows）下载 Q4_K_M 并执行，缓存 1 GB 模型。NPU 专属闸门仍是本地 accept.ps1 |
-| 2.1 | NPU 解码快过 OpenVINO-CPU | 🟡 | **多跨度 decode 图组落地（2026-11-01 第二轮）：decode 14-15 t/s 与 ctx 无关**——c=8192 从 0.9 → 14.1 t/s（17×），c=2048 从 3.3 → 14.3（4.5×）。对 OpenVINO-CPU 参照 21.7–29.2 仍差一截。后续杠杆已逐一探察收官（2026-11-01）：stateful 化证伪（7× 慢）、lm_head u4 化证伪（5× 慢，F16 524 MB @38 GB/s 即带宽界快路径）——残差为状态 I/O 与 attention 算子路径，decode 攻坚收官。根因定案与测量见缺陷 2 节 |
-| 2.1b | NPU 预填充具备竞争力 | 🟡 | `pp512` 415 t/s = 原生参照的 73%；`pp1024`：NPU 368 对 OV-CPU 626 / 原生 605；**8K prompt 实测 prefill 122.6 t/s** |
+| 2.1 | NPU 解码快过 OpenVINO-CPU | 🟡 | **2026-11-04 性能轮更新：1.7B tg 22.6 t/s（+61% vs 基线 14.07），已入 OV-CPU 参照带（21.7–29.2）下沿**——`NPUW_FOLD=NO` 成为 NPU 默认（P12）+ 每图共享重复小链（P14a/b）；4B tg 8.96（+30%），继续攻坚。早前（2026-11-01）的"decode 攻坚收官/带宽界"定案**已被 P11 证伪**（Q8_0 权重 +67% 步时不变；逐节点剖析 MatMul 仅占 18–23%，eltwise/state 算子汤才是瓶颈），攻坚沿剖析继续。【历史】多跨度 decode 图组（2026-11-01 第二轮）曾达 14-15 t/s 且与 ctx 无关（c=8192 17×）；stateful 化证伪（7× 慢）、lm_head u4 化证伪（5× 慢）仍然成立。根因定案与测量见缺陷 2 节 |
+| 2.1b | NPU 预填充具备竞争力 | ✅ | **反超参照（2026-11-04 性能轮）**：pp512 406→**779 t/s**（+92%）、pp2048 284→**433 t/s**（+52%；`FOLD=NO` 默认 + P14a/b，暖 blob `-r 3`），已高于原生 CPU 参照 570 与 OV-CPU 610（参照为早期 `-r 1` 轮次所测，同协议复测待补）。【历史】pp512 415 t/s = 原生参照的 73%；pp1024 NPU 368 对 OV-CPU 626 / 原生 605；8K prompt 122.6 t/s |
 | 2.2 | 热启动 < 5 s | 🟡 | **热启动 23 s → 8.9 s（2026-11-01）**：requant 全量物化路径行分块并行（发现 ov::parallel_for 在本机构建是串行回退，改用 std::thread 池）+ 修 make_dirs 盘符 bug（Windows 下 CM 缓存曾静默失效）+ 多级图接入 COMPILED_MODEL_CACHE_DIR。剩 <5 s 需解决 NPUW blob 无权重 import（WEIGHTS_PATH/MODEL_PTR）与首次图下载 1.1 s，见 HANDOFF 2026-11-01 2.2 节 |
 | 3.x | 模型线宽度（0.3 B–8 B、长上下文） | 🟡 | **长上下文打通：-c 8192（7K prompt 端到端）与 -c 16384（图级）在 NPU 通过**。**Q8_0 可用（2026-11-02 深夜结案）**：原"1.85 GB 必失败"系常驻进程挤占主机内存的污染测量，干净进程下 1.7B/Omni-2B Q8_0 在 c512/c2048 × chunk128/256 全通过（见缺陷 7 结案段） |
 | 4.x | LFM3 全模态（音频输入、视觉输入） | 🟡 | **音频 + 视觉 NPU 均端到端（2026-11-01）**。音频：编码器 requant 修复（"a."-豁免，嵌入 cos 0.963→0.9997）、与 native Q8_0 参照逐字一致、level 图撞设备预算自动降级（零 env）；配置见 mtmd-audio-c512.ps1。视觉：两个根因连定案——①cacheless 图 `input_len=-1` size_t 回绕使多平面位置表读越界（改从 `ne[0]/n_planes` 取平面长度，CPU 静态逐位一致）；②NPUW 三元组 `NPU_USE_NPUW+NPUW_FOLD+FUNCALL_FOR_ALL` 损坏 clip 图（视觉图编译时擦除 FUNCALL_FOR_ALL + extra_cfg 4u），NPU 描述与 native 一致、文本三问 3/3。吞吐（2026-11-02）：warm encode 12.6 s → **亚秒级（542 ms 稳态 / 896 ms FS 冷）**（vs native 435 ms）——NPU 分支补 `ov::cache_dir` 插件 blob 缓存，权重烤成 Constants 的 clip 图此前 NPUW 缓存永不命中、每进程全量重编译 12.2 s。剩：音频 top-1 级 f16 分歧——**2026-11-02 定性为文本自由生成同族（非缺陷）**：同音频 n=128 自由描述，CPU-static 与 NPU 共享前缀 19 词（均正确识别 1000 Hz 正弦音），第 20 词起风格分岔、双方语义均对、无坍缩无平台期（`ctrl/mtmd-audio-freegen.ps1`）；验收判据按转写路径（逐字一致）为准 |
@@ -107,7 +107,11 @@ LFM3-1.7B 驻留权重 ≈1.0 GB，15.7 GB/s → **64 ms/步**，实测 67 ms/�
 后 ≈2.3 GB → **145 ms/步**，实测 145 ms/步（6.9 t/s）。两模型独立吻合到 3% 以内——KV/attention/
 状态 I/O 全部压在余量里（级别图组已把 KV 读取裁到填充跨度），decode 是**纯权重带宽受限**，软件侧
 无空间：更小权重 = u4 证伪（算子变慢吞掉收益）；remote tensor/零拷贝不改变 LPDDR 物理带宽；
-15.7–15.9 GB/s 就是该 NPU DMA 路径的实测上限。decode 线正式关死，除非换硬件。
+15.7–15.9 GB/s 就是该 NPU DMA 路径的实测上限。~~decode 线正式关死，除非换硬件~~。
+> **本定案已被 P11 证伪（2026-11-04）**：Q8_0 权重字节 +67% 步时不变（14.96 vs 14.07 t/s）——权重读取
+> 根本没到带宽界；逐节点剖析显示 MatMul 仅占步时 18–23%，其余是 Add/Multiply/Concat/Parameter 算子汤。
+> 软件侧空间真实存在：`FOLD=NO` 默认（P12）+ 每图共享小链（P14a/b）把 1.7B tg 推到 22.6 t/s（+61%）、
+> pp512 推到 779 t/s（+92%）。见 HANDOFF 2026-11-04 P11/P12/P14。
 
 <details><summary>第一轮解剖（2026-11-01，存档）</summary>
 

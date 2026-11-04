@@ -45,19 +45,31 @@
 
 ## Phase 2 —— 让它跑得快 · 🟡 进行中
 
-被测量重新定义了问题：**prefill 已经有竞争力**（`pp512` 415 t/s = 原生 CPU 参照的 73%），所以加速器和编译
-配置并非全盘坏掉。**损失在 decode**——8.3–8.7 t/s，对比原生 54.1，约为可用 TOPS 的 0.03——而 prefill 的
-13 TOPS 里只用了 1.4，说明那边同样有余量。
+2026-11-04 性能轮把这一节重写了：**prefill 已反超**（pp512 779 t/s，高于原生 CPU 参照 570），1.7B 三轴
+对基线全部 ≥+50% 达标（pp2048 433 / tg 22.6）。瓶颈身份也换了——P11 证伪"权重带宽界"（Q8_0 权重 +67%
+步时不变），逐节点剖析指向 **eltwise/state 算子汤**（4B decode 步 = kv-scatter 族 25% + MatMul 23% +
+rope Add 族 22%（launch-bound）+ 残余 Add 22%），主攻面是 launch/调度而非 DMA。4B（+24–42%）沿剖析继续。
 
-- [ ] **把 decode 的每步开销归因清楚。** 主机↔NPU 之间 11 层 K/V 与 13 个 conv 状态的进出传输、激活量化、
-      以及每 token 执行一次的约 1000 节点图的 NPUW funcall 提交开销。先拿数字，再谈优化。
+- [x] **把 decode 的每步开销归因清楚。**（2026-11-04 完成，P11/P13/P14：`GGML_OPENVINO_PROFILING=2`
+      逐节点剖析 + 每跑全新 CACHE_DIR 绕开 enable_profiling×blob-cache 崩溃缺陷；分量见上，存档
+      HANDOFF P11/P13/P14 节，分析器 `prof_analyze.py`。）
+- [x] **每图冗余小链清除**（2026-11-04，P12/P14a/b）：`NPUW_FOLD=NO` 成为 NPU 默认（步时是算子汤受限，
+      折叠只会更糟；冷编译 ×10 由 blob 缓存吸收）；translate-session memo 按图共享 ScatterND 索引链与
+      rope cos/sin 表侧链（4B decode 曾每图重建 ~570 个重复小节点）。1.7B 三轴 +92/+52/+61%。
+- [x] **f16-rope 与 MANUAL_GQA 两个 A/B 结案**（2026-11-04）：`ROPE_F16=1` 两模型全轴持平略负（默认保持
+      OFF）；`MANUAL_GQA_ATTN=1` 在 NPU 被 VCL 拒编（不可行，该 lowering 面向 GPU）。
+- [ ] **P14e：KV 写图外置**（4B decode 主攻，已设计）：set_rows 从 ScatterNDUpdate 摘链、attention 用
+      Concat 在 DPU 侧拼 cur 列、Kcur/Vcur 作图输出交 host 写行（含环形回绕），cache 不再作图输出——
+      目标消掉 kv-scatter 族（步时 25%）并把 cache 状态 DMA 减半。
 - [ ] **针对解码形状的图做编译提示扫描**（`optimization-level`、funcall 粒度、weights-bank 策略），用
       `GGML_OPENVINO_NPU_COMPILE_OVERRIDES`，每格一个缓存目录。
 - [ ] **削减每步状态流量**：把 conv 状态写回批量化；索引已知处，用静态切片替换按运行期索引的 `Gather`。
 - [ ] **chunk 尺寸与负载匹配。** 静态 prefill 图永远按整 chunk 计费，于是短 prompt 读起来慢得离谱（256 列
       的图跑 4 个 token，一个 0.66 s 的 chunk 被上报成约 6 t/s）。为常见使用规模给出合理默认值，并把
       `GGML_OPENVINO_PREFILL_CHUNK_SIZE` 按其真实身份——直接乘数——写进文档。
-- [ ] **冷启动。** 36 s 编译是最糟糕的第一印象：随模型附带预编译图缓存，或在安装时预热。目标热启动 < 5 s。
+- [ ] **冷启动。** `FOLD=NO` 后冷编译约为旧配置 10×，是更糟的第一印象：随模型附带预编译图缓存，或在安装时
+      预热。目标热启动 < 5 s。预算随附：编译缓存 4B 实测 ~19 GB/模型/ctx 形状（预留 ≥20 GB），重度编译
+      需 ≥25 GB 物理内存空闲（不足表现为无声挂起）。
 - [x] **修掉越界 KV 写入**（2026-10-31，提前完成了）。根因不是上游 llama.cpp，而是本解码器把 interleaved-SWA
       两个同名 KV 写索引输入按名字合并成一个参数，SWA 散射因此拿到越过环长的全量缓存 cell id——CPU 上
       `scatter_update.cpp:915` 断言，NPU 上 `ZE_RESULT_ERROR_DEVICE_LOST`。修复（按目的缓存所在层给索引参数

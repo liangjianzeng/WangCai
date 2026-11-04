@@ -84,6 +84,15 @@
   的具体化）。(b) **磁盘预算升级**：4B FOLD=NO 盘缓存实测 **~19 GB/ctx 形状**（旧记 14 GB 低估），
   两形状即写满 D: ——缓存写满后实验数字仍有效（编译在内存完成）但缓存作废全量重编；
   复测前先 `df -h /d`，发布文档缓存预留改 **≥20 GB/模型/ctx 形状**。
+  **P14d/P14c 两个 A/B 结案（2026-11-04）**：① `GGML_OPENVINO_ROPE_F16=1`（无状态 f16 rope 全链 f16 域，
+  表在共享链内转一次）——**证伪**：4B 验收 3/3 零 ZE，但两模型全轴持平略负（4B pp2048ck128 51.75±1.14 /
+  pp512ck256 186.4±0.72 / tg 8.52–8.62 vs 默认档 53.1 / 192.3 / 8.96；1.7B 775.6 / 429.1 / 22.0 vs
+  779.0 / 432.6 / 22.6）。rope Add 族被 launch 计数限速，换计算域不改变受限面；默认保持 OFF，开关保留
+  供 rope 实验复现。② `GGML_OPENVINO_MANUAL_GQA_ATTN=1`（4B bench-only）——**不可行**：四臂全灭于 NPU
+  VCL 拒编（`ZE_RESULT_ERROR_INVALID_ARGUMENT` code 0x78000004，"Compilation failed" 无算子级信息，
+  每臂 9–10 s rc=1）；该 lowering 面向 GPU 路径，NPU 静态图不容忍这套组合。至此 4B decode 剩余主攻
+  只剩 **P14e（host 侧 KV 行写出、scatter 出图）**。两臂判据同前（暖 blob r1 暖 + r3 测）；日志存档
+  `ctrl/p14bench_4bF16_*.log(.err)`、`ctrl/p14acc_4bF16_*.log`、`ctrl/p14bench_4bGqa_*.log(.err)`。
 
 背景：~~decode 已贴权重带宽地板~~（P11 证伪）、prefill chunk256 甜点已交付、预算规则已定案。
 剩余性能空间按性价比排序，逐项执行、证伪也记录、每项独立 commit：

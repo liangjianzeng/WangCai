@@ -19,6 +19,48 @@
 LFM3-1.7B `Q4_K_M`，1049 MB。24 层 = 13 个门控短卷积（short conv）+ 5 个滑动窗口注意力（SWA）@256 + 6 个全局注意力。隐藏层维度 2048，16 个 query 头，4 个 KV 头，head_dim 128，词表 128000。
 每个循环层的卷积状态：`6 × 2048 = 12288`。
 
+Spark-X2.6-4B `Q4_K_M`（标准稠密 Transformer 代表）。36 层，hidden 2560，16 个 query 头 × head_dim 160，
+4 个 KV 头（GQA），词表 131072。NPU 上权重统一 requant 为分组 4 bit（见 env-vars）。
+
+## 当前数字（2026-11-04 性能轮：`NPUW_FOLD=NO` 默认 + P14a/b 共享小链）
+
+测量协议（每个数字都满足，否则不可与下表比较）：`llama-bench -fa 1 -dev OPENVINO3 -p <P> -n 128 -r 3`；
+每次跑前杀掉残留 `llama*` 进程；每模型每臂一个独立 `GGML_OPENVINO_CACHE_DIR`，先 `-r 1` 暖跑（编译进
+blob 缓存）再 `-r 3` 计时（**暖 blob 数字**，冷编译另列）；1.7B 用 chunk256，4B 生产档 chunk128（离线
+bench 的 pp512 臂用 chunk256）；验收 = 三问贪心（`llama-cli -c 2048 -n 96 --temp 0 --seed 42 -st
+--no-warmup`）两模型各 3/3、零 ZE 错误。基线 = P11 时刻的默认配置表（FOLD 开、P14a/b 之前）。
+
+| 模型 | 测试 | 基线（P11 时刻） | 当前（P14b） | Δ |
+|---|---|---:|---:|---:|
+| LFM3-1.7B | `pp512`（ck256） | 406.5 t/s | **779.0 t/s** | **+92%** |
+| LFM3-1.7B | `pp2048`（ck256） | 283.7 t/s | **432.6 t/s** | **+52%** |
+| LFM3-1.7B | `tg128` | 14.07 t/s | **22.60 t/s** | **+61%** |
+| Spark-X2.6-4B | `pp2048`（ck128，生产档） | 42.8 t/s | **53.1 t/s** | +24% |
+| Spark-X2.6-4B | `pp512`（ck256，离线档） | 135.6 t/s | **192.3 t/s** | +42% |
+| Spark-X2.6-4B | `tg128` | 6.89 t/s | **8.96 t/s** | +30% |
+
+1.7B 三个轴向全部 ≥+50% 达标；4B 未达标、循环继续。杠杆台账（HANDOFF 2026-11-04 P14）：**f16-rope
+A/B（`GGML_OPENVINO_ROPE_F16=1`）已证伪**——两模型全轴持平略负（4B pp2048 51.8 / tg 8.6 vs 默认档
+53.1 / 8.96），默认保持 OFF；**MANUAL_GQA A/B（`GGML_OPENVINO_MANUAL_GQA_ATTN=1`，4B）不可行**——
+NPU VCL 直接拒绝组合图编译（`ZE_RESULT_ERROR_INVALID_ARGUMENT`，无算子级信息；该 lowering 面向 GPU
+路径），4B 剩余主攻为 **P14e：host 侧 KV 行写出**（scatter 出图、attention Concat cur 列），推进中。
+
+瓶颈模型（P11 起，`GGML_OPENVINO_PROFILING=2` 逐节点剖析定案，P13/P14 复剖）：**decode 步时不是权重
+带宽受限**（Q8_0 权重字节 +67% 步时不变，证伪 P3 的"带宽界"定案），4B decode 步 = kv-scatter 族 25% +
+MatMul 23% + rope Add 族 22%（launch-bound）+ 残余 Add 22%；1.7B prefill = Shave Multiply 族 31%。
+算子汤（launch/调度）而非 DMA 是主攻面。
+
+一次性开销与资源预算（FOLD=NO 时代）：
+
+| | |
+|---|---|
+| NPU 图冷编译 | 约为 FOLD=YES 时代的 **10×**（旧参考值：36.4 s / FOLD=NO 首测 383 s）——靠 blob 缓存吸收 |
+| 编译缓存磁盘 | 4B 实测 **~19 GB / 模型 / ctx 形状**：打包与实验盘预留 **≥20 GB/模型/ctx** |
+| 物理内存 | 重度 NPU 编译需 **≥25 GB 空闲**；空闲不足表现为编译无声挂起（P14 事故教训） |
+| server | `llama-server` **必须 `--no-warmup`**（P16：warmup 毒化其后 NPUW 编译，Model0_1 级联失败） |
+
+以下两节是 **2026-11-01/02 时代（FOLD=YES 默认、P14 前）的历史数字**，保留用于对照，不再是当前值。
+
 ## 命令
 
 ```powershell

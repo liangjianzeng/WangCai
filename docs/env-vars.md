@@ -24,7 +24,8 @@
 |---|---|---|
 | `GGML_OPENVINO_PREFILL_CHUNK_SIZE` | 整数，默认 `256` | 每个静态预填充（prefill）分块的 token 数；必须 ≤ `-b`。同时也是图缓存键的一部分。 |
 | `GGML_OPENVINO_STATEFUL_EXECUTION` | `0`/`1` | 基于 OV `Variable` 的缓存（无需每步重新绑定）。**仅限 CPU/GPU** —— 在 NPU 上会被强制关闭。 |
-| `GGML_OPENVINO_MANUAL_GQA_ATTN` | `0`/`1` | 绕过 `SDPA`，用基本算子（op）组合出 GQA 注意力。 |
+| `GGML_OPENVINO_MANUAL_GQA_ATTN` | `0`/`1` | 绕过 `SDPA`，用基本算子（op）组合出 GQA 注意力。GPU 路径默认使用；**NPU 上不可行（P14c 定案，2026-11-04）**：VCL 编译器拒绝组合图（`ZE_RESULT_ERROR_INVALID_ARGUMENT`），4B A/B 四臂全灭于编译。 |
+| `GGML_OPENVINO_ROPE_F16` | `0`/`1`（默认 `0`） | **由 WangCai 新增（P14d）。** 无状态且 f16 的 rope 全链路在 f16 域计算（cos/sin 表在共享链内转一次），省掉被钉在 Shave 上的 f32 往返。**A/B 已证伪（2026-11-04）**：两模型全轴持平略负（4B tg 8.6 vs 8.96），默认保持 OFF；保留开关供 rope 相关实验复现。 |
 | `GGML_OPENVINO_NATIVE_SOFTPLUS` | `0`/`1` | 使用原生 `SoftPlus`，还是组合式实现。 |
 | `GGML_OPENVINO_DISABLE_REMOTE_OUTPUTS` | `0`/`1` | 停止通过 remote tensor 把输出别名到 ggml 缓冲区。 |
 | `GGML_OPENVINO_LOG_UNSUPPORTED_OPS` | `0`/`1` | 记录无法降级（lowering）的算子，而不是以晦涩的方式失败。 |
