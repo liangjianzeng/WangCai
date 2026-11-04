@@ -105,28 +105,29 @@ void main() {
     }
   });
 
-  test('单 active 互斥：NPU 已就绪时加载走 CUDA，NPU 被停', () async {
-    // 1) 先把 NPU 拉到 ready（等价于用户先在 NPU 上聊过）。
-    final npuHost = reg.hostOf('wangcai-npu') as LlamaServerHost;
-    await npuHost.start(EngineConfig(
-        engineId: 'wangcai-npu',
-        modelPath: '${tmp.path}${Platform.pathSeparator}LFM3-1.7B-Q4_K_M.gguf',
-        ctx: 1024));
-    expect(await npuHost.waitReady(const Duration(seconds: 5)), isTrue);
-    expect(npuHost.baseUrl, isNotNull);
+  test('单 active 互斥：CUDA 已就绪时换载 → auto=NPU 主打接管，旧引擎被停', () async {
+    // 1) 先把 CUDA 拉到 ready（等价于用户在 speed 档用过外挂）。
+    final cudaHost = reg.hostOf('llamacpp-cuda') as LlamaServerHost;
+    await cudaHost.start(EngineConfig(
+        engineId: 'llamacpp-cuda',
+        modelPath: '${tmp.path}${Platform.pathSeparator}Qwen3-4B-Fake.gguf',
+        ctx: 256));
+    expect(await cudaHost.waitReady(const Duration(seconds: 5)), isTrue);
+    expect(cudaHost.baseUrl, isNotNull);
 
-    // 2) loadModel 无路由意图数据 → speed 启发：CUDA(deviceRank 0) 胜出。
+    // 2) loadModel 无路由意图数据 → v0.0.4 定调：NPU 主打，GPU 外挂不抢主线
+    //（旧语义「无路由意图→speed 启发 CUDA 胜出」已随产品定位废弃）。
     final inf = LocalServerInference.instance;
     final ok = await inf.loadModel(
-        '${tmp.path}${Platform.pathSeparator}Qwen3-4B-Fake.gguf',
-        nCtx: 256);
-    expect(ok, isTrue, reason: 'cuda 加载应成功（fake probe 恒通）');
+        '${tmp.path}${Platform.pathSeparator}LFM3-1.7B-Q4_K_M.gguf',
+        nCtx: 1024);
+    expect(ok, isTrue, reason: 'npu 加载应成功（fake probe 恒通）');
 
-    // 3) 互斥：NPU 已被停；CUDA ready。
-    expect(reg.hostOf('wangcai-npu').baseUrl, isNull,
+    // 3) 互斥：CUDA 已被停；NPU ready。
+    expect(reg.hostOf('llamacpp-cuda').baseUrl, isNull,
         reason: '单 active：旧引擎必须被停');
-    expect(reg.hostOf('wangcai-npu').status.phase, EnginePhase.stopped);
-    expect(reg.hostOf('llamacpp-cuda').baseUrl, isNotNull);
+    expect(reg.hostOf('llamacpp-cuda').status.phase, EnginePhase.stopped);
+    expect(reg.hostOf('wangcai-npu').baseUrl, isNotNull);
   });
 
   test('空闲超时卸载：注入 250ms → 到期自动 unload + 日志留痕', () async {

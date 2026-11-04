@@ -114,13 +114,13 @@ class RoutingRequest {
   final bool onBattery;
 }
 
-/// 三档决策（§7.3 规则表）：
-/// - speedFirst：绑定表 usable/recommended 按 t/s 降序 → 无实测的已装引擎按
-///   设备启发（CUDA>Vulkan>NPU>CPU）→ 远端兜底。
+/// 三档决策（§7.3 规则表；v0.0.4 定调修订：NPU 主打，GPU 为外挂）：
 /// - npuFirst：NPU 未被 blocked 且绑定非 broken 就用；否则回落 speed 规则并
 ///   给出建议文案。
-/// - auto：interactive → speed 规则；background 或拔电 → NPU 加权（同上），
-///   NPU 不可满足时回落 speed。
+/// - auto：同 npuFirst——NPU 恒优先（前台/后台、插电/拔电一律），NPU 不可
+///   满足时回落 speed 改道 GPU。
+/// - speedFirst：外挂专用档（显式选择）——绑定表 t/s 降序，无实测引擎按
+///   设备启发（CUDA>Vulkan>NPU>CPU）先跑出第一次实测 → 远端兜底。
 RoutingDecision chooseEngine(RoutingRequest req) {
   final local = req.candidates
       .where((c) => !c.isRemote && c.enabled && c.installed)
@@ -173,15 +173,18 @@ RoutingDecision chooseEngine(RoutingRequest req) {
     return null;
   }
 
-  final preferNpu = req.tier == RoutingTier.npuFirst ||
-      (req.tier == RoutingTier.auto &&
-          (req.profile == TurnProfile.background || req.onBattery));
+  // v0.0.4 定调（用户 2026-11-05 拍板）：本项目主打 NPU，CUDA/Vulkan 是外挂。
+  // auto/npu 档一律 NPU 优先——NPU 可用（未 blocked、绑定非 broken）就上，
+  // 只有 NPU 不可满足时才回落 speed 规则改道 GPU；speed 档是外挂的唯一
+  // 正当入口（显式选择要极限 t/s）。旧语义（auto 前台插电让无实测 GPU 抢跑
+  // 实测 NPU）与产品定位相反，废弃；「无实测优先」死锁修复保留在 speed 档内。
+  final preferNpu = req.tier != RoutingTier.speedFirst;
 
   if (preferNpu) {
     final npu = byNpu(
         preferReason: req.tier == RoutingTier.npuFirst
             ? 'NPU 优先档'
-            : (req.onBattery ? '自动档：拔电 NPU 加权' : '自动档：后台队列归 NPU'));
+            : '自动档：NPU 主打（GPU 为外挂，仅 NPU 不可用时改道）');
     if (npu != null) return npu;
     final fallback = bySpeed();
     final blockNote = npus

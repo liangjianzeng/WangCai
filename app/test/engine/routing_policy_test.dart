@@ -103,17 +103,27 @@ void main() {
     });
   });
 
-  group('chooseEngine · auto', () {
-    test('前台交互 = 最快（同 speed 规则）', () {
+  group('chooseEngine · auto（v0.0.4 定调：NPU 主打，GPU 为外挂）', () {
+    test('前台交互 + 插电 + CUDA 实测更快：仍选 NPU（外挂不抢主线）', () {
       final d = chooseEngine(RoutingRequest(
         tier: RoutingTier.auto,
         candidates: all4,
         bindings: [b(npu, tps: 7), b(cuda, tps: 42), b(vulkan, tps: 12)],
       ));
-      expect(d.instanceId, 'llamacpp-cuda');
+      expect(d.instanceId, 'wangcai-npu');
+      expect(d.reason, contains('NPU 主打'));
     });
 
-    test('后台队列 = NPU 加权', () {
+    test('无实测 CUDA vs 实测 NPU：仍选 NPU（旧「无实测优先」只在 speed 档）', () {
+      final d = chooseEngine(RoutingRequest(
+        tier: RoutingTier.auto,
+        candidates: all4,
+        bindings: [b(npu, tps: 7)],
+      ));
+      expect(d.instanceId, 'wangcai-npu');
+    });
+
+    test('后台队列 = NPU（同主打）', () {
       final d = chooseEngine(RoutingRequest(
         tier: RoutingTier.auto,
         profile: TurnProfile.background,
@@ -121,10 +131,10 @@ void main() {
         bindings: [b(npu, tps: 7), b(cuda, tps: 42)],
       ));
       expect(d.instanceId, 'wangcai-npu');
-      expect(d.reason, contains('后台'));
+      expect(d.reason, contains('NPU 主打'));
     });
 
-    test('拔电（交互）= NPU 加权', () {
+    test('拔电（交互）= NPU（同主打）', () {
       final d = chooseEngine(RoutingRequest(
         tier: RoutingTier.auto,
         candidates: all4,
@@ -132,7 +142,7 @@ void main() {
         onBattery: true,
       ));
       expect(d.instanceId, 'wangcai-npu');
-      expect(d.reason, contains('拔电'));
+      expect(d.reason, contains('NPU 主打'));
     });
   });
 
