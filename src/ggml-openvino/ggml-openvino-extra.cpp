@@ -402,7 +402,13 @@ bool ggml_openvino_is_npu() {
 // so the default only ever changes graphs that can carry it. GGML_OPENVINO_KV_HOST_WRITE=0
 // opts out explicitly (the extra_cfg blob key flips with the default -- one cold rebuild).
 bool ggml_openvino_kv_host_write_enabled() {
-    if (ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE") == 0) {
+    // Distinguish UNSET (default ON) from an explicit =0 (opt-out). getenv_int() maps an
+    // unset var to its default_value 0, so an "== 0" test on it silently turned the
+    // default-ON flip into default-OFF (shipped inert in 6077ff8; caught by the tg128
+    // probe: unset env measured 8.87 t/s = the chained number, where the flip promised
+    // ~12.26). ggml_openvino_getenv_str() returns nullptr only when the var is absent.
+    const char * v = ggml_openvino_getenv_str("GGML_OPENVINO_KV_HOST_WRITE", nullptr);
+    if (v != nullptr && std::atoi(v) == 0) {
         return false;  // explicit opt-out
     }
     return ggml_openvino_is_npu();
