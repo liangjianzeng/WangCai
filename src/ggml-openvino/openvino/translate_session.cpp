@@ -499,7 +499,13 @@ std::shared_ptr<Model> TranslateSession::apply_transformations(std::shared_ptr<M
 
         // MOECompressed has no CPU plugin implementation, so enable it by default only on GPU.
         // GGML_OPENVINO_MOE_OP=0 keeps the unfused GatherMatmul path for fallback/debugging.
-        if (ggml_openvino_is_gpu() &&
+        // P15 (GGML_OPENVINO_MOE_NPU=1): try the same fusion on the NPU. The 4B prefill
+        // profile shows 289 MatMuls (72 of them MoE expert projections) plus 473 anonymous
+        // dequant Multiplies -- ~59% + ~6% of the chunk step -- scheduled as separate ops.
+        // The passes are pure graph rewrites: if NPUW has no MOECompressed lowering the
+        // compile fails loudly, never silently wrong, and the env stays OFF by default.
+        const bool moe_fusion = ggml_openvino_is_gpu() || ggml_openvino_moe_npu_enabled();
+        if (moe_fusion &&
             ggml_openvino_getenv_int("GGML_OPENVINO_MOE_OP", 1) != 0) {
             manager.register_pass<pass::FuseMoeRouter>();
             manager.register_pass<pass::FuseMoeCompressed>();

@@ -223,6 +223,9 @@ static uint64_t ggml_openvino_model_cache_extra_cfg(bool stateful, bool recurren
     // ScatterNDUpdate family, attention Concat's the cur row): toggling must not resurrect
     // blobs compiled with the chained topology.
     extra_cfg = extra_cfg * 131 + (ggml_openvino_kv_host_write_enabled() ? 1u : 0u);
+    // P15 MoE fusion on the NPU swaps the expert-projection subgraphs for MOECompressed ops
+    // (translate_session.cpp): a different graph topology entirely.
+    extra_cfg = extra_cfg * 131 + (ggml_openvino_moe_npu_enabled() ? 1u : 0u);
     // Multi-level static decode graphs (see decode_attention_level): the decode half's baked
     // attention span changed from the whole context to a per-level constant, so older
     // disk-cache blobs must not match. The 4 also covers the vision-encoder fix below
