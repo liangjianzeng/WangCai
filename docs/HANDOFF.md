@@ -1164,3 +1164,13 @@ pp512 轴（191.6，目标 203.4，差 6%）的最后候选：加大 chunk 摊�
   实例化/执行超预算）。chunk 维度对 pp 轴的贡献已到头；pp2048ck128 与 pp512ck256 的剩余缺口
   维持 NPUW 内部调度域定案。**4B prefill translator 级杠杆至此全部实测关闭**：
   P15（MoE 无对象）/ P16（rope 被吸收）/ P17（DQ 族 decode 专属）/ P19（chunk 崖 256）。
+
+### P20：NPUW_FOLD=YES A/B 收档——4B 上 FOLD=NO 定案复实锤（2026-11-05 深夜）
+FOLD=NO 是 1.7B 时代翻的默认，4B prefill 从未对比过；FOLD 若把 launch 界 Add 族并入邻接算子，
+恰在 pp 缺口（+22%/+6%）射程内。探针（GGML_OPENVINO_NPU_COMPILE_OVERRIDES=NPUW_FOLD=YES，
+ck256，pp512+tg128 同 invocation）：
+- **pp512 136.89（对 191.6 = -28.6%）/ tg128 7.75（对 12.11 = -37%）**——两轴同向崩，与 P17 DQ 族同签名
+- blob 集仅 76MB（FOLD=NO 同格 ~19GB）：YES 少做图工作（"36.4s vs 383s"时代的成因），
+  合并出的算子在 4B 的稠密大 MatMul 图上落点更差
+- 结论：**FOLD=NO 对 4B 同样成立**，编译旋钮面最后一格关闭。4B prefill 的 translator 可达域
+  全部实测完毕：P15（MoE 无对象）/ P16（rope 吸收）/ P17（DQ 族）/ P19（chunk 崖 256）/ P20（FOLD 反噬）
