@@ -384,6 +384,89 @@
       }
     },
     {
+      "id": "LFM3-1.7B-Q4_K_M",
+      "name": "LFM3 1.7B (Q4_K_M NPU 主打)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/LiquidAI/LFM3-1.7B-GGUF/resolve/master/LFM3-1.7B-Q4_K_M.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF/resolve/main/LFM3-1.7B-Q4_K_M.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 1.024108201,
+      "sizeMBDisplay": "1.0 GB",
+      "recommended": true,
+      "minRamMB": 2048,
+      "sha256Hash": "3793e1e6e2266919d6e015287221b41100175a98eddaba92e111aed3b05c93c4",
+      "tags": [
+        "NPU主打",
+        "速度快",
+        "智能体"
+      ],
+      "agentCapabilities": {
+        "nativeToolCall": false,
+        "maxContextTokens": 32768,
+        "recommendedNctx": 16384,
+        "mtpSupported": false
+      }
+    },
+    {
+      "id": "LFM3-Omni-2B-Q4_0",
+      "name": "LFM3 Omni 2B (Q4_0 文本+视觉塔)",
+      "type": "vision",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/models/LiquidAI/LFM3-Omni-2B-GGUF/resolve/master/LFM3-Omni-2B-Q4_0.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/LFM3-Omni-2B-Q4_0.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/LFM3-Omni-2B-Q4_0.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 0.977532864,
+      "sizeMBDisplay": "1.0 GB",
+      "recommended": false,
+      "minRamMB": 3072,
+      "sha256Hash": "6d2273a383b92dd7c5db0eb4c8dfeae13e805b485a6621c4b391ae179c2b5f28",
+      "tags": [
+        "视觉",
+        "语音",
+        "NPU文本线"
+      ],
+      "mmproj": {
+        "sizeMB": 258.0419006,
+        "sizeMBDisplay": "258 MB",
+        "sha256Hash": "c7341273f1757b33ccd9e6f8b17007eb81307d26c90d8c36c22efb45fd3d82eb",
+        "mirrors": [
+          {
+            "url": "https://modelscope.cn/models/LiquidAI/LFM3-Omni-2B-GGUF/resolve/master/mmproj-LFM3-Omni-2B-Q4_0.gguf",
+            "source": "modelscope"
+          },
+          {
+            "url": "https://hf-mirror.com/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/mmproj-LFM3-Omni-2B-Q4_0.gguf",
+            "source": "hf-mirror"
+          },
+          {
+            "url": "https://huggingface.co/LiquidAI/LFM3-Omni-2B-GGUF/resolve/main/mmproj-LFM3-Omni-2B-Q4_0.gguf",
+            "source": "huggingface"
+          }
+        ]
+      }
+    },
+    {
       "id": "lfm2.5-2.6b-q4_k_m",
       "name": "LFM 2.5 2.6B (Q4_K_M)",
       "type": "text",
@@ -678,7 +761,7 @@
           "source": "huggingface"
         }
       ],
-      "sizeGB": 1.45,
+      "sizeGB": 1.454091042,
       "sizeMBDisplay": "1.5 GB",
       "recommended": true,
       "minRamMB": 3072,
@@ -721,7 +804,7 @@
           "source": "huggingface"
         }
       ],
-      "sizeGB": 2.5,
+      "sizeGB": 2.495675057,
       "sizeMBDisplay": "2.5 GB",
       "recommended": false,
       "minRamMB": 4096,

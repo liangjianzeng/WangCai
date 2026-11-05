@@ -80,6 +80,7 @@ import '../engine/bundled_manifests.dart' show bundledManifests;
 import '../engine/engine_manifest.dart' show Preset;
 import '../models/local_model.dart';
 import '../platform/wangcai_paths.dart' show WangCaiPaths;
+import '../services/model_manager.dart' show ModelManager;
 import '../services/model_storage_service.dart'
     show ModelStorageService, modelStorageService;
 import 'inference_log_screen.dart';
@@ -246,6 +247,7 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
     required bool isLoadingHere,
     required bool isDefault,
     List<Widget> chips = const [],
+    List<Widget> trailing = const [],
     VoidCallback? onToggleDefault,
     VoidCallback? onLoad,
     VoidCallback? onUnload,
@@ -335,6 +337,11 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
                       foreground: Colors.red.shade600,
                       onPressed: onUnload),
                 ],
+                // 行尾自定义动作组（如 NPU 预置区的下载按钮/进度条）。
+                if (trailing.isNotEmpty) ...[
+                  const SizedBox(width: 4),
+                  ...trailing,
+                ],
                 if (onEdit != null)
                   _iconAction(Icons.edit_outlined, '编辑配置', () async => onEdit()),
                 if (onDelete != null)
@@ -417,6 +424,10 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
     final npu = bundledManifests()['wangcai-npu'];
     final presets = npu?.presets ?? const <Preset>[];
     if (presets.isEmpty) return const SizedBox.shrink();
+    // catalog id = 落盘名（DownloadService 产物命名 `{id}.gguf`）。目录在
+    // main.dart 启动期 ModelManager().init() 已预热，这里只读单例内存列表。
+    final catalog = ModelManager().allModels;
+    final tasks = ref.watch(downloadNotifierProvider);
     final rows = <Widget>[];
     for (final preset in presets) {
       final hit = _presetHits[preset.name];
@@ -424,11 +435,14 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
       final isLoadedHere = ms.modelId == id && ms.isLoaded;
       final isLoadingHere = ms.isLoading && ms.modelId == id;
       final isDefault = settings.defaultModelId == id;
+      // 缺文件且 catalog 有对应条目（落盘名命中 modelGlob）→ 给「下载」按钮，
+      // 走 tongyilite 下载基建：魔搭/hf-mirror 多镜像 + Range 断点续传 + sha256。
+      final entry =
+          hit == null ? downloadEntryForNpuGlob(preset.modelGlob, catalog) : null;
+      final task = entry == null ? null : tasks[entry.id];
       rows.add(_modelRow(
         title: preset.name,
-        subtitle: hit != null
-            ? p.basename(hit)
-            : '缺文件 — 把 GGUF 放入模型库目录（${WangCaiPaths.modelsRoot().path}）后点右上重扫，或在下方手动登记',
+        subtitle: _presetSubtitle(hit, entry, task),
         exists: hit != null,
         isLoadedHere: isLoadedHere,
         isLoadingHere: isLoadingHere,
@@ -439,6 +453,7 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
           if (preset.chunk != null)
             _chip('chunk ${preset.chunk}', Colors.blueGrey),
         ],
+        trailing: _presetDownloadTrailing(entry, task),
         onToggleDefault: hit == null
             ? null
             : () => ref
@@ -463,6 +478,85 @@ class _ModelManagementBodyState extends ConsumerState<ModelManagementBody> {
       ));
     }
     return Column(children: rows);
+  }
+
+  /// 预置行副标题：已入库 = 文件名；缺文件按下载任务状态给实时口径。
+  String _presetSubtitle(String? hit, ModelConfig? entry, DownloadTask? task) {
+    if (hit != null) return p.basename(hit);
+    if (entry == null) {
+      return '缺文件 — 把 GGUF 放入模型库目录（${WangCaiPaths.modelsRoot().path}）后点右上重扫，或在下方手动登记';
+    }
+    switch (task?.state) {
+      case DownloadState.downloading:
+        return '${task!.stage ?? '下载中'} ${task.downloadedDisplay}/${task.totalDisplay}（${task.progressPercent}）';
+      case DownloadState.verifying:
+        return '下载完成 — sha256 校验中…';
+      case DownloadState.paused:
+        return '已暂停 ${task!.downloadedDisplay}/${task.totalDisplay} — 点「继续」断点续传';
+      case DownloadState.failed:
+        return '下载失败：${task!.errorMessage ?? '未知错误'} — 点「重试」断点续传';
+      case DownloadState.completed:
+        return '下载完成 — 刷新模型库中…';
+      default:
+        return '缺文件 — 点「下载」从魔搭/hf-mirror 取 ${entry.sizeMBDisplay}（断点续传 + sha256 校验）；或手动放文件后重扫';
+    }
+  }
+
+  /// 预置行下载动作组：下载 → 进度条+暂停/取消 → 暂停后继续/取消 → 失败重试。
+  /// 完成后 hit 经 [_rescan] 转「已入库」，本组自然消失（completed 分支返回空）。
+  List<Widget> _presetDownloadTrailing(ModelConfig? entry, DownloadTask? task) {
+    if (entry == null) return const [];
+    final n = ref.read(downloadNotifierProvider.notifier);
+    Future<void> cancelAndRescan() async {
+      await n.cancelDownload(entry.id);
+      if (mounted) _rescan();
+    }
+
+    switch (task?.state) {
+      case DownloadState.downloading:
+        return [
+          SizedBox(
+            width: 64,
+            child: LinearProgressIndicator(value: task!.progress, minHeight: 4),
+          ),
+          const SizedBox(width: 2),
+          _iconAction(Icons.pause_rounded, '暂停（保留已下部分）',
+              () => n.pauseDownload(entry.id)),
+          _iconAction(Icons.close_rounded, '取消（删除已下部分）', cancelAndRescan),
+        ];
+      case DownloadState.verifying:
+      case DownloadState.completed:
+        return [
+          const SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2)),
+        ];
+      case DownloadState.paused:
+        return [
+          _actionButton(
+              label: '继续',
+              tone: true,
+              onPressed: () => n.resumeDownload(entry.id)),
+          _iconAction(Icons.close_rounded, '取消（删除已下部分）', cancelAndRescan),
+        ];
+      default:
+        final retry = task?.state == DownloadState.failed;
+        return [
+          _actionButton(
+              label: retry ? '重试' : '下载',
+              tone: true,
+              onPressed: () => _startPresetDownload(entry)),
+        ];
+    }
+  }
+
+  /// 发起（或续跑）预置模型下载；传输结束后立刻重扫 —— 预置行不等手动
+  /// 「重扫」就翻成已入库形态（DownloadService 完成时已把 .tmp 改名为终名）。
+  Future<void> _startPresetDownload(ModelConfig entry) async {
+    await ref.read(downloadNotifierProvider.notifier).startDownload(entry);
+    if (!mounted) return;
+    _rescan();
   }
 
   // =========================================================================

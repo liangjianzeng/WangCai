@@ -18,6 +18,7 @@ import 'package:path/path.dart' as p;
 
 import '../engine/bundled_manifests.dart';
 import '../platform/wangcai_paths.dart';
+import 'model_info.dart';
 
 /// 一个本地模型条目。
 ///
@@ -188,6 +189,25 @@ RegExp presetGlobToRegExp(String glob) {
     return RegExp.escape(c);
   }).join();
   return RegExp('^${pattern}\$', caseSensitive: false);
+}
+
+/// NPU 预置缺文件 → catalog 下载条目（模型管理页「下载」按钮数据源，2026-11-05）。
+///
+/// 匹配判据 = catalog 条目的**落盘名** `{id}.gguf`（DownloadService 产物命名）
+/// 命中预置的 modelGlob —— 与预置区扫描/引擎加载同一个 [presetGlobToRegExp]，
+/// 保证「下回来的就是扫得到的」：Windows 文件系统大小写不敏感，小写 id 也能
+/// 命中大写 glob（MiniCPM5 即如此）。同 glob 命中多条（如 MiniCPM5 的
+/// Q4_K_M/Q8_0 两档）取 totalBytes 最小 —— NPU 主打线对体积/内存敏感。
+/// 返回 null = catalog 无该预置对应条目 → UI 保留「手动放文件 + 重扫」指引。
+ModelConfig? downloadEntryForNpuGlob(String? modelGlob, List<ModelConfig> catalog) {
+  if (modelGlob == null || modelGlob.isEmpty) return null;
+  final re = presetGlobToRegExp(modelGlob);
+  ModelConfig? best;
+  for (final m in catalog) {
+    if (!re.hasMatch('${m.id}.gguf')) continue;
+    if (best == null || m.totalBytes < best.totalBytes) best = m;
+  }
+  return best;
 }
 
 /// 把 wangcai-npu manifest 的 preset 解析成虚拟 [LocalModelConfig]：
