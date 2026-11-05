@@ -36,7 +36,9 @@ IR_*.bin
 *.gguf
 *.ggml
 *.safetensors
-models/
+# 只锚定仓库根的权重目录。不带前导斜杠会级联误伤 app/lib/models/ ——
+# 2026-11-05 发现该源码目录 8 个 dart 文件长期未被跟踪（clone 即缺件）。
+/models/
 
 # Python venvs used to unpack the OpenVINO wheel
 .venv/

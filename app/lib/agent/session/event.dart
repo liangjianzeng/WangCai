@@ -44,6 +44,12 @@ const String kEventSpillLocate = 'spill/locate';
 // 导入迁移标记（旧 SQLite 会话导入时给每条消息附加；log-only）
 const String kEventImported = 'imported';
 
+/// 会话标题事件（v0.0.4.1 DSH session-title 对齐；log-only + ignorable）。
+/// data: {title}；source.kind: 'auto'（首条 prompt 确定性推导）| 'user'（改名）。
+/// 标题不进模型历史，但"名字怎么来的"必须可从日志重建——
+/// DSH 铁律的 UI 镜像：UI-visible ⟺ logged。
+const String kEventSessionTitle = 'session/title';
+
 // ---------------------------------------------------------------------------
 // 事件类别（决定投影/忽略策略）
 // ---------------------------------------------------------------------------
@@ -77,6 +83,7 @@ const Map<String, EventTypeCategory> kEventCategory = {
   kEventLlmRetryStarted: EventTypeCategory.logOnly,
   kEventSpillLocate: EventTypeCategory.logOnly,
   kEventImported: EventTypeCategory.logOnly,
+  kEventSessionTitle: EventTypeCategory.logOnly,
 };
 
 EventTypeCategory categoryOf(String type) =>
@@ -99,6 +106,7 @@ const Set<String> kIgnorableTypes = {
   kEventSpillLocate,
   kEventImported,
   kEventAssistantFailureNote,
+  kEventSessionTitle,
 };
 
 bool ignorableOf(String type) => kIgnorableTypes.contains(type);

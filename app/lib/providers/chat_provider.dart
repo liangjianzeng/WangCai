@@ -68,6 +68,7 @@ import '../agent/session/event.dart'
         kEventAssistantMessage,
         kEventCompactionSummary,
         kEventSystemMessage;
+import '../agent/session/title.dart' show deriveSessionTitle;
 import '../agent/metrics/turn_metrics.dart'
     show TurnMetrics, TurnMetricsStore;
 import '../agent/session/trace_export.dart' as trace_export;
@@ -371,7 +372,8 @@ class ChatNotifier extends StateNotifier<bool> {
   final InferenceBackend _inference;
   final StorageService _storage;
   final Ref _ref;
-  final JsonlSessionStore _sessionStore = JsonlSessionStore();
+  // v0.0.4.1：共享实例——标题事件等散点追加与回合 write-through 同队列保序。
+  final JsonlSessionStore _sessionStore = JsonlSessionStore.shared;
 
   /// Which conversation currently occupies the native KV cache. When the user
   /// switches to a different conversation we must reset the cache so the OLD
@@ -2646,12 +2648,13 @@ class ChatNotifier extends StateNotifier<bool> {
 
       final msgs = await _storage.getAllMessages(conversationId);
       String? newTitle;
-      if (conv.title.isEmpty || conv.title == '新对话') {
+      // v0.0.4.1 DSH rename-pins：用户改过名 = 钉住，自动命名让路。
+      // 推导走 deriveSessionTitle（码点安全 + CJK/西文分策略，DSH normalize）。
+      if (!conv.titlePinned && (conv.title.isEmpty || conv.title == '新对话')) {
         for (final m in msgs) {
-          if (m.role == MessageRole.user && m.content.isNotEmpty) {
-            newTitle = m.content.length <= 24
-                ? m.content
-                : '${m.content.substring(0, 24)}…';
+          if (m.role == MessageRole.user && m.content.trim().isNotEmpty) {
+            final t = deriveSessionTitle(m.content);
+            if (t.isNotEmpty) newTitle = t;
             break;
           }
         }
@@ -2663,11 +2666,17 @@ class ChatNotifier extends StateNotifier<bool> {
           title: newTitle,
           messageCount: msgs.length,
         );
+        // 标题事件进 JSONL（DSH 铁律：UI-visible ⟺ logged，来源可审计）。
+        if (newTitle != null) {
+          unawaited(_sessionStore
+              .appendTitleEvent(conversationId, newTitle, source: 'auto'));
+        }
         _ref.read(conversationsProvider.notifier).update(Conversation(
               id: conv.id,
               title: newTitle ?? conv.title,
               modelId: conv.modelId,
               messageCount: msgs.length,
+              titlePinned: conv.titlePinned,
               createdAt: conv.createdAt,
               updatedAt: DateTime.now(),
             ));

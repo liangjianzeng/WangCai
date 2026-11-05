@@ -22,6 +22,7 @@ import '../providers/index.dart'
 import '../providers/model_provider.dart';
 import '../providers/project_provider.dart' show projectsProvider, ProjectsNotifier;
 import '../project/project.dart' show Project;
+import '../agent/session/store.dart' show JsonlSessionStore;
 import '../providers/settings_provider.dart' show settingsProvider;
 import '../services/attachment_service.dart'
     show kMaxAttachments, kSupportedExtensions;
@@ -3785,15 +3786,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (ok != true) return;
     final title = ctrl.text.trim();
     if (title.isEmpty) return;
-    await ref
-        .read(storageServiceProvider)
-        .updateConversation(id: c.id, title: title);
+    // v0.0.4.1 DSH rename-pins：手动改名 = 钉住（SQLite v8 titlePinned 列），
+    // 此后自动命名不得改写标题；改名同步写 session/title 事件进 JSONL
+    //（DSH 铁律：UI-visible ⟺ logged，名字来路可审计）。
+    await ref.read(storageServiceProvider).updateConversation(
+        id: c.id, title: title, titlePinned: true);
+    unawaited(JsonlSessionStore.shared
+        .appendTitleEvent(c.id, title, source: 'user'));
     if (!mounted) return;
     ref.read(conversationsProvider.notifier).update(Conversation(
           id: c.id,
           title: title,
           modelId: c.modelId,
           messageCount: c.messageCount,
+          titlePinned: true,
           createdAt: c.createdAt,
           updatedAt: DateTime.now(),
         ));

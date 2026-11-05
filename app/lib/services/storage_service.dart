@@ -89,7 +89,7 @@ class StorageService {
   Future<Database> _init() async {
     return await openDatabase(
       databasePath(),
-      version: 7,
+      version: 8,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -161,6 +161,13 @@ class StorageService {
         "ALTER TABLE conversations ADD COLUMN projectId TEXT",
       );
     }
+    // v8（v0.0.4.1 DSH rename-pins）：titlePinned 列——用户手动改名=钉住，
+    // 自动命名（首条 prompt 推导等）不再改写。同一套列级幂等纪律。
+    if (!convNames.contains('titlePinned')) {
+      await db.execute(
+        "ALTER TABLE conversations ADD COLUMN titlePinned INTEGER DEFAULT 0",
+      );
+    }
     final idx = await db.rawQuery(
       "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_conversations_project'",
     );
@@ -179,6 +186,7 @@ class StorageService {
         modelId TEXT DEFAULT 'qwen3.5-2b-mtp-ud-q4_k_xl',
         projectId TEXT,
         messageCount INTEGER DEFAULT 0,
+        titlePinned INTEGER DEFAULT 0,
         createdAt INTEGER NOT NULL,
         updatedAt INTEGER NOT NULL
       )
@@ -257,6 +265,7 @@ class StorageService {
       modelId: r['modelId'] as String? ?? 'qwen3.5-2b-mtp-ud-q4_k_xl',
       projectId: r['projectId'] as String?,
       messageCount: r['messageCount'] as int? ?? 0,
+      titlePinned: (r['titlePinned'] as int? ?? 0) == 1,
       createdAt: DateTime.fromMillisecondsSinceEpoch(r['createdAt'] as int),
       updatedAt: DateTime.fromMillisecondsSinceEpoch(r['updatedAt'] as int),
     )).toList();
@@ -293,12 +302,13 @@ class StorageService {
     await db.delete('conversations', where: 'id = ?', whereArgs: [id]);
   }
 
-  /// 更新会话元信息：标题 / 消息条数 / 更新时间。
+  /// 更新会话元信息：标题 / 消息条数 / 更新时间 / 标题钉住标记。
   /// 只更新传入的非空字段；updatedAt 始终刷新为当前时间。
   Future<void> updateConversation({
     required String id,
     String? title,
     int? messageCount,
+    bool? titlePinned,
   }) async {
     final db = await database;
     final updates = <String, dynamic>{
@@ -306,6 +316,7 @@ class StorageService {
     };
     if (title != null) updates['title'] = title;
     if (messageCount != null) updates['messageCount'] = messageCount;
+    if (titlePinned != null) updates['titlePinned'] = titlePinned ? 1 : 0;
     await db.update('conversations', updates, where: 'id = ?', whereArgs: [id]);
   }
 

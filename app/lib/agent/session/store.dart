@@ -131,6 +131,31 @@ final class JsonlSessionStore {
     return f;
   }
 
+  /// 全 app 共享实例（v0.0.4.1）：写路径唯一化——write-through（chat 回合）
+  /// 与散点追加（标题事件等）必须走同一条 [_appendQueue]，否则两个实例
+  /// 各自排队会交叉撕裂 append。
+  static final JsonlSessionStore shared = JsonlSessionStore();
+
+  /// 追加标题事件（v0.0.4.1 DSH session-title：log-only，UI-visible ⟺ logged）。
+  /// 自算 nextSeq；走同一 [_appendQueue]，与 write-through 保序。
+  Future<void> appendTitleEvent(String conversationId, String title,
+      {required String source}) {
+    final f = _appendQueue.then((_) async {
+      final log = await load(conversationId);
+      final seq = log.rawEvents.isEmpty ? 1 : log.rawEvents.last.seq + 1;
+      await _appendEventNow(
+          conversationId,
+          SessionEvent(
+              type: kEventSessionTitle,
+              seq: seq,
+              timeMs: DateTime.now().millisecondsSinceEpoch,
+              source: {'kind': source},
+              data: {'title': title}));
+    });
+    _appendQueue = f.catchError((Object _) {});
+    return f;
+  }
+
   Future<void> _appendEventNow(String conversationId, SessionEvent event,
       {String? workspacePath, String? cwd}) async {
     final target = File(await pathFor(conversationId));
