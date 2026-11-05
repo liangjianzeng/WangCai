@@ -13,6 +13,7 @@ library;
 import 'package:flutter/foundation.dart'
     show debugPrint, visibleForTesting;
 
+import '../../project/project_store.dart';
 import 'dev_controller.dart';
 import 'ssh/ssh_credentials.dart';
 import 'ssh/ssh_environment.dart';
@@ -123,6 +124,11 @@ Future<List<String>> listRemoteDirs({String path = '~'}) async {
 }
 
 /// 建一个工作区并**立刻激活**（连接成功后的一键开工）。
+///
+/// **D1 起 UI 禁用**：会产出注册表之外的裸工作区（双真源土壤）。UI 的
+/// 远程开工人唯一入口是 `ProjectsNotifier.createRemoteFromActiveConnection`；
+/// 本函数只作为 agent 层原语保留（测试覆盖）。孤儿兜底由启动期
+/// `_adoptLegacyDevWorkspaces` 收编。
 Future<DevWorkspace> createAndActivateWorkspace({
   required String name,
   required WorkspaceBackend backend,
@@ -244,6 +250,16 @@ Future<({String? root, String? error})> ensureWorkspaceRemoteDir(
   }
   if (needPersist) {
     try {
+      // D1 双真源收编：派生工作区的缓存会被 projects.json 整体重写，
+      // 只写缓存 = 下次派生就丢。项目派生形态（ws_<pid>）的回写必须
+      // 落回 Project.workspacePath（远程项目的 workspacePath 即远端路径），
+      // 缓存顺带同步保持读写一致。
+      final pid = projectIdOfDevWorkspace(ws.id);
+      final store = ProjectStore.resolve();
+      final prj = pid == null ? null : await store.projectById(pid);
+      if (prj != null && prj.workspacePath != root) {
+        await store.upsert(prj.copyWith(workspacePath: root));
+      }
       await DevSessionController.instance
           .upsertWorkspace(ws.copyWith(remotePath: root));
     } catch (e) {

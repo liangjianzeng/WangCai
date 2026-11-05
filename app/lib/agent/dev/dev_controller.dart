@@ -106,6 +106,25 @@ final class DevSessionController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// D1 双真源收编（v0.0.4）：以项目的派生集合**整体重建**工作区注册表，
+  /// 并落盘为纯缓存（[DevStore.rewriteWorkspaceCache]，孤儿文件一并清除）。
+  /// 激活项不在新集合 → 回落默认（并持久化）。唯一调用方是
+  /// ProjectsNotifier——工作区的“生老病死”全部由项目注册表驱动。
+  Future<void> replaceWorkspaces(List<DevWorkspace> derived) async {
+    await init();
+    _workspaces = [
+      DevWorkspace.defaultWorkspace,
+      ...derived.where((w) => !w.isDefault),
+    ];
+    if (!_workspaces.any((w) => w.id == _activeWorkspaceId)) {
+      _activeWorkspaceId = DevWorkspace.kDefaultId;
+      await _store.clearActiveWorkspaceId();
+    }
+    await _store.rewriteWorkspaceCache(
+        _workspaces.where((w) => !w.isDefault).toList());
+    notifyListeners();
+  }
+
   /// 删除工作区；删除激活的 → 回落默认。
   Future<void> deleteWorkspace(String id) async {
     await init();

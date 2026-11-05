@@ -84,6 +84,27 @@ final class DevStore {
     if (f.existsSync()) f.deleteSync();
   }
 
+  /// D1 双真源收编（v0.0.4，计划书 §5.3）：把 workspaces 目录**整体重写**成
+  /// [derived]（项目注册表 projects.json 的派生投影）。目录里任何不在
+  /// [derived] 中的 `.json` 一并删除——自 v0.0.4 起这里不再是注册表，
+  /// 只是工具层（loadWorkspaces 消费方）读的**派生缓存**；
+  /// 唯一写入口是 ProjectsNotifier（派生同步 / remotePath 回写）。
+  Future<void> rewriteWorkspaceCache(List<DevWorkspace> derived) async {
+    final dir = await _workspaceDir();
+    await _ensureDir(dir);
+    final keep = <String>{};
+    for (final ws in derived) {
+      if (ws.isDefault) continue;
+      final name = '${_safe(ws.id)}.json';
+      keep.add(name);
+      File(p.join(dir, name)).writeAsStringSync(jsonEncode(ws.toJson()));
+    }
+    for (final f in Directory(dir).listSync()) {
+      if (f is! File || !f.path.endsWith('.json')) continue;
+      if (!keep.contains(p.basename(f.path))) f.deleteSync();
+    }
+  }
+
   /// 激活工作区 id 落盘位置：`ApplicationSupport/dev/active_workspace.json`。
   Future<String> _activeFile() async =>
       p.join(await _devDir(), 'active_workspace.json');

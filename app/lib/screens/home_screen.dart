@@ -20,7 +20,8 @@ import '../providers/index.dart'
         pendingApprovalConversationProvider,
         kLocalVisionSupported;
 import '../providers/model_provider.dart';
-import '../providers/project_provider.dart' show projectsProvider, ProjectsNotifier;
+import '../providers/project_provider.dart'
+    show projectsProvider, ProjectsNotifier, devWorkspaceFor;
 import '../project/project.dart' show Project;
 import '../agent/session/store.dart' show JsonlSessionStore;
 import '../providers/settings_provider.dart' show settingsProvider;
@@ -38,11 +39,7 @@ import '../agent/dev/dev.dart'
         DevWorkspace,
         WorkspaceBackend,
         SshEnvironmentService,
-        SshTargetKind,
-        connectWorkspace,
-        createWorkspaceOnActiveConnection,
-        sshTargetKindOf,
-        workspaceBackendLabel;
+        connectWorkspace;
 import '../agent/builtin_tools/todo_tool.dart'
     show readTodoStore, renderTodoCardText;
 import '../widgets/todo_card.dart';
@@ -161,7 +158,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _initStoragePermission();
     _initConversation();
     _initAutoLoadDefaultModel();
-    // Dev 工作区胶囊要跟着"激活工作区 / SSH 连接状态"实时变。
+    // 项目头部/面板的连接色要跟着"激活工作区 / SSH 连接状态"实时变。
     DevSessionController.instance.addListener(_onDevChanged);
     SshEnvironmentService.instance.addListener(_onDevChanged);
   }
@@ -694,19 +691,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   // =========================================================================
-  // Dev 工作区（2026-10-27）：聊天顶栏看得见"在哪干活"，点一下就能切。
-  //
-  // 为什么必须放聊天里：**激活哪个工作区**决定模型收到哪段
-  // `<workspace:context>`（远端工作区才会走 ssh_* 工具在电脑上读写/跑命令）。
-  // 以前这份选择只存在于设置页深处的一组 ChoiceChip，聊天里完全不可见，
-  // 而且激活态不持久化 → 用户"连上了远程电脑，它却还在本机本地瞎忙"。
+  // D1 双真源收编（v0.0.4，计划书 §5.3）：聊天顶栏的 Dev 工作区胶囊、
+  // 「在哪个工作区干活」面板、一键建裸工作区 —— 全部退役。
+  // 「在哪干活」的唯一 UI 是左栏项目选择器（项目 = 工作目录唯一真源，
+  // 连接态也已并入那里）；这里只留连接判据/图标这类纯判定函数。
   // =========================================================================
-
-  /// 工作区图标。
-  IconData _workspaceIcon(WorkspaceBackend backend) => switch (backend) {
-        WorkspaceBackend.localApp => Icons.folder,
-        WorkspaceBackend.remotePc => Icons.desktop_windows,
-      };
 
   /// 远端工作区的连接判据：已连接**且**连的就是它绑定的那份配置
   /// （没绑定 id 时，任一在连的配置都算）。
@@ -718,224 +707,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return bound.isEmpty || ssh.activeConfig?.id == bound;
   }
 
-  void _devSnack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context)
-        .showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 3)));
-  }
-
-  /// 顶栏工作区胶囊（只在开发模式开启时渲染，关掉 = 零变化零回归）。
-  Widget _buildDevWorkspaceChip() {
-    if (!ref.watch(settingsProvider).devModeEnabled) {
-      return const SizedBox.shrink();
-    }
-    final dev = DevSessionController.instance;
-    final ws = dev.workspaces.any((w) => w.id == dev.activeWorkspaceId)
-        ? dev.activeWorkspace
-        : DevWorkspace.defaultWorkspace;
-    final isRemote = ws.isRemote;
-    final connected = _workspaceConnected(ws);
-    final color = !isRemote
-        ? Theme.of(context).colorScheme.primary
-        : (connected ? Colors.green : Colors.orange);
-    // 连接状态**只用图标颜色**说（绿=已连 / 橙=未连 / 主色=本地）：胶囊里再
-    // 挂「· 已连接 / 未连接」是把工作区名字挤没的纯冗余（2026-10-28 用户指令），
-    // 状态与后端类型收进 tooltip，点开的切换列表里也各有一行。
-    return Padding(
-      padding: const EdgeInsets.only(right: 2),
-      child: ActionChip(
-        avatar: Icon(_workspaceIcon(ws.backend), size: 15, color: color),
-        label: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 120),
-          child: Text(
-            ws.name,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: const TextStyle(fontSize: 12),
-          ),
-        ),
-        labelPadding: const EdgeInsets.symmetric(horizontal: 4),
-        visualDensity: VisualDensity.compact,
-        padding: EdgeInsets.zero,
-        tooltip: '当前工作区：${ws.name}（${workspaceBackendLabel(ws.backend)}'
-            '${isRemote ? (connected ? ' · 已连接' : ' · 未连接') : ''}）\n'
-            '智能体只在这个工作区里读写文件与执行命令，点按可切换',
-        onPressed: _showWorkspaceSheet,
-      ),
-    );
-  }
-
-  /// 工作区切换面板：列全部工作区（含远端连接状态、就地连接）+ 一键开工。
-  Future<void> _showWorkspaceSheet() async {
-    final dev = DevSessionController.instance;
-    await dev.init(
-        preferredActiveId: ref.read(settingsProvider).devWorkspaceId);
-    if (!mounted) return;
-    // v0.0.4 Phase 4b：bottom sheet → Dialog（手机件清退，计划书 §5.1）。
-    await showDialog<void>(
-      context: context,
-      builder: (ctx) => Dialog(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 560, maxHeight: 560),
-          child: StatefulBuilder(
-            builder: (ctx, setSheet) => SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                const Padding(
-                  padding: EdgeInsets.fromLTRB(16, 0, 16, 4),
-                  child: Text('在哪个工作区干活',
-                      style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600)),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                  child: Text(
-                    '智能体按「激活的工作区」读写文件、跑命令：远端工作区走 SSH '
-                    '在对方电脑上执行，本地工作区只在本机目录里干活。',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
-                  ),
-                ),
-                for (final ws in dev.workspaces) _workspaceTile(ctx, ws, setSheet),
-                const Divider(height: 1),
-                TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _createWorkspaceFromActiveConnection();
-                  },
-                  icon: const Icon(Icons.add_link, size: 16),
-                  label: Text(SshEnvironmentService.instance.isConnected
-                      ? '用当前连接（${SshEnvironmentService.instance.activeConfig?.name}）'
-                          '新建工作区'
-                      : '用当前连接新建工作区（需先连接）'),
-                ),
-                TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(ctx);
-                    _openRail('dev');
-                  },
-                  icon: const Icon(Icons.settings, size: 16),
-                  label: const Text('管理连接与工作区'),
-                ),
-                const SizedBox(height: 6),
-              ],
-            ),
-          ),
-        ),
-      ),
-      ),
-    );
-  }
-
-  Widget _workspaceTile(BuildContext ctx, DevWorkspace ws, StateSetter setSheet) {
-    final dev = DevSessionController.instance;
-    final active = dev.activeWorkspaceId == ws.id;
-    final connected = _workspaceConnected(ws);
-    final sub = [
-      workspaceBackendLabel(ws.backend),
-      if (ws.isRemote && (ws.remotePath ?? '').isNotEmpty) ws.remotePath!,
-      if (ws.isRemote) (connected ? '已连接' : '未连接'),
-    ].join(' · ');
-    return ListTile(
-      dense: true,
-      leading: Icon(
-        _workspaceIcon(ws.backend),
-        size: 18,
-        color: active ? Theme.of(ctx).colorScheme.primary : null,
-      ),
-      title: Text(ws.name,
-          style: TextStyle(fontWeight: active ? FontWeight.w600 : null)),
-      subtitle: Text(
-        sub,
-        style: TextStyle(
-          fontSize: 11,
-          color: ws.isRemote && !connected
-              ? Colors.orange.shade800
-              : Colors.grey.shade600,
-        ),
-      ),
-      trailing: active
-          ? Icon(Icons.check_circle,
-              size: 18, color: Theme.of(ctx).colorScheme.primary)
-          : (ws.isRemote && !connected
-              ? TextButton(
-                  onPressed: () async {
-                    final err = await connectWorkspace(ws,
-                        ref.read(settingsProvider).sshConfigs);
-                    if (!ctx.mounted) return;
-                    setSheet(() {});
-                    ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
-                        content: Text(
-                            err == null ? '✅ 已连接 ${ws.name}' : '❌ $err')));
-                  },
-                  child: const Text('连接', style: TextStyle(fontSize: 12)),
-                )
-              : null),
-      onTap: () async {
-        await dev.switchWorkspace(ws.id);
-        await ref.read(settingsProvider.notifier).setDevWorkspaceId(ws.id);
-        if (!ctx.mounted) return;
-        Navigator.pop(ctx);
-        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
-            content: Text('已切到工作区「${ws.name}」'
-                '（${workspaceBackendLabel(ws.backend)}），直接说需求就行')));
-      },
-    );
-  }
-
-  /// 用当前已连接的电脑/Termux 一键建工作区（自动建 ~/projects/<名> 并切过去）。
-  Future<void> _createWorkspaceFromActiveConnection() async {
-    final ssh = SshEnvironmentService.instance;
-    final cfg = ssh.activeConfig;
-    if (cfg == null || !ssh.isConnected) {
-      _devSnack('还没有已连接的开发环境：先到 设置 → 开发者 → 远程电脑 点「连接」'
-          '（用账号密码就行），再回来建工作区');
-      return;
-    }
-    final kind = sshTargetKindOf(cfg);
-    final suggested = cfg.name.trim().isEmpty
-        ? (kind == SshTargetKind.termux ? 'Termux 项目' : '远程项目')
-        : cfg.name.trim();
-    final ctrl = TextEditingController(text: suggested);
-    final name = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('在「${cfg.name.isEmpty ? cfg.host : cfg.name}」上开工'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: ctrl,
-              autofocus: true,
-              decoration: const InputDecoration(
-                labelText: '项目/工作区名称',
-                helperText: '会在电脑上建 ~/projects/<名称> 并作为工作区目录',
-                border: OutlineInputBorder(),
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('取消')),
-          FilledButton(
-              onPressed: () =>
-                  Navigator.pop(ctx, ctrl.text.trim()),
-              child: const Text('创建并切过去')),
-        ],
-      ),
-    );
-    if (name == null || name.isEmpty) return;
-    _devSnack('正在电脑上建目录…');
-    final r = await createWorkspaceOnActiveConnection(name);
-    if (r.ws == null) {
-      _devSnack('❌ ${r.dir}');
-      return;
-    }
-    await ref.read(settingsProvider.notifier).setDevWorkspaceId(r.ws!.id);
-    _devSnack('✅ 已切到工作区「${r.ws!.name}」（${r.dir}）：现在让它「看项目 / '
-        '改代码 / 跑测试」都会在这台电脑上执行');
-  }
+  /// 项目的连接态（经其派生工作区判定；本地恒 true）。
+  bool _projectConnected(Project prj) => _workspaceConnected(devWorkspaceFor(prj));
 
   @override
   Widget build(BuildContext context) {
@@ -1101,7 +874,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     onPressed: () =>
                         setState(() => _trajectoryMode = !_trajectoryMode),
                   ),
-                _buildDevWorkspaceChip(),
                 _buildModelStatusChip(modelState, isGenerating),
               ],
             ),
@@ -3181,29 +2953,48 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   void _invalidateSnippets() => _snippetsFuture = null;
 
-  // ---- v0.0.3 项目层级：左栏项目选择器（设计 §12 Phase 1） ----------------
+  // ---- 项目选择器（v0.0.3 Phase 1；v0.0.4 D1 起兼任"在哪干活"唯一 UI）----
   //
   // 纪律：项目是工作目录的**唯一真源**——激活项目即切换工具层 cwd
-  // （ProjectsNotifier._syncDevWorkspace 派生 DevWorkspace），Dev 工作区
-  // 胶囊显示的是同一实体。这里只做展示与操作入口，不存任何路径副本。
+  // （ProjectsNotifier 派生 DevWorkspace 缓存）；顶栏工作区胶囊已退役，
+  // 远程项目的连接状态（绿=已连 / 橙=未连）也在这里说。这里只做展示与
+  // 操作入口，不存任何路径副本。
 
-  /// 会话面板头部：当前项目 + 工作目录（点开项目面板）。
+  /// 会话面板头部：当前项目 + 工作目录 +（远程时）连接态（点开项目面板）。
   Widget _buildProjectHeader() {
     final state = ref.watch(projectsProvider);
     final active = state.active;
     final theme = Theme.of(context);
+    final isRemote = active != null && active.isRemote;
+    final connected = active != null && _projectConnected(active);
+    // 连接状态只用图标颜色说（绿/橙/主色），不占文字位（沿用 2026-10-28
+    // 用户指令：状态收进 tooltip 与面板行）。
+    final iconColor = !isRemote
+        ? theme.colorScheme.primary
+        : (connected ? Colors.green : Colors.orange);
     return Material(
       color: theme.colorScheme.surfaceContainerLow,
       child: InkWell(
         onTap: () => _showProjectSheet(),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
-          child: Row(children: [
-            Icon(active != null && !active.isDefault
-                ? Icons.folder_copy_outlined
-                : Icons.folder_outlined,
-                size: 18,
-                color: theme.colorScheme.primary),
+          child: Tooltip(
+            waitDuration: const Duration(milliseconds: 500),
+            message: active == null
+                ? '选择项目（决定智能体在哪干活）'
+                : isRemote
+                    ? '远程项目「${active.name}」· ${active.workspacePath}'
+                        '（${connected ? '已连接' : '未连接'}）'
+                    : '项目「${active.name}」· ${active.workspacePath}',
+            child: Row(children: [
+              Icon(
+                  isRemote
+                      ? Icons.desktop_windows
+                      : (active != null && !active.isDefault
+                          ? Icons.folder_copy_outlined
+                          : Icons.folder_outlined),
+                  size: 18,
+                  color: iconColor),
             const SizedBox(width: 8),
             Expanded(
               child: Column(
@@ -3229,7 +3020,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
             ),
             Icon(Icons.unfold_more, size: 18, color: Colors.grey.shade500),
-          ]),
+            ]),
+          ),
         ),
       ),
     );
@@ -3292,6 +3084,52 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
           content:
               Text('已创建并激活项目「${name.trim()}」：$dir')));
+    }
+  }
+
+  /// 在已连接的远程电脑上开工：远端建 `~/projects/<名>` → 建**远程项目**并
+  /// 激活（D1 起"开工"只产出项目；旧裸工作区入口已随双真源收编退役）。
+  Future<void> _createRemoteProjectFromConnection(
+      BuildContext ctx, ProjectsNotifier notifier) async {
+    final ctrl = TextEditingController();
+    final name = await showDialog<String>(
+      context: ctx,
+      builder: (d) => AlertDialog(
+        title: const Text('在已连接的电脑上开工'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '项目名称',
+            helperText: '会在电脑上建 ~/projects/<名称> 并作为项目工作目录',
+            border: OutlineInputBorder(),
+          ),
+          onSubmitted: (v) => Navigator.pop(d, v),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(d), child: const Text('取消')),
+          FilledButton(
+              onPressed: () => Navigator.pop(d, ctrl.text),
+              child: const Text('创建并切过去')),
+        ],
+      ),
+    );
+    if (name == null || name.trim().isEmpty) return;
+    final r = await notifier.createRemoteFromActiveConnection(name);
+    if (r.prj == null) {
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx)
+            .showSnackBar(SnackBar(content: Text('❌ ${r.dir}')));
+      }
+      return;
+    }
+    setState(() {});
+    if (ctx.mounted) {
+      ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+          duration: const Duration(seconds: 4),
+          content: Text('✅ 已切到远程项目「${r.prj!.name}」（${r.dir}）：'
+              '现在让它「看项目 / 改代码 / 跑测试」都会在这台电脑上执行')));
     }
   }
 
@@ -3363,27 +3201,56 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                           itemBuilder: (_, i) {
                             final prj = list[i];
                             final isActive = prj.id == state.activeId;
+                            final remote = prj.isRemote;
+                            final connected = remote && _projectConnected(prj);
                             return ListTile(
                               leading: Icon(
-                                  isActive
-                                      ? Icons.folder_open
-                                      : Icons.folder_outlined,
-                                  color: isActive
-                                      ? Theme.of(ctx2).colorScheme.primary
-                                      : null),
+                                  remote
+                                      ? Icons.desktop_windows
+                                      : (isActive
+                                          ? Icons.folder_open
+                                          : Icons.folder_outlined),
+                                  color: remote
+                                      ? (connected
+                                          ? Colors.green
+                                          : Colors.orange)
+                                      : (isActive
+                                          ? Theme.of(ctx2).colorScheme.primary
+                                          : null)),
                               title: Text(prj.isDefault
                                   ? '${prj.name}（默认）'
                                   : prj.name),
                               subtitle: Text(
+                                '${remote ? '远程 · ' : ''}'
                                 '${prj.workspacePath} · '
-                                '${counts[prj.id] ?? 0} 会话',
+                                '${counts[prj.id] ?? 0} 会话'
+                                '${remote ? (connected ? ' · 已连接' : ' · 未连接') : ''}',
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(fontSize: 11),
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    color: remote && !connected
+                                        ? Colors.orange.shade800
+                                        : null),
                               ),
                               trailing: PopupMenuButton<String>(
                                 onSelected: (v) async {
                                   switch (v) {
+                                    case 'connect':
+                                      // D1：连接动作并入项目行（原来散在
+                                      // 工作区面板；工作区 = 项目的投影）。
+                                      final err = await connectWorkspace(
+                                          devWorkspaceFor(prj),
+                                          ref.read(settingsProvider).sshConfigs);
+                                      if (ctx2.mounted) {
+                                        ScaffoldMessenger.of(ctx2).showSnackBar(
+                                            SnackBar(
+                                                duration:
+                                                    const Duration(seconds: 3),
+                                                content: Text(err == null
+                                                    ? '✅ 已连接 ${prj.name}'
+                                                    : '❌ $err')));
+                                      }
                                     case 'rename':
                                       final name = await _promptProjectName(
                                           ctx2,
@@ -3422,11 +3289,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                                   setSheet(() {});
                                 },
                                 itemBuilder: (_) => [
+                                  if (remote && !connected)
+                                    const PopupMenuItem(
+                                        value: 'connect', child: Text('连接')),
                                   const PopupMenuItem(
                                       value: 'rename', child: Text('重命名')),
-                                  const PopupMenuItem(
-                                      value: 'open',
-                                      child: Text('打开所在文件夹')),
+                                  if (!remote)
+                                    const PopupMenuItem(
+                                        value: 'open',
+                                        child: Text('打开所在文件夹')),
                                   if (!prj.isDefault)
                                     const PopupMenuItem(
                                         value: 'remove',
@@ -3443,6 +3314,33 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         );
                       },
                     ),
+                  ),
+                  // 远程开工入口（D1：接管旧工作区面板的「用当前连接新建」）。
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(8, 0, 8, 4),
+                    child: Row(children: [
+                      TextButton.icon(
+                        onPressed: () async {
+                          await _createRemoteProjectFromConnection(
+                              ctx2, notifier);
+                          setSheet(() {});
+                        },
+                        icon: const Icon(Icons.add_link, size: 16),
+                        label: Text(SshEnvironmentService.instance.isConnected
+                            ? '在已连接的电脑上开工'
+                                '（${SshEnvironmentService.instance.activeConfig?.name}）'
+                            : '在已连接的电脑上开工（需先连接）'),
+                      ),
+                      const Spacer(),
+                      TextButton.icon(
+                        onPressed: () {
+                          Navigator.pop(ctx2);
+                          _openRail('dev');
+                        },
+                        icon: const Icon(Icons.settings_ethernet, size: 16),
+                        label: const Text('管理 SSH 连接'),
+                      ),
+                    ]),
                   ),
                   const SizedBox(height: 8),
                 ],

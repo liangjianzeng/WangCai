@@ -32,16 +32,14 @@ import '../agent/dev/dev.dart'
         SshEnvironmentService,
         SshKeyGen,
         SshStatus,
-        WorkspaceBackend,
         classifySshFailure,
-        createWorkspaceOnActiveConnection,
-        ensureRemoteProjectDir,
-        listRemoteDirs,
         newDevTaskId,
         resolveSshSecrets,
         sshTargetKindOf,
         sshUsesPasswordAuth,
         taskBelongsToWorkspace;
+import '../providers/project_provider.dart'
+    show activeProjectProvider, projectsProvider;
 import 'engine_install_dialog.dart';
 import 'engine_manager_section.dart' show EngineManagerSection; // WangCai 分叉 #8
 import '../agent/adb/adb_client.dart';
@@ -5071,10 +5069,10 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
   /// 连接成功后的"开工引导"：给这份连接建远端工作区并激活。
   /// 该配置已有绑定的工作区 → 静默跳过（不重复打扰）。
   Future<void> _offerWorkspaceFor(SshConfig cfg) async {
-    final dev = DevSessionController.instance;
-    await dev.init(preferredActiveId: ref.read(settingsProvider).devWorkspaceId);
-    if (dev.workspaces.any((w) => w.isRemote && w.sshConfigId == cfg.id)) {
-      return; // 已有绑定这份工作区的远端工作区 → 不再打扰。
+    // D1 双真源收编：绑定判据看**项目**（工作区只是项目的派生缓存）。
+    if (ref.read(projectsProvider).projects
+        .any((p) => p.isRemote && p.sshConfigId == cfg.id)) {
+      return; // 已有绑定这份连接的项目 → 不再打扰。
     }
     if (!mounted) return;
     final what = cfg.name.trim().isEmpty ? cfg.host : cfg.name.trim();
@@ -5085,7 +5083,7 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
         content: Text('已连上 $what。\n\n'
             '要不要为它建个工作区（会在电脑上建 ~/projects/<名称> 并设为当前工作区）？'
             '建好后，对话里的智能体就直接在这台电脑上读写代码、跑测试——'
-            '否则它仍在手机本地目录里干活。'),
+            '否则它仍在本机目录里干活。'),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(ctx, false),
@@ -5121,20 +5119,20 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
       ),
     );
     if (name == null || name.trim().isEmpty || !mounted) return;
-    final r = await createWorkspaceOnActiveConnection(name);
-    if (r.ws == null) {
+    // D1：一键开工只产出**项目**（远程项目 = 工作目录唯一真源的远程形态）。
+    final r = await ref
+        .read(projectsProvider.notifier)
+        .createRemoteFromActiveConnection(name);
+    if (r.prj == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('❌ ${r.dir}')));
       }
       return;
     }
-    await ref
-        .read(settingsProvider.notifier)
-        .setDevWorkspaceId(r.ws!.id);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('✅ 已切到工作区「${r.ws!.name}」（${r.dir}）：'
+        content: Text('✅ 已切到远程项目「${r.prj!.name}」（${r.dir}）：'
             '现在让它「看项目 / 改代码 / 跑测试」都会在这台电脑上执行')));
   }
 
@@ -5704,337 +5702,55 @@ class DevSettingsBodyState extends ConsumerState<DevSettingsBody> {
     if (mounted) setState(() {});
   }
 
-  // ---------------- 工作区 ----------------
+  // ---------------- 工作区（D1 双真源收编后已并入项目） ----------------
 
   Widget _buildWorkspacesCard(
       InferenceSettings settings, SettingsNotifier notifier) {
-    final dev = DevSessionController.instance;
+    final active = ref.watch(activeProjectProvider);
+    final remote = active?.isRemote ?? false;
+    final ssh = SshEnvironmentService.instance;
+    final bound = (active?.sshConfigId ?? '').trim();
+    final connected = !remote ||
+        (ssh.isConnected && (bound.isEmpty || ssh.activeConfig?.id == bound));
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _buildSectionHeader('📁 工作区', context),
+            _buildSectionHeader('📁 工作区（已并入项目）', context),
             Text(
-              '文件/记忆工具跟随激活工作区；远端工作区（电脑）'
-              '用 ssh_exec / ssh_read_file / ssh_write_file 操作。'
-              '新增工作区时可自动建目录。',
+              '双真源收编（v0.0.4）：工作区注册表已降级为项目注册表的派生缓存——'
+              '激活哪个项目，智能体就在哪个目录干活；远程项目走 ssh_exec / '
+              'ssh_read_file / ssh_write_file 在对方电脑上执行。'
+              '新建、切换、连接都在聊天左栏顶部的「项目」面板里。',
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
             const SizedBox(height: 8),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                for (final ws in dev.workspaces)
-                  ChoiceChip(
-                    label: Text(ws.isDefault ? ws.name : ws.name),
-                    selected: dev.activeWorkspaceId == ws.id,
-                    onSelected: (_) async {
-                      await dev.switchWorkspace(ws.id);
-                      await notifier.setDevWorkspaceId(ws.id);
-                      if (mounted) setState(() {});
-                    },
-                  ),
-                TextButton.icon(
-                  onPressed: () => _showWorkspaceDialog(context, notifier),
-                  icon: const Icon(Icons.add, size: 18),
-                  label: const Text('新增'),
+            Row(children: [
+              Icon(
+                  remote ? Icons.desktop_windows : Icons.folder_outlined,
+                  size: 16,
+                  color: remote
+                      ? (connected ? Colors.green : Colors.orange)
+                      : Colors.grey.shade600),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  active == null
+                      ? '正在加载项目…'
+                      : '${active.name} · ${active.workspacePath}'
+                          '${remote ? (connected ? ' · 已连接' : ' · 未连接') : ''}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontSize: 12),
                 ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 新增/编辑工作区对话框。
-  Future<void> _showWorkspaceDialog(
-      BuildContext context, SettingsNotifier notifier,
-      {DevWorkspace? existing}) async {
-    final nameCtrl = TextEditingController(text: existing?.name ?? '');
-    final pathCtrl = TextEditingController(text: existing?.remotePath ?? '');
-    final formKey = GlobalKey<FormState>();
-    var backend = existing?.backend ?? WorkspaceBackend.localApp;
-    var sshConfigId = existing?.sshConfigId;
-    var creatingDir = false;
-    var browsingDir = false;
-    final saved = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setState) => AlertDialog(
-          title: Text(existing == null ? '新增工作区' : '编辑工作区'),
-          content: Form(
-            key: formKey,
-            child: SizedBox(
-              width: 460,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  TextFormField(
-                    controller: nameCtrl,
-                    autofocus: existing == null,
-                    decoration: const InputDecoration(
-                      labelText: '工作区名称',
-                      hintText: '如：TongYi-Lite / 我的博客项目',
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (v) =>
-                        (v == null || v.trim().isEmpty) ? '请填写名称' : null,
-                  ),
-                  const SizedBox(height: 12),
-                  DropdownButtonFormField<WorkspaceBackend>(
-                    value: backend,
-                    decoration: const InputDecoration(
-                      labelText: '后端',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: const [
-                      DropdownMenuItem(
-                        value: WorkspaceBackend.localApp,
-                        child: Text('本地目录（本机文件夹）'),
-                      ),
-                      DropdownMenuItem(
-                        value: WorkspaceBackend.remotePc,
-                        child: Text('远程电脑'),
-                      ),
-                    ],
-                    onChanged: (v) => setState(
-                        () => backend = v ?? WorkspaceBackend.localApp),
-                  ),
-                  if (backend == WorkspaceBackend.remotePc) ...[
-                    const SizedBox(height: 12),
-                    // 绑定连接配置。
-                    DropdownButtonFormField<String?>(
-                      value: sshConfigId,
-                      decoration: const InputDecoration(
-                        labelText: '绑定连接配置',
-                        border: OutlineInputBorder(),
-                      ),
-                      items: [
-                        const DropdownMenuItem<String?>(
-                          value: null,
-                          child: Text('自动（第一份可用配置）'),
-                        ),
-                        for (final cfg in ref.read(settingsProvider).sshConfigs)
-                          DropdownMenuItem<String?>(
-                            value: cfg.id,
-                            child: Text('${cfg.name}（${cfg.host}:${cfg.port}）'),
-                          ),
-                      ],
-                      onChanged: (v) => setState(() => sshConfigId = v),
-                    ),
-                    const SizedBox(height: 12),
-                    TextFormField(
-                      controller: pathCtrl,
-                      decoration: const InputDecoration(
-                        labelText: '远端路径（绝对路径）',
-                        hintText: '可手填，或点下方「自动创建目录」',
-                        border: OutlineInputBorder(),
-                      ),
-                      validator: (v) =>
-                          (v == null || v.trim().isEmpty) ? '远端路径必填' : null,
-                    ),
-                    const SizedBox(height: 8),
-                    // 两条路：自动建一个 ~/projects/<名称>，或直接浏览远端已有目录。
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: creatingDir
-                                ? null
-                                : () async {
-                                    setState(() => creatingDir = true);
-                                    try {
-                                      final dir = await _autoCreateRemoteDir(
-                                          nameCtrl.text);
-                                      if (dir != null && ctx.mounted) {
-                                        pathCtrl.text = dir;
-                                      } else if (ctx.mounted) {
-                                        ScaffoldMessenger.of(ctx).showSnackBar(
-                                            const SnackBar(
-                                                content: Text('自动创建失败：请先连接开发环境，'
-                                                    '或检查用户名/密码')));
-                                      }
-                                    } finally {
-                                      setState(() => creatingDir = false);
-                                    }
-                                  },
-                            icon: const Icon(Icons.create_new_folder, size: 16),
-                            label: Text(creatingDir
-                                ? '创建中…'
-                                : '🔍 自动创建 ~/projects/<名称>'),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: browsingDir
-                                ? null
-                                : () async {
-                                    setState(() => browsingDir = true);
-                                    try {
-                                      final dir = await _browseRemoteDir();
-                                      if (dir != null && ctx.mounted) {
-                                        pathCtrl.text = dir;
-                                      }
-                                    } finally {
-                                      if (mounted) {
-                                        setState(() => browsingDir = false);
-                                      }
-                                    }
-                                  },
-                            icon: const Icon(Icons.folder_open, size: 16),
-                            label: Text(browsingDir
-                                ? '读取中…'
-                                : '📂 浏览远端目录'),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ],
               ),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                if (!formKey.currentState!.validate()) return;
-                Navigator.pop(ctx, true);
-              },
-              child: const Text('保存'),
-            ),
+            ]),
           ],
         ),
       ),
     );
-    if (saved != true) return;
-    final name = nameCtrl.text.trim();
-    if (name.isEmpty) return;
-    final id = existing?.id ?? 'ws_${DateTime.now().millisecondsSinceEpoch}';
-    await DevSessionController.instance.upsertWorkspace(DevWorkspace(
-      id: id,
-      name: name,
-      backend: backend,
-      remotePath: backend.isRemoteBackend ? pathCtrl.text.trim() : null,
-      sshConfigId: backend.isRemoteBackend ? sshConfigId : null,
-    ));
-    if (mounted) setState(() {});
-  }
-
-  /// 自动创建远端目录：连接后 `echo $HOME` + `mkdir -p ~/projects/<safe>`。
-  /// （建目录本体在 `ensureRemoteProjectDir`，与聊天页的"一键开工"共用同一条路。）
-  Future<String?> _autoCreateRemoteDir(String name) async {
-    final ssh = SshEnvironmentService.instance;
-    var cfg = ssh.isConnected ? ssh.activeConfig : null;
-    cfg ??= ref
-        .read(settingsProvider)
-        .sshConfigs
-        .where((c) => c.isComplete)
-        .firstOrNull;
-    if (cfg == null) return null;
-    if (!await ssh.ensureConnected(cfg)) return null;
-    return ensureRemoteProjectDir(name);
-  }
-
-  /// 远端目录浏览器：`ls -1p` 列子目录 → 点进去/上一级 → 「选中此目录」回填。
-  /// 返回**绝对路径**（`~` 会解析成远端家目录）；取消返回 null。
-  Future<String?> _browseRemoteDir() async {
-    final ssh = SshEnvironmentService.instance;
-    var path = '~';
-    for (;;) {
-      List<String> dirs;
-      try {
-        dirs = await listRemoteDirs(path: path);
-      } on Exception catch (e) {
-        if (!mounted) return null;
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('列目录失败：$e（可先点「连接」）')));
-        return null;
-      }
-      if (!mounted) return null;
-      final at = path == '~' ? '家目录 ~' : path;
-      final picked = await showDialog<String>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('选择远端项目目录'),
-          content: SizedBox(
-            width: 420,
-            height: 320,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('当前：$at',
-                    style: const TextStyle(
-                        fontSize: 12, fontFamily: 'monospace')),
-                const SizedBox(height: 6),
-                if (path != '~')
-                  TextButton.icon(
-                    onPressed: () => Navigator.pop(ctx, '__up__$path'),
-                    icon: const Icon(Icons.arrow_upward, size: 16),
-                    label: const Text('上一级', style: TextStyle(fontSize: 12)),
-                  ),
-                Expanded(
-                  child: dirs.isEmpty
-                      ? Padding(
-                          padding: const EdgeInsets.all(12),
-                          child: Text('这个目录下没有子目录（或不可读）。',
-                              style: TextStyle(
-                                  fontSize: 12, color: Colors.grey.shade600)),
-                        )
-                      : ListView.builder(
-                          itemCount: dirs.length,
-                          itemBuilder: (_, i) {
-                            final d = dirs[i];
-                            return ListTile(
-                              dense: true,
-                              leading: const Icon(Icons.folder, size: 18),
-                              title: Text(d.split('/').last,
-                                  style: const TextStyle(fontSize: 13)),
-                              onTap: () => Navigator.pop(ctx, '__in__$d'),
-                            );
-                          },
-                        ),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('取消')),
-            FilledButton(
-                onPressed: () => Navigator.pop(ctx, path),
-                child: const Text('选中此目录')),
-          ],
-        ),
-      );
-      if (picked == null) return null;
-      if (picked.startsWith('__in__')) {
-        path = picked.substring(6);
-        continue;
-      }
-      if (picked.startsWith('__up__')) {
-        final cur = picked.substring(6);
-        final i = cur.lastIndexOf('/');
-        path = i <= 0 ? '~' : cur.substring(0, i);
-        continue;
-      }
-      if (picked == '~' || picked == r'$HOME') {
-        final home = await ssh.run('echo \$HOME',
-            timeout: const Duration(seconds: 30));
-        final h = home?.trim() ?? '';
-        return h.isEmpty ? null : h;
-      }
-      return picked;
-    }
   }
 
   // ---------------- 任务与规划 ----------------

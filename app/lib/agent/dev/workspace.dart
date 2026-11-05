@@ -143,6 +143,12 @@ final class DevWorkspace {
   }
 }
 
+/// D1 双真源收编（v0.0.4）：派生工作区 id ↔ 项目 id 的互转。
+/// 派生形态恒为 `ws_<projectId>`（[devWorkspaceFor]，project_provider），
+/// 这个前缀形态就是"派生项"的身份证——孤儿甄别与 remotePath 回写都认它。
+String? projectIdOfDevWorkspace(String wsId) =>
+    wsId.startsWith('ws_') && wsId.length > 3 ? wsId.substring(3) : null;
+
 /// 目录名安全化（文件系统友好；对齐 skills 目录 sanitize 思路）。
 String sanitizeWorkspaceDirName(String name) {
   var s = name.trim().replaceAll(RegExp(r'[\\/:*?"<>|.]'), '-');

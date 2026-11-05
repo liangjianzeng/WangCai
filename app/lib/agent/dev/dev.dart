@@ -22,5 +22,5 @@ export 'ssh/ssh_diagnostics.dart'
     show SshTargetKind, classifySshFailure, sshTargetKindOf, sshUsesPasswordAuth;
 export 'ssh/ssh_environment.dart' show SshEnvironmentService, SshStatus;
 export 'task.dart' show DevPlan, DevPlanStep, DevTask, DevTaskStatus;
-export 'workspace.dart' show DevWorkspace, WorkspaceBackend, effectiveWorkspaceOf, kWorkspaceIdArgKey, sanitizeWorkspaceDirName;
+export 'workspace.dart' show DevWorkspace, WorkspaceBackend, effectiveWorkspaceOf, kWorkspaceIdArgKey, projectIdOfDevWorkspace, sanitizeWorkspaceDirName;
 export 'workspace_store.dart' show DevStore;
