@@ -12,6 +12,7 @@ import 'package:wangcai/engine/engine_host.dart';
 import 'package:wangcai/engine/engine_paths.dart';
 import 'package:wangcai/engine/engine_status.dart';
 import 'package:wangcai/engine/llama_server_host.dart';
+import 'package:wangcai/engine/npu_profiles.dart';
 import 'package:wangcai/engine/openvino_probe.dart';
 
 class FakeProcess implements EngineProcess {
@@ -147,6 +148,28 @@ Available devices:
     await h.host.start(testCfg(ctx: 1024, chunk: 256));
     await h.waitSpawns(1);
     expect(h.capturedArgs[0], containsAllInOrder(['-dev', 'OPENVINO2']));
+  });
+
+  test('世代自适应：探测成功后 host 携带 NpuDeviceInfo（型号/世代/号码）',
+      () async {
+    await h.host.start(testCfg(ctx: 1024, chunk: 256));
+    await h.waitSpawns(1);
+    final info = h.host.lastNpuInfo!;
+    expect(info.devArg, 'OPENVINO3');
+    expect(info.npuCode, 3720);
+    expect(info.generation, NpuGeneration.ultra1);
+  });
+
+  test('世代自适应：探测失败 → 日志留痕回退（回退不再隐形，不伪造摘要）',
+      () async {
+    probeRunnerForTest = (_, __) async => null;
+    await h.host.start(testCfg(ctx: 1024, chunk: 256));
+    await h.waitSpawns(1);
+    expect(
+        h.host.logHistory.any((l) =>
+            l.text.contains('探测失败') && l.text.contains('OPENVINO2')),
+        isTrue);
+    expect(h.host.lastNpuInfo, isNull);
   });
 
   test('launch→model loaded→health：launching→warming→ready + baseUrl', () async {
