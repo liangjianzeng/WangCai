@@ -103,7 +103,10 @@ final class JsonlSessionStore {
 
   /// 新会话 header（workspacePath 未显式给出时从归属项目派生）。
   Future<SessionHeader> _header(String conversationId,
-      {String? workspacePath, String? cwd}) async {
+      {String? workspacePath,
+      String? cwd,
+      String? forkedFrom,
+      int? forkSeq}) async {
     var wp = workspacePath;
     if (wp == null) {
       try {
@@ -118,7 +121,28 @@ final class JsonlSessionStore {
       createdAtMs: DateTime.now().millisecondsSinceEpoch,
       workspacePath: wp,
       cwd: cwd ?? wp,
+      forkedFrom: forkedFrom,
+      forkSeq: forkSeq,
     );
+  }
+
+  /// 消息级分叉（v0.0.4.1 DSH session.fork 语义）：把源会话
+  /// `seq <= atSeq` 的前缀事件复制成新会话（header 带 forkedFrom/forkSeq
+  /// 溯源）。源不动——append-only 真相源之间是复制关系，不是引用关系。
+  Future<void> fork(String sourceConversationId, String targetConversationId,
+      {required int atSeq}) async {
+    final log = await load(sourceConversationId);
+    final prefix = log.rawEvents.where((e) => e.seq <= atSeq).toList();
+    final file = File(await pathFor(targetConversationId));
+    await file.create(recursive: true);
+    final h = await _header(targetConversationId,
+        forkedFrom: sourceConversationId, forkSeq: atSeq);
+    final sb = StringBuffer();
+    sb.writeln(h.toJson());
+    for (final e in prefix) {
+      sb.writeln(e.toJsonLine());
+    }
+    await file.writeAsString(sb.toString());
   }
 
   /// 追加事件到磁盘（write-through 入口，v0.0.4 Phase 2 通电）。

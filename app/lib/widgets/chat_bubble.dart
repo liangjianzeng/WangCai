@@ -46,6 +46,10 @@ class ChatBubble extends StatelessWidget {
   /// 出声是不是在播自己，图标就不改停止态、点按也会重新播（二次播放 bug）。
   final String? conversationId;
 
+  /// 从此气泡分叉（v0.0.4.1 DSH MessageIconActions Branch 同位）：
+  /// null = 不提供（工具/思考/流式中等场景）。
+  final VoidCallback? onBranch;
+
   const ChatBubble({
     super.key,
     required this.role,
@@ -59,6 +63,7 @@ class ChatBubble extends StatelessWidget {
     this.audioPath,
     this.inferenceStats,
     this.conversationId,
+    this.onBranch,
   });
 
   bool get _isUser => role == 'user';
@@ -428,6 +433,14 @@ class ChatBubble extends StatelessWidget {
               );
             },
           ),
+          if (onBranch != null)
+            ContextMenuButtonItem(
+              label: '从此分叉',
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                onBranch!();
+              },
+            ),
         ],
       ),
       child: body,

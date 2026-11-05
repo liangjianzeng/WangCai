@@ -2375,6 +2375,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     thinking: thinking,
                     trace: trace,
                     traceTools: traceTools,
+                    onBranch: _branchHandler(units, index, isLiveTurn, answer),
                   ),
               };
             },
@@ -3759,6 +3760,41 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             ),
       ),
     );
+  }
+
+  /// 「从此分叉」入口（v0.0.4.1 DSH Branch）：仅已完结、带答案的回合提供。
+  /// ordinal = 本回合在「带答案回合」序列里的 1-based 序数，供 JSONL
+  /// assistant/message 边界定位（SQLite 按消息 id 切，双源各取所长）。
+  VoidCallback? _branchHandler(
+      List<RenderUnit> units, int index, bool isLiveTurn, ChatMessage? answer) {
+    if (isLiveTurn || answer == null) return null;
+    var ordinal = 0;
+    for (var i = 0; i <= index; i++) {
+      final u = units[i];
+      if (u is TurnUnit && u.answer != null) ordinal++;
+    }
+    final id = answer.id;
+    return () => _branchFromTurn(id, ordinal);
+  }
+
+  Future<void> _branchFromTurn(String answerMessageId, int ordinal) async {
+    final cid = _currentConversationId;
+    if (cid == null) return;
+    final newId = await ref.read(chatNotifierProvider.notifier).forkConversation(
+        cid,
+        answerMessageId: answerMessageId,
+        assistantOrdinal: ordinal);
+    if (!mounted) return;
+    if (newId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('分叉失败：会话数据不完整'),
+          duration: Duration(seconds: 1)));
+      return;
+    }
+    _switchConversation(newId);
+    _railPanel.close(); // 窄窗/面板态下，切了会话别让列表盖着新对话。
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('已从该回复分叉出新会话'), duration: Duration(seconds: 1)));
   }
 
   /// 重命名会话：对话框输入 → 更新存储 + provider（P2 抽屉行内操作）。

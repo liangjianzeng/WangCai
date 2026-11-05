@@ -1162,6 +1162,10 @@ class AgentTurnBlock extends StatelessWidget {
   /// 历史回合的思考存档文本（解析自存储 💭 消息；仅已完成回合折叠区使用）。
   final List<String> thinking;
 
+  /// 答案「从此分叉」回调（v0.0.4.1 DSH MessageIconActions Branch 同位）；
+  /// null = 不提供（live 回合 / 无答案）。
+  final VoidCallback? onBranch;
+
   const AgentTurnBlock({
     super.key,
     required this.steps,
@@ -1171,6 +1175,7 @@ class AgentTurnBlock extends StatelessWidget {
     this.thinking = const [],
     this.trace,
     this.traceTools = const {},
+    this.onBranch,
   });
 
   /// 历史回合 turnTrace 信封（null = 旧数据，走散消息重排回退）。
@@ -1297,6 +1302,7 @@ class AgentTurnBlock extends StatelessWidget {
               role: 'assistant',
               content: answer!.content,
               timestamp: answer!.timestamp,
+              onBranch: isLive ? null : onBranch,
               imagePath: answer!.imagePath,
               audioPath: answer!.audioPath,
               inferenceStats: answer!.inferenceStats,
@@ -1365,6 +1371,8 @@ class AgentTurnBlock extends StatelessWidget {
             inferenceStats: answer!.inferenceStats,
             // 页脚集中到回合尾动作区（一条信息一个家）。
             showFooter: false,
+            // 已完结回合才可分叉（DSH 规则：IconActions 仅 turn 结束后出现）。
+            onBranch: isLive ? null : onBranch,
           ),
         // 回合尾动作区：答案流式结束才出现（DSH 规则：IconActions 仅在
         // turn 结束后出现）。独立进列表流，自补 16px 消息列轴。

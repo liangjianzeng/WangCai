@@ -129,12 +129,19 @@ final class SessionHeader {
   final String? workspacePath;
   final String? cwd;
 
+  /// v0.0.4.1 消息级分叉溯源（DSH session.fork）：本会话是从哪个会话的
+  /// 哪个 seq 边界（含）复制出来的。同样是可选属性 → 不升版本。
+  final String? forkedFrom;
+  final int? forkSeq;
+
   SessionHeader({
     required this.version,
     required this.conversationId,
     required this.createdAtMs,
     this.workspacePath,
     this.cwd,
+    this.forkedFrom,
+    this.forkSeq,
   });
 
   String toJson() => jsonEncode({
@@ -143,6 +150,8 @@ final class SessionHeader {
         'createdAt': createdAtMs,
         if (workspacePath != null) 'workspacePath': workspacePath,
         if (cwd != null) 'cwd': cwd,
+        if (forkedFrom != null) 'forkedFrom': forkedFrom,
+        if (forkSeq != null) 'forkSeq': forkSeq,
       });
 
   factory SessionHeader.fromJson(Map<String, dynamic> m) => SessionHeader(
@@ -156,6 +165,10 @@ final class SessionHeader {
         cwd: (m['cwd'] as String?)?.trim().isEmpty ?? true
             ? null
             : (m['cwd'] as String?)?.trim(),
+        forkedFrom: (m['forkedFrom'] as String?)?.trim().isEmpty ?? true
+            ? null
+            : (m['forkedFrom'] as String?)?.trim(),
+        forkSeq: (m['forkSeq'] as num?)?.toInt(),
       );
 
   /// 当前 reader 能否完整读取该 header。

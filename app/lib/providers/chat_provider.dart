@@ -67,7 +67,8 @@ import '../agent/session/event.dart'
     show
         kEventAssistantMessage,
         kEventCompactionSummary,
-        kEventSystemMessage;
+        kEventSystemMessage,
+        SessionEvent;
 import '../agent/session/title.dart' show deriveSessionTitle;
 import '../agent/metrics/turn_metrics.dart'
     show TurnMetrics, TurnMetricsStore;
@@ -2683,6 +2684,103 @@ class ChatNotifier extends StateNotifier<bool> {
       }
     } catch (e) {
       debugPrint('[ChatNotifier] refreshConversationMeta failed: $e');
+    }
+  }
+
+  /// 分叉子会话标题（DSH 规则：标题自动加 fork 序号 "(fork N)"；
+  /// 剥掉既有序号取词根，兄弟分叉共享同一根、序号递增）。
+  String _nextForkTitle(Iterable<Conversation> all, String base) {
+    final root = base.replaceFirst(RegExp(r' \(fork \d+\)$'), '');
+    final sibRe = RegExp('^${RegExp.escape(root)} \\(fork \\d+\\)\$');
+    var n = 0;
+    for (final c in all) {
+      if (sibRe.hasMatch(c.title)) n++;
+    }
+    return '$root (fork ${n + 1})';
+  }
+
+  /// 消息级分叉（v0.0.4.1 DSH session.fork 语义）：从源会话复制
+  /// 「截至回答消息 [answerMessageId] 的已完结回合」前缀，生成新会话。
+  ///
+  /// 双写对齐（JSONL 是真相源、SQLite 是索引）：
+  /// - SQLite：有序消息列表按 id 定位切点，前缀整段复制（新 id，
+  ///   流式标记强制 false）；
+  /// - JSONL：第 [assistantOrdinal] 个 assistant/message 事件为边界
+  ///   （内容核对不符则退化为内容匹配，再不行取最后一个），前缀落盘
+  ///   并带 forkedFrom/forkSeq 溯源 header。
+  /// 返回新会话 id；失败返回 null（不产生半截会话）。
+  Future<String?> forkConversation(String sourceConversationId,
+      {required String answerMessageId, required int assistantOrdinal}) async {
+    try {
+      Conversation? src;
+      for (final c in _ref.read(conversationsProvider)) {
+        if (c.id == sourceConversationId) {
+          src = c;
+          break;
+        }
+      }
+      if (src == null) return null;
+
+      final msgs = await _storage.getAllMessages(sourceConversationId);
+      final cut = msgs.indexWhere((m) => m.id == answerMessageId);
+      if (cut < 0) return null;
+      final prefix = msgs.sublist(0, cut + 1);
+
+      // JSONL 边界：序数定位 + 内容核对，双重防漂移。
+      final log = await _sessionStore.load(sourceConversationId);
+      final assistantEvents = log.rawEvents
+          .where((e) => e.type == kEventAssistantMessage)
+          .toList();
+      SessionEvent? boundary;
+      if (assistantEvents.length >= assistantOrdinal && assistantOrdinal > 0) {
+        final cand = assistantEvents[assistantOrdinal - 1];
+        if (cand.data['content'] == prefix[cut].content) boundary = cand;
+      }
+      if (boundary == null) {
+        for (final e in assistantEvents) {
+          if (e.data['content'] == prefix[cut].content) {
+            boundary = e;
+            break;
+          }
+        }
+      }
+      boundary ??= assistantEvents.isNotEmpty
+          ? assistantEvents.last
+          : (log.rawEvents.isNotEmpty ? log.rawEvents.last : null);
+      final atSeq = boundary?.seq ?? 0;
+
+      final title = _nextForkTitle(
+          _ref.read(conversationsProvider), src.title);
+      final conv = await _storage.createConversation(
+          title: title, projectId: src.projectId);
+
+      for (var i = 0; i < prefix.length; i++) {
+        final m = prefix[i];
+        await _storage.saveMessage(ChatMessage(
+          id: 'fk${conv.id}_$i',
+          conversationId: conv.id,
+          role: m.role,
+          content: m.content,
+          imagePath: m.imagePath,
+          imagePaths: m.imagePaths,
+          visionPaths: m.visionPaths,
+          attachments: m.attachments,
+          audioPath: m.audioPath,
+          timestamp: m.timestamp,
+          isStreaming: false,
+          inferenceStats: m.inferenceStats,
+          kind: m.kind,
+          toolData: m.toolData,
+          noticeCode: m.noticeCode,
+        ));
+      }
+      await _sessionStore.fork(sourceConversationId, conv.id, atSeq: atSeq);
+
+      _ref.read(conversationsProvider.notifier).update(conv);
+      return conv.id;
+    } catch (e) {
+      debugPrint('[ChatNotifier] forkConversation failed: $e');
+      return null;
     }
   }
 
