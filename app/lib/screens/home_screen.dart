@@ -62,6 +62,7 @@ import '../providers/agent_state_provider.dart'
 import '../models/chat_message.dart' show ChatMessage;
 import '../widgets/conversation_stats_bar.dart';
 import '../widgets/context_menu_region.dart';
+import '../widgets/trajectory_view.dart';
 import 'settings_screen.dart';
 // 插件平台（P2）：宿主在这里只"挖洞"，不认识任何具体插件。
 import '../plugins/plugin_host.dart';
@@ -1090,6 +1091,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       overflow: TextOverflow.ellipsis,
                     ),
               actions: [
+                // v0.0.4.1 DSH ui-trajectory：会话第二个视图开关（对话 ⇄ 轨迹）。
+                if (_currentConversationId != null)
+                  IconButton(
+                    icon: Icon(_trajectoryMode
+                        ? Icons.chat_bubble_outline
+                        : Icons.timeline),
+                    tooltip: _trajectoryMode ? '返回对话' : '轨迹视图',
+                    onPressed: () =>
+                        setState(() => _trajectoryMode = !_trajectoryMode),
+                  ),
                 _buildDevWorkspaceChip(),
                 _buildModelStatusChip(modelState, isGenerating),
               ],
@@ -1100,9 +1111,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 _buildInlineProgress(modelState, isGenerating),
 
                 Expanded(
-                  child: _initiallyLoaded
-                      ? _buildMessagesList()
-                      : const Center(child: CircularProgressIndicator()),
+                  child: !_initiallyLoaded
+                      ? const Center(child: CircularProgressIndicator())
+                      : _trajectoryMode && _currentConversationId != null
+                          ? TrajectoryView(
+                              conversationId: _currentConversationId!)
+                          : _buildMessagesList(),
                 ),
 
                 // 附件预览已并入 composer 卡片（chips 行，可单个删除）。
@@ -1145,6 +1159,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// 左栏折叠态（2026-10-25 用户需求）：点 rail 的 Logo **完全隐藏**侧边栏
   /// （非窄条），恢复 Logo 出现在顶栏左上角；对话区/输入框铺满全宽。
   bool _railCollapsed = false;
+
+  /// 会话区第二视图（v0.0.4.1 DSH ui-trajectory）：false = 对话，
+  /// true = 事件台账（轨迹）。切会话自动回对话态。
+  bool _trajectoryMode = false;
 
   Widget _buildRail(SlotRegistry registry) {
     final anyRunning = ref.watch(runningTurnsProvider).isNotEmpty;
@@ -3615,6 +3633,77 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       case 'delete':
         _confirmDelete(c);
         break;
+      case 'exportMd':
+        unawaited(_exportConversation(c, asJsonl: false));
+        break;
+      case 'exportJsonl':
+        unawaited(_exportConversation(c, asJsonl: true));
+        break;
+    }
+  }
+
+  /// 会话导出（v0.0.4.1 DSH session-log-export 缩放版）：
+  /// - md：派生消息 → 可读转写（DSH「消息是派生物」的消费端）；
+  /// - jsonl：JSONL 真相源**原始字节**拷贝（含 header，审计/迁移用）。
+  Future<void> _exportConversation(Conversation c,
+      {required bool asJsonl}) async {
+    String? outPath;
+    try {
+      final base = c.title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+      final safe = base.isEmpty ? '会话' : base;
+      outPath = await FilePicker.platform.saveFile(
+        dialogTitle: asJsonl ? '导出原始 JSONL' : '导出对话 Markdown',
+        fileName: asJsonl ? '$safe.jsonl' : '$safe.md',
+        type: FileType.custom,
+        allowedExtensions: [asJsonl ? 'jsonl' : 'md'],
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('导出失败：$e'), duration: const Duration(seconds: 2)));
+      }
+      return;
+    }
+    if (outPath == null) return; // 用户取消
+    try {
+      if (asJsonl) {
+        final store = JsonlSessionStore.shared;
+        final src = File(await store.pathFor(c.id));
+        if (src.existsSync()) {
+          src.copySync(outPath!);
+        } else {
+          final legacy = File(await store.legacyPathFor(c.id));
+          if (!legacy.existsSync()) {
+            throw StateError('会话尚无 JSONL 日志（发一条消息后重试）');
+          }
+          legacy.copySync(outPath!);
+        }
+      } else {
+        final msgs =
+            await ref.read(storageServiceProvider).getAllMessages(c.id);
+        final sb = StringBuffer('# ${c.title}\n')
+          ..writeln('_导出时间：${DateTime.now().toLocal()} · '
+              '${msgs.length} 条消息_\n');
+        for (final m in msgs) {
+          final role = m.role.name == 'user' ? '用户' : '助手';
+          final t = m.timestamp.toLocal();
+          String two(int v) => v.toString().padLeft(2, '0');
+          sb.writeln('**$role · ${two(t.hour)}:${two(t.minute)}**\n');
+          sb.writeln(m.content.trim());
+          sb.writeln('\n---\n');
+        }
+        File(outPath!).writeAsStringSync(sb.toString());
+      }
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('已导出：$outPath'),
+            duration: const Duration(seconds: 2)));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text('导出失败：$e'), duration: const Duration(seconds: 2)));
+      }
     }
   }
 
@@ -3648,6 +3737,20 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             onPressed: () {
               Navigator.of(ctx).pop();
               _conversationTileAction('rename', c, isPinned);
+            },
+          ),
+          ContextMenuButtonItem(
+            label: '导出对话 (md)',
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _conversationTileAction('exportMd', c, isPinned);
+            },
+          ),
+          ContextMenuButtonItem(
+            label: '导出原始 (jsonl)',
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              _conversationTileAction('exportJsonl', c, isPinned);
             },
           ),
           ContextMenuButtonItem(
@@ -3753,6 +3856,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 PopupMenuItem(
                     value: 'pin', child: Text(isPinned ? '取消置顶' : '置顶')),
                 const PopupMenuItem(value: 'rename', child: Text('重命名')),
+                const PopupMenuItem(
+                    value: 'exportMd', child: Text('导出对话 (md)')),
+                const PopupMenuItem(
+                    value: 'exportJsonl', child: Text('导出原始 (jsonl)')),
                 const PopupMenuItem(
                     value: 'delete',
                     child: Text('删除', style: TextStyle(color: Colors.red))),
@@ -3886,6 +3993,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         _followStream = true;
         _selectedImagePaths.clear();
         _selectedFilePaths.clear();
+        // 轨迹视图是**会话级**视图，切会话回对话态（DSH 同位行为）。
+        _trajectoryMode = false;
       });
       _restoreDraft();
       // 切会话：该会话无快照（如重启后首次切入）→ 估算回填。
