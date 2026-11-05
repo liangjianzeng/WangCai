@@ -143,7 +143,7 @@ class SearXNGSearchProvider implements WebSearchProvider {
     this.language,
     this.categories,
     this.engines = kDefaultEngines,
-    this.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WangCai/0.0.4',
+    this.userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) WangCai/0.0.5',
     Dio? dio,
   }) : _dio = dio ??
             Dio(BaseOptions(

@@ -1,10 +1,10 @@
-﻿# 汪柴 v0.0.4 打包脚本（M4）。
-#   产出 1（无需 Inno）：dist/WangCai-0.0.4-win-x64-portable.zip —— 解压即用
-#   产出 2（装了 Inno Setup 6 时）：dist/WangCai-0.0.4-win-x64-Setup.exe
+﻿# 汪柴 v0.0.5 打包脚本（M4）。
+#   产出 1（无需 Inno）：dist/WangCai-0.0.5-win-x64-portable.zip —— 解压即用
+#   产出 2（装了 Inno Setup 6 时）：dist/WangCai-0.0.5-win-x64-Setup.exe
 # 用法：powershell -ExecutionPolicy Bypass -File packaging/build-installer.ps1
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$ver = "0.0.4"
+$ver = "0.0.5"
 
 Write-Host "== 1/4 flutter build windows --release =="
 if (-not (Get-Command flutter -ErrorAction SilentlyContinue)) {
@@ -45,7 +45,7 @@ if (-not $ovSrc) {
 Copy-Item "$ovSrc\*" "$stage\Engines\wangcai\ovlibs\" -Recurse -Force
 # 便携包说明
 @'
-汪柴 v0.0.4 便携包：解压到任意目录后运行 App\WangCai.exe。
+汪柴 v0.0.5 便携包：解压到任意目录后运行 App\WangCai.exe。
 引擎位于 Engines\wangcai\（llama-server.exe + OpenVINO 运行时），
 首启自动被识别（安装器形态同布局）。模型库：%APPDATA%\WangCai\models
 （可用 WANGCAI_MODEL_DIR 指到别处）。
