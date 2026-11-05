@@ -17,6 +17,7 @@ import 'providers/agent_approval.dart'
         pendingApprovalsProvider,
         sandboxApproverProvider,
         toolPreApproverProvider;
+import 'providers/chat_provider.dart' show currentConversationIdProvider;
 import 'providers/settings_provider.dart' show settingsProvider;
 import 'screens/home_screen.dart';
 import 'platform/inference_gateway.dart';
@@ -109,6 +110,7 @@ Future<void> main() async {
                       '理由：${escalation.justification}\n\n'
                       '沙箱默认只允许工作目录内读写；批准后本次调用可访问'
                       '整台机器的文件系统（含工作目录之外）。仅本次调用生效。',
+                  conversationId: ref.read(currentConversationIdProvider),
                   allowLabel: '批准（仅本次）',
                 );
           };
@@ -130,6 +132,7 @@ Future<void> main() async {
             return ref.read(pendingApprovalsProvider.notifier).enqueue(
                   title: '智能体请求执行工具「${call.name}」',
                   detail: '参数：$argsText',
+                  conversationId: ref.read(currentConversationIdProvider),
                   allowLabel: '允许（仅本次）',
                 );
           };

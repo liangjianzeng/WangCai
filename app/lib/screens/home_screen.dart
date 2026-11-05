@@ -17,6 +17,7 @@ import '../providers/index.dart'
         conversationsProvider,
         currentConversationIdProvider,
         currentModelIdProvider,
+        pendingApprovalConversationProvider,
         kLocalVisionSupported;
 import '../providers/model_provider.dart';
 import '../providers/project_provider.dart' show projectsProvider, ProjectsNotifier;
@@ -1146,6 +1147,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   Widget _buildRail(SlotRegistry registry) {
     final anyRunning = ref.watch(runningTurnsProvider).isNotEmpty;
+    // v0.0.4.1 DSH pending-interaction：有会话在等用户决议（审批卡落在
+    // 别的会话里）时，会话入口挂徽标——这是"转圈看不见审批"的列表级补全。
+    final anyWaiting =
+        ref.watch(pendingApprovalConversationProvider) != null;
     // 收起条件：手动折叠（Logo 点击）或窄窗自动收起（聊天工具形态）。
     if (_railCollapsed || MediaQuery.sizeOf(context).width < 700) {
       return const SizedBox.shrink();
@@ -1169,7 +1174,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               icon: Icons.forum_outlined,
               tooltip: '会话',
               onTap: () => _openRail('chats'),
-              badge: anyRunning),
+              badge: anyRunning || anyWaiting),
         ),
         // 模型管理类入口紧跟会话、在智能体之前（2026-10-25 用户定案：
         // 本地模型优先的产品形态，模型是第一公民，先进模型再谈智能体）。
@@ -3618,6 +3623,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final selectionMode = _conversationSelectionMode;
     final selected = _selectedConversations.contains(c.id);
     final running = ref.watch(runningTurnsProvider).containsKey(c.id);
+    // v0.0.4.1 DSH pending-interaction（Rows.tsx 行状态点语义）：
+    // 等用户决议 > 运行中 > 空闲；别的会话挂着审批卡时列表必须可辨。
+    final waiting = !selectionMode &&
+        ref.watch(pendingApprovalConversationProvider) == c.id;
     // v0.0.4 Phase 3：右键菜单（桌面件；与 trailing 弹出菜单同一动作集）。
     return ContextMenuRegion(
       enabled: !selectionMode,
@@ -3658,15 +3667,21 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ? Theme.of(context).colorScheme.primary
                   : Colors.grey.shade400,
             )
-          : running
-              ? const Icon(Icons.autorenew, size: 20, color: Colors.orange)
-              : Icon(
-                  isCurrent ? Icons.chat_bubble : Icons.chat_bubble_outline,
-                  size: 20,
-                  color: isCurrent
-                      ? Theme.of(context).colorScheme.primary
-                      : Colors.grey,
-                ),
+          : waiting
+              ? const Tooltip(
+                  message: '该会话在等你审批/确认',
+                  child: Icon(Icons.pending_actions,
+                      size: 20, color: Colors.deepOrange),
+                )
+              : running
+                  ? const Icon(Icons.autorenew, size: 20, color: Colors.orange)
+                  : Icon(
+                      isCurrent ? Icons.chat_bubble : Icons.chat_bubble_outline,
+                      size: 20,
+                      color: isCurrent
+                          ? Theme.of(context).colorScheme.primary
+                          : Colors.grey,
+                    ),
       title: Row(children: [
         if (isPinned) ...[
           Icon(Icons.push_pin, size: 12, color: Colors.grey.shade500),

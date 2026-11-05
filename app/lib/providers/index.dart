@@ -32,3 +32,5 @@ export 'model_display_provider.dart' show
     ModelDisplayNameNotifier,
     modelDisplayNameProvider,
     modelDisplayNameServiceProvider;
+
+export 'agent_approval.dart' show pendingApprovalConversationProvider;

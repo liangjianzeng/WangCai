@@ -33,6 +33,10 @@ class PendingApproval {
   final String title;
   final String detail;
 
+  /// 审批所属会话（v0.0.4.1 DSH pending-interaction 对齐）：
+  /// 会话列表浮标 / rail 徽标据此提示"别的会话在等你"。
+  final String? conversationId;
+
   /// null = 无危险动作按钮（如只读信息）；有值 = 「允许」按钮动作描述。
   final String? allowLabel;
   final Completer<bool> completer;
@@ -40,6 +44,7 @@ class PendingApproval {
     required this.id,
     required this.title,
     required this.detail,
+    this.conversationId,
     this.allowLabel,
     required this.completer,
   });
@@ -55,12 +60,18 @@ class PendingApprovalsNotifier extends StateNotifier<PendingApproval?> {
   Future<bool> enqueue({
     required String title,
     required String detail,
+    String? conversationId,
     String? allowLabel,
   }) async {
     final id = 'appr_${DateTime.now().microsecondsSinceEpoch}_${_seq++}';
     final c = Completer<bool>();
     final req = PendingApproval(
-        id: id, title: title, detail: detail, allowLabel: allowLabel, completer: c);
+        id: id,
+        title: title,
+        detail: detail,
+        conversationId: conversationId,
+        allowLabel: allowLabel,
+        completer: c);
     // 串行化：等前一条出槽（正常场景 agent 逐条请求，几乎不等待）。
     var guard = 0;
     while (state != null && guard < 600) {
@@ -96,3 +107,11 @@ class PendingApprovalsNotifier extends StateNotifier<PendingApproval?> {
 final pendingApprovalsProvider =
     StateNotifierProvider<PendingApprovalsNotifier, PendingApproval?>(
         (ref) => PendingApprovalsNotifier());
+
+/// v0.0.4.1 DSH 对齐（pending-interaction 浮标）：等待用户决议的审批
+/// 所在会话 id（null = 无挂起）。DSH 里这是会话列表行状态点的
+/// warning 级真相源（优先于 running/idle）——多会话并行时，
+/// 审批卡落在别的会话里，用户必须能从列表一眼看到"谁在等我"。
+final pendingApprovalConversationProvider = Provider<String?>((ref) {
+  return ref.watch(pendingApprovalsProvider)?.conversationId;
+});
