@@ -181,6 +181,10 @@ static const char * cache_settings[] = {
     // the graph, set_rows.cpp/flash_attn_ext.cpp P14e) -- toggling must not resurrect blobs
     // compiled with the other shape.
     "GGML_OPENVINO_KV_HOST_WRITE",
+    // Changes the whole-graph op set (MoE fusion passes vs unfused GatherMatmul chain,
+    // translate_session.cpp P15) -- toggling must not resurrect blobs compiled with the
+    // other topology.
+    "GGML_OPENVINO_MOE_NPU",
     "GGML_OPENVINO_STATEFUL_EXECUTION",
     "GGML_OPENVINO_DISABLE_KV_STATE_RELAYOUT",
     "GGML_OPENVINO_DISABLE_REMOTE_OUTPUTS",

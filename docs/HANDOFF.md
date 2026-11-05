@@ -1084,3 +1084,93 @@ rope.cpp 的 op_case 映射（VISION→3）与绑定侧的多平面处理本身�
 LLM 侧图像 token 的 4 平面位置处理（音频路径已验证过 LLM 静态 + 单平面，图像 token 的
 mrope 位置是新领域），再对照 patch embeddings 级别找差异。VISROPE/WARMTRACE 插桩暂留
 （门控环境变量，精度缺陷关闭后统一拆除）。
+
+## 2026-11-05：P14e 转默认 + P15/P16 结案 + 严格 A/B 定案（4B decode 达标 +78%）
+
+### A/B 判决（本轮最重要成果）
+同一 cache 目录（KvN2）、同一二进制、同日两套 blob 集（KV_HOST_WRITE ON/OFF），llama-bench 暖 r3：
+- **tg128：链式 8.89 ± 0.01 vs 摘链 12.26 ± 0.03 = +38% 纯摘链增益**；链式 8.89 与 P14b 时代 8.96 闭环
+- pp512ck256：192.29 vs 191.57（持平——摘链不动 prefill，按设计）
+- vs P11 基线：4B tg 6.89 → 12.26 = **+78.0%，decode 轴超额达标**
+- **环境漂移带 ~4%**（同代码不同时段 run 互差）已定性——历史跨时段对比必须同 cache A/B
+- **KV_HOST_WRITE 转默认 ON**（`0` 显式关）：extra_cfg blob 键随默认翻转，旧缓存失效一次
+
+### P15 结案（MoE-NPU 融合 = no-op，归因修正）
+a5c39ca 的 commit message 有两处错误，在此修正：
+- **Spark-X2.6-4B 是 dense**——GGUF 无 expert_count（"experts" 字样来自 tokenizer 词表）；217 MatMul =
+  QKV 36 + attn_output 36 + attn_gate 36 + FFN 108 + head 1
+- 两个 dump 的 IR 里 **0 个 MOECompressed**——pass 无匹配对象；KvI→KvM 的 tg 差异是环境漂移
+- `MOE_NPU` 保留为无害 opt-in（NPUW 能编融合图不崩），给真 MoE 模型用
+
+### P16 结案（rope NegMul 消除 = IR 真省 72 节点，时间零差）
+NEOX rotate-half 的每节点 Multiply(x2,-1) 移进共享 swapped-sin 表（P14b memo 家族）。
+4B 三轴与 pre-P16 全持平（52.51/191.57/12.26）——72 个 NegMul 已被上游吸收（常量折叠或并行调度）。
+代码保留（bit-neutral，3/3 答案实证；图更净）。1.7B（NORMAL mode）双向回归绿。
+
+### 4B prefill 的物理画像（本轮两次 PROFILING 的定案）
+- **ck128 chunk（2.46s）**：MatMul 59% + Add 24%（180 个，launch 界 ~3ms/个）+ Multiply 6% + Transpose 6% + ScatterND 1.8%
+- **ck256 chunk（1.33s）**：MatMul 55% + Add 27%（token 翻倍 Add 时间不动 = 纯 launch）——residual 72 个占 Add 一半（数学不可消）
+- **217 MatMul 分解**：QKV 36 + O 36 + attn_gate 36 + FFN 108 + head 1（attn_gate 是 Spark 架构特性）
+- 1898 个 shape 节点（Reshape/Convert/Unsqueeze/Squeeze）不在 CSV top family = 已被 NPUW 吸收
+- **结论**：translator 级杠杆已榨干；突破需要 NPUW 调度粒度（subgraph 约束/tile 策略）级改动
+
+### 环境教训（本轮新增两条）
+- **D 盘满 → blob 写坏毒化**：写一半崩掉的 blob set 复用即 ZE_RESULT_ERROR_INVALID_NULL_HANDLE（0x78000005），
+  症状像"设备坏了"，实为缓存损坏——换 ArmTag 重编即愈。跑长任务前确认 ≥20 GB
+- **改 translate_session.h（类布局）必须全量重编**：ninja 增量漏编含旧布局的 TU → ODR 违例 →
+  0xC0000005 @ ggml-openvino.dll+0x49251（每个带 rope 的图必崩）——二分两轮才定位。
+  规则：`rm -rf build/ggml/src/ggml-openvino/CMakeFiles/ggml-openvino.dir` 后再 bld.bat
+- **`D:\llm\npu\bin` 是陈旧镜像**（手动拷贝，会落后）：p14_eval 用 `src\llama\build\bin` 是对的；
+  任何手跑前先 `cp build/bin/* bin/` 刷新
+
+### P17：编译旋钮扫描收档（DQ 家族 = decode 专属，prefill 无解）
+正确方法学（llama-bench vs llama-bench，`-r 1` 同日直连）两格：
+- `NPU_COMPILER_DYNAMIC_QUANTIZATION=NO`：pp2048 52.27 / pp512 192.29（持平）/ **tg 8.86（-29%）**；
+  3 题答案仍正确（f16 激活数值上没问题）——但 decode 的动态量化收益是真金白银，证伪
+- `NPUW_DQ_FULL=YES`：pp2048 52.67（持平）/ **tg 8.73（-29%）**，同签名，证伪
+- **方法学教训**：初判"44.3 t/s = prefill 4×"是拿无 PROFILING 的 run 对 PROFILING=2 的 run——
+  4B prefill 图上 profiling 开销 ~4×；粗筛必须 bench 对 bench，否则白跑一轮
+
+4B prefill 缺口（+22.7%/+41.6% vs +50% 目标）的当前定案：translator 级杠杆全部测完
+（P15 MoE 无对象 / P16 NegMul 被吸收 / P14e 只管 decode / 索引链共享在 decode 侧），
+NPUW 编译旋钮面（FOLD/DQ/DQ_FULL/FUNCALL/WEIGHTS_BANK）也无 prefill 增益——
+剩余差距 = DPU MatMul 计算域（54%）+ residual Add launch 界（27%，数学不可消）+ chunk 固定成本。
+**下一步需要 NPUW 内部调度改动（subgraph 粒度 / tile 策略），不是 translator 工作。**
+
+### P18：自动 prefill 升档 + 默认翻转失效修复（2026-11-05 晚）
+**P18 auto prefill chunk promotion**（utils.cpp，未 pin 流零改动）：env 把 chunk 钉在 128（4B 生产档）时，
+token 数 129–512 的 prefill 自动升 chunk256 图（该区间 chunk128 需 2–4 个整块，chunk256 只需 1–2）。
+- **bench 实锤**：pp200（升档区正中）184.81 t/s = chunk256 单块 1.08s；非升图 chunk128 模型值 ~127 t/s
+  （2 块 1.58s）→ **+46%**，与 README 时代 +55-59% 的区间结论一致
+- >512 保持 128（大图顶爆 decode 预算共存）；≤128 不换图；env 未设置 = 256 缺省不变；decode 图不受影响
+- **验证插曲（两条教训）**：① 第一轮"假阴性"（43.6 t/s 不升档）是 `D:\llm\npu\bin` 陈旧 DLL（04:28 早于
+  P18 构建 06:34）——刷新镜像后 bench 才实锤；llama-cli 那个 1793 字符长 prompt 实际 >512 token，
+  本来就该留在 128 区（设计行为，不是 bug）。② **两树同步是手工的**：bld.bat 只 build D: 树，
+  E: 的改动必须先 cp 过去（本轮 extra.cpp 修复差点被漏掉——DLL mtime 不动才发现）
+- **重大发现：6077ff8 的默认翻转是死的**。`ggml_openvino_getenv_int()` 对未设置变量返回缺省 0，
+  门控里 `getenv_int(...) == 0` 把"未设置"当成显式 `=0` → 装出来的"默认 ON"实际是默认 OFF。
+  tg128 探针（env 不设，新 DLL）实测 **8.87 t/s = 链式值**（该是 12.26）当场抓包。
+  修复：改用 `getenv_str` 判 nullptr 区分"未设置"与"显式 0"。**教训：任何 default 翻转，
+  必须用"env 完全不设"的探针验一遍，A/B 的 ON 臂是显式 =1，验不出翻转失效。**
+  （受影响范围：6077ff8 起所有"默认开"路径；打包 zip 里的引擎同样是 OFF 的，需要重打包）
+
+### P19：chunk 尺寸轴收档——设备 scratch 崖实测（2026-11-05 深夜）
+pp512 轴（191.6，目标 203.4，差 6%）的最后候选：加大 chunk 摊薄 launch-bound Add 族
+（同 Add 数 × 2 token）。launch-bound 算术估 ck512 可到 206-240 t/s，探针两格：
+- **ck512**：图编译成功（blob 7.2GB，translator 侧无障碍），**infer warmup 即败**
+  （`ggml_backend_sched_graph_compute_async failed -1`）
+- **ck384**：同签名失败（blob 7.1GB 编译成功）→ **崖在 256-384 之间**
+- 结论：chunk256 就是 4B prefill 图的设备 scratch 物理上限（256 可跑，384/512 编译过但设备
+  实例化/执行超预算）。chunk 维度对 pp 轴的贡献已到头；pp2048ck128 与 pp512ck256 的剩余缺口
+  维持 NPUW 内部调度域定案。**4B prefill translator 级杠杆至此全部实测关闭**：
+  P15（MoE 无对象）/ P16（rope 被吸收）/ P17（DQ 族 decode 专属）/ P19（chunk 崖 256）。
+
+### P20：NPUW_FOLD=YES A/B 收档——4B 上 FOLD=NO 定案复实锤（2026-11-05 深夜）
+FOLD=NO 是 1.7B 时代翻的默认，4B prefill 从未对比过；FOLD 若把 launch 界 Add 族并入邻接算子，
+恰在 pp 缺口（+22%/+6%）射程内。探针（GGML_OPENVINO_NPU_COMPILE_OVERRIDES=NPUW_FOLD=YES，
+ck256，pp512+tg128 同 invocation）：
+- **pp512 136.89（对 191.6 = -28.6%）/ tg128 7.75（对 12.11 = -37%）**——两轴同向崩，与 P17 DQ 族同签名
+- blob 集仅 76MB（FOLD=NO 同格 ~19GB）：YES 少做图工作（"36.4s vs 383s"时代的成因），
+  合并出的算子在 4B 的稠密大 MatMul 图上落点更差
+- 结论：**FOLD=NO 对 4B 同样成立**，编译旋钮面最后一格关闭。4B prefill 的 translator 可达域
+  全部实测完毕：P15（MoE 无对象）/ P16（rope 吸收）/ P17（DQ 族）/ P19（chunk 崖 256）/ P20（FOLD 反噬）

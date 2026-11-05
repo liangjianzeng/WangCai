@@ -161,6 +161,9 @@ void ggml_openvino_device_config::init() {
         // (P14e, set_rows.cpp / flash_attn_ext.cpp). Static NPU decode graphs of non-SWA
         // models only; the decoder gate enforces the rest.
         "GGML_OPENVINO_KV_HOST_WRITE",
+        // 1 = register the MoE fusion passes on the NPU too (P15, translate_session.cpp);
+        // default OFF keeps the unfused GatherMatmul path (see ggml_openvino_moe_npu_enabled).
+        "GGML_OPENVINO_MOE_NPU",
         "GGML_OPENVINO_DISABLE_ELTWISE_RANK_ALIGN",
         "GGML_OPENVINO_MOE_OP",
         "GGML_OPENVINO_MEMORY_OPTIMIZE",
@@ -393,8 +396,30 @@ bool ggml_openvino_is_npu() {
 // P14e: un-chained host-side K/V row writes (see TranslateSession::kv_unchained_writes).
 // NPU-only: the payoff is the ScatterNDUpdate family and the level-sized cache output DMA
 // that NPUW schedules per step; other devices keep the chained translation untouched.
+// DEFAULT ON since the strict same-cache A/B (2026-11-05): tg128 8.89 (chained) -> 12.26
+// (un-chained) = +38% pure decode gain, prefill untouched, 1.7B dual-mode regression green.
+// The decoder's all-or-nothing build verdict keeps every non-eligible graph fully chained,
+// so the default only ever changes graphs that can carry it. GGML_OPENVINO_KV_HOST_WRITE=0
+// opts out explicitly (the extra_cfg blob key flips with the default -- one cold rebuild).
 bool ggml_openvino_kv_host_write_enabled() {
-    return ggml_openvino_is_npu() && ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE") != 0;
+    // Distinguish UNSET (default ON) from an explicit =0 (opt-out). getenv_int() maps an
+    // unset var to its default_value 0, so an "== 0" test on it silently turned the
+    // default-ON flip into default-OFF (shipped inert in 6077ff8; caught by the tg128
+    // probe: unset env measured 8.87 t/s = the chained number, where the flip promised
+    // ~12.26). ggml_openvino_getenv_str() returns nullptr only when the var is absent.
+    const char * v = ggml_openvino_getenv_str("GGML_OPENVINO_KV_HOST_WRITE", nullptr);
+    if (v != nullptr && std::atoi(v) == 0) {
+        return false;  // explicit opt-out
+    }
+    return ggml_openvino_is_npu();
+}
+
+// P15: try the MoE fusion passes (FuseMoeRouter/FuseMoeCompressed/...FusedGateUp) on the NPU.
+// Default OFF: the passes were only ever exercised on GPU (MOECompressed has no CPU plugin
+// implementation and the NPUW pipeline is unproven) -- if the NPU has no lowering the compile
+// fails loudly, never silently wrong, and the env keeps the unfused GatherMatmul path.
+bool ggml_openvino_moe_npu_enabled() {
+    return ggml_openvino_is_npu() && ggml_openvino_getenv_int("GGML_OPENVINO_MOE_NPU") != 0;
 }
 
 bool ggml_openvino_is_gpu() {

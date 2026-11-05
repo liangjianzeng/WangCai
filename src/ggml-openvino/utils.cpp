@@ -223,6 +223,9 @@ static uint64_t ggml_openvino_model_cache_extra_cfg(bool stateful, bool recurren
     // ScatterNDUpdate family, attention Concat's the cur row): toggling must not resurrect
     // blobs compiled with the chained topology.
     extra_cfg = extra_cfg * 131 + (ggml_openvino_kv_host_write_enabled() ? 1u : 0u);
+    // P15 MoE fusion on the NPU swaps the expert-projection subgraphs for MOECompressed ops
+    // (translate_session.cpp): a different graph topology entirely.
+    extra_cfg = extra_cfg * 131 + (ggml_openvino_moe_npu_enabled() ? 1u : 0u);
     // Multi-level static decode graphs (see decode_attention_level): the decode half's baked
     // attention span changed from the whole context to a per-level constant, so older
     // disk-cache blobs must not match. The 4 also covers the vision-encoder fix below
@@ -1791,13 +1794,23 @@ ov::AnyMap without_npuw(const ov::AnyMap & config) {
 enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared_ptr<ov_runtime_context> & r_ctx) {
     auto & core = ov_singleton_core();
 
-    auto get_prefill_chunk_size = [] {
-        static const int chunk_size = []() {
-            int env_prefill_chunk_size = ggml_openvino_getenv_int("GGML_OPENVINO_PREFILL_CHUNK_SIZE");
-            return env_prefill_chunk_size > 0 ? env_prefill_chunk_size : 256;
-        }();
-        return chunk_size;
-    };
+    // P18 (auto prefill chunk): the chunk is a graph-shape parameter and a cache-key member,
+    // so it used to be one env value frozen for the whole process. llama-bench/README
+    // measurements (2026-11-01/02) put chunk256 at +55-59% pp over chunk128 for prompts of
+    // 512 tokens or fewer (fewer chunks -> the per-chunk fixed cost spreads over more
+    // tokens), and the decode budget rule (prefill + max decode level co-residency) holds
+    // while the fill stays <= 512. So when the user PINNED the chunk to 128 (the 4B
+    // production flow), prefill passes of 512 tokens or fewer are promoted to chunk256;
+    // longer prompts keep the pinned 128 (their fill outgrows the chunk256 decode budget --
+    // the BUDGET-FAIL fallback covers a rare multi-turn overflow with a graceful level-graph
+    // eviction). Unset-env flows keep the 256 default (1.7B is budget-clean at any ctx), and
+    // decode passes are untouched (is_prefill == false), so prefill/decode cache entries
+    // never mix.
+    const int env_prefill_chunk = [] {
+        int v = ggml_openvino_getenv_int("GGML_OPENVINO_PREFILL_CHUNK_SIZE");
+        return v > 0 ? v : 0;
+    }();
+    auto prefill_chunk_size = env_prefill_chunk > 0 ? env_prefill_chunk : 256;
 
     // Normally NPU, but honors GGML_OPENVINO_DEVICE so GGML_OPENVINO_FORCE_STATIC can run the
     // static-shape path on CPU/GPU to isolate translation bugs from NPUW/NPU-driver issues.
@@ -1805,7 +1818,6 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     static auto is_static = true;
     static auto stateful = false;
 
-    auto prefill_chunk_size = get_prefill_chunk_size();
     const auto & config = ggml_openvino_get_compile_config();
     // Compiled-model cache directory (blob + manifest with weights) for the level graphs below.
     // The static path is single-sequence: stateful/recurrent are both false here.
@@ -1831,6 +1843,17 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
     const auto * inp_pos = inp_pos_early;
     const bool no_kv_cache = m_params.is_cacheless_attn;
     const auto is_prefill = no_kv_cache ? true : get_is_prefill(cgraph, inp_pos);
+    // P18 auto promotion (see the P18 comment above): the pinned-128 production flow gets
+    // chunk256 for prefills whose token count OVERFLOWS the pinned chunk but still fits the
+    // chunk256 decode budget (129..512 tokens: chunk128 would need 2-4 full-chunk passes,
+    // chunk256 needs 1-2 -- that is where the +55-59% came from; prompts already inside one
+    // 128-chunk gain nothing from a bigger graph). Longer prompts keep the pinned 128 (their
+    // fill outgrows the chunk256 decode budget -- the BUDGET-FAIL fallback covers a rare
+    // multi-turn overflow with a graceful level-graph eviction).
+    if (env_prefill_chunk == 128 && is_prefill && !no_kv_cache && c_params.input_len > 128 &&
+        c_params.input_len <= 512) {
+        prefill_chunk_size = 256;
+    }
     const ov::AnyMap compile_config = [&] {
         // The vision encoder's clip graph has NO mask input on its softmax (bidirectional
         // attention), so is_cacheless_attn stays false and it takes the full NPUW config --

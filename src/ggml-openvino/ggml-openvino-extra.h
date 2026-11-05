@@ -121,6 +121,10 @@ bool ggml_openvino_is_npu();
 // attention Concat's the cur row back in. See TranslateSession::kv_unchained_writes.
 bool ggml_openvino_kv_host_write_enabled();
 
+// P15 (GGML_OPENVINO_MOE_NPU, NPU only, default OFF): register the MoE fusion passes
+// (FuseMoeRouter/FuseMoeCompressed) on the NPU too. See translate_session.cpp.
+bool ggml_openvino_moe_npu_enabled();
+
 // Check if running on a GPU (GPU, GPU.0, GPU.1, ...)
 bool ggml_openvino_is_gpu();
 

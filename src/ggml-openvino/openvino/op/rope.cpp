@@ -239,16 +239,16 @@ OutputVector translate_rope(const NodeContext & context) {
             rot_data = std::make_shared<ov::op::v8::Slice>(data_node, rot_start, rot_end, step_one, axis_last);
         }
 
-        auto neg_one_f = ov::op::v0::Constant::create(data_node->get_element_type(), ov::Shape{}, {-1.0f});
-
         auto split_axis = ov::op::v0::Constant::create(ov::element::i64, ov::Shape{}, {3});
         auto split_lengths = ov::op::v0::Constant::create(ov::element::i64, {2}, {half, half});
         auto data_split = std::make_shared<ov::op::v1::VariadicSplit>(rot_data, split_axis, split_lengths);
         Output<Node> x1 = data_split->outputs()[0];
         Output<Node> x2 = data_split->outputs()[1];
 
-        auto x2_neg = std::make_shared<ov::op::v1::Multiply>(x2, neg_one_f);
-        auto x_rotate_half = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{x2_neg, x1}, -1);
+        // P16: the rotate-half operand is a plain swap -- its sign flip lives in the shared
+        // swapped-sin table (Concat(-sin1, sin2)), saving the per-node Multiply(x2, -1).
+        // IEEE754: (x2 * -1) * s1 == x2 * (-s1) exactly, so this is bit-neutral.
+        auto x_rotate_half = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{x2, x1}, -1);
 
         // P14b (2026-11-04): the table-side half of this lowering -- the non-NEOX reshape,
         // the duplication Concats and the static-decode head-axis tile -- depends only on the
@@ -267,6 +267,7 @@ OutputVector translate_rope(const NodeContext & context) {
         }
         Output<Node> cos_full;
         Output<Node> sin_full;
+        Output<Node> sin_swapped_full;
         {
             TranslateSession::RopeCSKey memo_key{cos_theta_node.get_node(), half, tile_heads_n, false,
                                                  compute_f16};
@@ -277,6 +278,11 @@ OutputVector translate_rope(const NodeContext & context) {
                 if (it != memo.end()) {
                     cos_full = it->second.first;
                     sin_full = it->second.second;
+                }
+                auto & swapped_memo = session->shared_rope_sin_swapped();
+                auto swapped_it = swapped_memo.find(memo_key);
+                if (swapped_it != swapped_memo.end()) {
+                    sin_swapped_full = swapped_it->second;
                 }
             }
             if (!cos_full.get_node()) {
@@ -298,6 +304,11 @@ OutputVector translate_rope(const NodeContext & context) {
                 }
                 cos_full = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{cos_t, cos_t}, -1);
                 sin_full = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{sin_t, sin_t}, -1);
+                // P16: the NEOX rotate-half sign flip as a shared swapped table, consumed by
+                // the application side below (y2 = Concat(x2,x1) * sin_swapped).
+                auto neg_sin = std::make_shared<ov::op::v1::Multiply>(
+                    sin_t, ov::op::v0::Constant::create(sin_t.get_element_type(), ov::Shape{}, {-1.0f}));
+                sin_swapped_full = std::make_shared<ov::op::v0::Concat>(ov::OutputVector{neg_sin, sin_t}, -1);
 
                 // NPU device defect (static decode graphs): the numpy head-axis broadcast of the
                 // [1,1,1,head/2*2] cos/sin tables onto the [1,1,n_head_kv,head] GEMV output comes back
@@ -323,15 +334,17 @@ OutputVector translate_rope(const NodeContext & context) {
                     };
                     tile_heads(cos_full);
                     tile_heads(sin_full);
+                    tile_heads(sin_swapped_full);
                 }
                 if (session) {
                     session->shared_rope_cos_sin().emplace(memo_key, std::make_pair(cos_full, sin_full));
+                    session->shared_rope_sin_swapped().emplace(memo_key, sin_swapped_full);
                 }
             }
         }
 
         auto y1 = std::make_shared<ov::op::v1::Multiply>(rot_data, cos_full);
-        auto y2 = std::make_shared<ov::op::v1::Multiply>(x_rotate_half, sin_full);
+        auto y2 = std::make_shared<ov::op::v1::Multiply>(x_rotate_half, sin_swapped_full);
         auto rotated = std::make_shared<ov::op::v1::Add>(y1, y2);
 
         ov::OutputVector concat_parts;
