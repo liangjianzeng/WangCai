@@ -283,8 +283,16 @@ class EngineStore {
       }
 
       await dir.create(recursive: true);
-      final archive = ZipDecoder().decodeBytes(await tmpZip.readAsBytes());
-      await extractArchiveToDisk(archive, dir.path); // 异步！漏 await = 空目录
+      // 流式解包：decodeBuffer(InputFileStream) 让每个条目持有文件流上的切片，
+      // 解压发生在写盘那一刻 —— CUDA 包 800MB+，decodeBytes 全量进内存会在
+      // 32GB 机器上也吃掉数 GB（2026-11-05 用户实报"下载完成后崩溃"的根因）。
+      final input = InputFileStream(tmpZip.path);
+      try {
+        final archive = ZipDecoder().decodeBuffer(input);
+        await extractArchiveToDisk(archive, dir.path); // 异步！漏 await = 空目录
+      } finally {
+        await input.close();
+      }
       await tmpZip.delete();
 
       final exe = findServerExe(dir);

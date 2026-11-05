@@ -31,11 +31,14 @@ const String wangcaiNpuManifestJson = '''
      "paramsB": 2.0, "device": "NPU",
      "extraEnv": {"GGML_OPENVINO_DISABLE_DECODE_LEVELS": "1"},
      "note": "Omni-2B 文本线（chunk128 实测口径）；视觉塔走 cuda/vulkan —— NPU mtmd 有缺陷，见 defect-npu-mtmd.md"},
+    {"name": "lfm3-1.7b-deep", "modelGlob": "LFM3-1.7B*.gguf", "ctx": 16384, "chunk": 256,
+     "paramsB": 1.7, "device": "NPU",
+     "extraEnv": {"GGML_OPENVINO_NPU_COMPILE_OVERRIDES": "NPUW_FOLD=YES",
+                  "GGML_OPENVINO_KV_HOST_WRITE": "1"},
+     "note": "16K 深上下文（智能体模式）：P14e+FOLD=YES 实测稳态 9.1 t/s / 整段 8.3（2026-11-05 验收复跑）。首会话有 1-7 分钟懒编译（blob 落盘后秒开）；16K 全量 prefill ~3.3 分钟、增量回合 ~22s/K token——CPU 空闲时同深度 27.9 t/s 更快，本 preset 是无 CPU 时的 NPU 兜底"},
     {"name": "minicpm5-2b", "modelGlob": "MiniCPM5-2B*.gguf", "ctx": 512, "chunk": 256,
      "paramsB": 2.6, "device": "NPU",
-     "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：默认臂 1.7B-like "
-         "chunk256+decode levels；OOM 回落 spark 臂（chunk128+DISABLE_DECODE_LEVELS）——tools/minicpm5-npu-accept.ps1；"
-         "thinking 模型 CoT 预算 n≥192"}
+     "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：默认臂 1.7B-like chunk256+decode levels；OOM 回落 spark 臂（chunk128+DISABLE_DECODE_LEVELS）——tools/minicpm5-npu-accept.ps1；thinking 模型 CoT 预算 n≥192"}
   ],
   "admission": [
     {"ifCtxGt": 512, "ifParamsBAtLeast": 3.5,

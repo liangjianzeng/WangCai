@@ -349,7 +349,11 @@ class _EngineManagerSectionState extends ConsumerState<EngineManagerSection> {
                     Text(
                       '一键下载官方白名单版本（sha256 校验）；已有现成 llama.cpp？'
                       '把 llama-server.exe 放进安装目录（目录名含 cuda / vulkan '
-                      '即可识别），点「扫描识别」。',
+                      '即可识别），点「扫描识别」。\n'
+                      '装好后三步用起来：模型管理页添加 .gguf → 「引擎」选 '
+                      'llama.cpp·CUDA/Vulkan（或留空 Auto）→ 加载即跑。'
+                      'GPU 引擎不需要任何 OpenVINO 参数；CUDA 需 N 卡 + 新驱动，'
+                      '核显/其他卡选 Vulkan。',
                       style: TextStyle(
                           fontSize: 11, color: Colors.grey.shade600),
                     ),
@@ -761,14 +765,21 @@ class _EngineDefaultsDialogState extends State<_EngineDefaultsDialog> {
                 style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
               ),
               const SizedBox(height: 10),
+              // chunk/device 是 OpenVINO 引擎专属，-ngl 是 llama.cpp GPU 专属；
+              // 给错引擎显示对方的概念就是"配置看不懂"的来源（v0.0.3 反馈）。
               Row(children: [
                 Expanded(child: field(_ctx, '上下文 -c', '跟随预设', numeric: true)),
-                const SizedBox(width: 8),
-                Expanded(child: field(_chunk, 'chunk', '跟随预设', numeric: true)),
-                const SizedBox(width: 8),
-                Expanded(child: field(_gpuLayers, 'GPU 层数 -ngl', '跟随预设', numeric: true)),
+                if (manifest.id == 'wangcai-npu') ...[
+                  const SizedBox(width: 8),
+                  Expanded(child: field(_chunk, 'chunk', '跟随预设', numeric: true)),
+                ],
+                if (manifest.id.startsWith('llamacpp-')) ...[
+                  const SizedBox(width: 8),
+                  Expanded(child: field(_gpuLayers, 'GPU 层数 -ngl', '跟随预设', numeric: true)),
+                ],
               ]),
-              field(_device, '设备 device', 'NPU / CPU / GPU / OPENVINO{n}（OV 引擎）'),
+              if (manifest.id == 'wangcai-npu')
+                field(_device, '设备 device', 'NPU / CPU / GPU / OPENVINO{n}（OV 引擎）'),
               field(_env, '附加环境变量', '每行 KEY=VALUE（如 GGML_OPENVINO_PREFILL_CHUNK_SIZE=128）',
                   maxLines: 3),
               field(_args, '自定义尾参', '追加在模板之后，如 --flash_attn 1（后者覆盖前者）',

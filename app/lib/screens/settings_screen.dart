@@ -985,9 +985,16 @@ class _LocalModelEditorState extends ConsumerState<_LocalModelEditor> {
                   ],
                 ),
               ),
-              _numField('ctx', _ctx, '留空 = 全局/引擎值'),
-              _numField('chunk', _chunk, 'NPU prefill chunk（留空=引擎值）'),
-              _numField('gpuLayers', _gpuLayers, '-ngl（留空=引擎值）'),
+              _numField('ctx', _ctx, '上下文长度（留空 = 引擎/预设默认）'),
+              // chunk 是 OpenVINO 专属概念，绑 GPU 引擎时不该出现；
+              // -ngl 反之（NPU 线无效）。Auto（未绑定）两者都显示。
+              if (_engineId == null || _engineId == 'wangcai-npu')
+                _numField('chunk', _chunk, 'NPU prefill chunk（留空=引擎值）'),
+              if (_engineId == null ||
+                  _engineId == 'llamacpp-cuda' ||
+                  _engineId == 'llamacpp-vulkan')
+                _numField('gpuLayers', _gpuLayers,
+                    '-ngl（GPU 卸载层数，留空=引擎值）'),
               const SizedBox(height: 6),
               TextField(
                 controller: _customArgs,
@@ -998,7 +1005,7 @@ class _LocalModelEditorState extends ConsumerState<_LocalModelEditor> {
                   isDense: true,
                   alignLabelWithHint: true,
                   labelText: '自定义尾参（一行一个，如 -np 1）',
-                  helperText: 'Phase 3 参数优先级接线后生效（自定义 > 引擎默认 > 模板）',
+                  helperText: '追加在启动命令末尾；模型级 > 引擎默认 > 出厂模板',
                   hintStyle: TextStyle(fontSize: 11),
                   border: OutlineInputBorder(),
                 ),
