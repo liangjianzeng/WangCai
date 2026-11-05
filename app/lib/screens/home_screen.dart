@@ -727,11 +727,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         ?.title;
     final headerTitle =
         (convTitle == null || convTitle.isEmpty) ? '' : convTitle;
-    // v0.0.4（用户反馈"类似聊天工具"）：窄窗（<700 逻辑像素）自动收起左栏
-    // ——rail 不占位，导航走顶栏汉堡（开「会话」面板，面板滑入覆盖任何宽度
-    // 都可用）；宽窗下仍由 Logo 手动收起/展开。
+    // 2026-11-05 用户定案：侧边栏**常显**（撤销 <700 自动收起），
+    // 且收窄到与图标按钮同宽的量级（见 AppRail）。手动 Logo 收起仍可用，
+    // 收起后窄窗给汉堡（直达「会话」面板）、宽窗给恢复 Logo。
     final narrowWindow = MediaQuery.sizeOf(context).width < 700;
-    final railVisible = !_railCollapsed && !narrowWindow;
+    final railVisible = !_railCollapsed;
 
     // harness 布局：左栏（能力/配置入口）+ 主区（AppBar + 消息 + composer）。
     // 面板从左滑入、只盖主区（含 AppBar），rail 恒可见。
@@ -943,7 +943,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final anyWaiting =
         ref.watch(pendingApprovalConversationProvider) != null;
     // 收起条件：手动折叠（Logo 点击）或窄窗自动收起（聊天工具形态）。
-    if (_railCollapsed || MediaQuery.sizeOf(context).width < 700) {
+    if (_railCollapsed) {
       return const SizedBox.shrink();
     }
     return AppRail(

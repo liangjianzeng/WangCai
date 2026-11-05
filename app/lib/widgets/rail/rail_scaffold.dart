@@ -107,8 +107,9 @@ class AppRail extends StatelessWidget {
     return Material(
       color: scheme.surfaceContainerHighest.withValues(alpha: 0.55),
       child: Container(
-        // 桌面（Windows）屏幕充裕，左栏略宽一点更舒展；移动端维持 48。
-        width: Platform.isWindows ? 64 : 48,
+        // 2026-11-05 用户定案：左栏常显且「收到和按钮差不多的宽度」——
+        // RailIconButton 触点 34px，栏 44 只留 5px 呼吸缝，不再白占横向空间。
+        width: 44,
         decoration: BoxDecoration(
           border: Border(
             right: BorderSide(color: scheme.outlineVariant, width: 1),
@@ -353,8 +354,10 @@ class _RailPanelHostState extends State<RailPanelHost> {
       // 设计稿：面板宽 ≈ 88% 主区宽（296/336），右侧留出对话画布一线。
       // 桌面（Windows）屏幕够，放宽上下限到桌面尺寸，避免引擎操作行
       // 「停止 / 按上次配置重启 / 日志 / 启动命令」被 300px 上限截断。
+      // 下限 300（非 360）：侧边栏常显后主区最窄 = 360-44=316，
+      // 下限 360 会在最小窗把面板右缘裁进 hardEdge 外（2026-11-05 连带修）。
       final width = Platform.isWindows
-          ? (constraints.maxWidth * 0.72).clamp(360.0, 620.0)
+          ? (constraints.maxWidth * 0.72).clamp(300.0, 620.0)
           : (constraints.maxWidth * 0.88).clamp(240.0, 300.0);
       return Material(
         color: scheme.surface,
