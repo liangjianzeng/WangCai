@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -9,9 +11,25 @@ import 'package:wangcai/services/storage_service.dart';
 // ---------------------------------------------------------------------------
 
 void main() {
+  late Directory tmp;
+
   setUpAll(() {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
+  });
+
+  // 2026-11-05 隔离修复：本文件此前直写 %APPDATA%\WangCai\wangcai.db 真库
+  //（health-check-conv 250 行垃圾 + 无清理）。真机开着 WangCai.exe 时
+  // 全量测试直接 database is locked 假败，平时则污染用户数据。
+  setUp(() {
+    tmp = Directory.systemTemp.createTempSync('wc_storage_');
+    StorageService.dbPathOverrideForTest = '${tmp.path}/test.db';
+  });
+
+  tearDown(() async {
+    StorageService.dbPathOverrideForTest = null;
+    await StorageService.closeForTest();
+    if (tmp.existsSync()) tmp.deleteSync(recursive: true);
   });
 
   test('getMessages(limit) 取的是**最新** N 条且升序返回（2026-09-30 语义修正）', () async {
