@@ -145,6 +145,46 @@ List<Skill> _dedupeByRank(List<Skill> skills) {
   return out;
 }
 
+/// 扫描项目级技能目录（v0.0.4.1 DSH skill-filesystem project-root 对齐，
+/// rank 300）：`<workspacePath>/.wangcai/skills/<name>/SKILL.md` 优先，
+/// 兼容扫 `<workspacePath>/.dsh/skills`（DSH 布局直接可用；同 rank，
+/// 先扫者胜同名——自家目录压过兼容目录）。
+///
+/// 目录不存在/坏文件同 [loadUserSkills] 一样静默跳过。
+Future<List<Skill>> loadProjectSkills(String? workspacePath,
+    {String? dirOverride}) async {
+  final roots = <String>[];
+  if (dirOverride != null) {
+    roots.add(dirOverride);
+  } else if (workspacePath != null && workspacePath.trim().isNotEmpty) {
+    final ws = workspacePath.trim();
+    roots.add('${_join(ws, '.wangcai')}/skills');
+    roots.add('${_join(ws, '.dsh')}/skills');
+  }
+  final out = <Skill>[];
+  for (final dirPath in roots) {
+    try {
+      final dir = Directory(dirPath);
+      if (!dir.existsSync()) continue;
+      for (final entity in dir.listSync()) {
+        if (entity is! Directory) continue;
+        final file = File(_join(entity.path, 'SKILL.md'));
+        if (!file.existsSync()) continue;
+        try {
+          final content = file.readAsStringSync();
+          out.add(Skill.parse(content, name: _basename(entity.path))
+              .withRank(kRankProject));
+        } catch (_) {
+          // 坏文件跳过。
+        }
+      }
+    } catch (_) {
+      // 权限/坏目录：整体静默。
+    }
+  }
+  return out;
+}
+
 /// 扫描用户 skill 目录（`ApplicationSupport/skills/<name>/SKILL.md`，rank 200）。
 ///
 /// 目录不存在或单个 skill 文件损坏均不影响其余；失败返回空列表。

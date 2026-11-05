@@ -1,6 +1,6 @@
 /// 端侧 skill（DSH Part 12.2/12.3，Phase 5）。
 ///
-/// 两级 rank：内置（rank 100）+ 用户（rank 200；rank 大的优先）。
+/// 三级 rank：内置（rank 100）+ 用户（rank 200）+ 项目（rank 300；rank 大的优先）。
 /// 格式：`<name>/SKILL.md`（frontmatter：name/description/whenToUse/invocation）。
 ///
 /// 写法规范（对齐 anthropics/skills 官方实践，2026-10-01 调研定案）：
@@ -13,6 +13,11 @@ library;
 
 const int kRankBuiltin = 100;
 const int kRankUser = 200;
+
+/// 项目级技能（v0.0.4.1 DSH skill-filesystem project-root rank 对齐）：
+/// `<workspacePath>/.wangcai/skills`（兼容扫 `.dsh/skills`）同名压过
+/// 用户/内置档——"这个仓库的规矩最大"。
+const int kRankProject = 300;
 
 final class Skill {
   const Skill({

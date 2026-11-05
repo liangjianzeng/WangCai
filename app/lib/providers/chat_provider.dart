@@ -12,6 +12,7 @@ import '../models/chat_message.dart';
 import '../models/conversation.dart';
 import '../models/turn_trace.dart';
 import '../project/project_store.dart';
+import '../project/project.dart' show Project;
 import 'project_provider.dart' show activeProjectIdProvider;
 import '../platform/wangcai_paths.dart';
 
@@ -54,7 +55,8 @@ import '../agent/mcp/mcp_client.dart' show fetchMcpTools;
 import '../agent/goal/goal_store.dart'
     show GoalStore, GoalStatus, GoalAction, decideGoalAction;
 import '../agent/builtin_tools/run_code_tool.dart' show createRunCodeTool;
-import '../agent/skills/provider.dart' show SkillProvider, loadUserSkills;
+import '../agent/skills/provider.dart'
+    show SkillProvider, loadUserSkills, loadProjectSkills;
 import '../agent/skills/skill.dart' show loadBuiltinSkills;
 import '../agent/agents_md/agents_md.dart' show loadAgentsMd;
 import '../agent/session/store.dart'
@@ -1320,12 +1322,25 @@ class ChatNotifier extends StateNotifier<bool> {
     }
 
 
-    // Skills：内置（rank 100）+ 用户目录 ApplicationSupport/skills（rank 200）。
+    // Skills：内置（rank 100）+ 用户目录 ApplicationSupport/skills（rank 200）
+    // + 项目目录 <workspacePath>/.wangcai/skills（兼容 .dsh/skills，rank 300，
+    // v0.0.4.1 DSH project-root rank——"这个仓库的规矩最大"）。
     // 提前构建（与 load_skill 工具注册、agent 注入共用同一实例）。
     final userSkills = await loadUserSkills();
-    final skillProvider = userSkills.isEmpty
+    String? projectWs;
+    try {
+      final pid = await StorageService().projectOfConversation(conversationId);
+      projectWs = (await ProjectStore().projectById(pid ?? Project.kDefaultId))
+          ?.workspacePath;
+    } catch (_) {}
+    final projectSkills = await loadProjectSkills(projectWs);
+    final skillProvider = userSkills.isEmpty && projectSkills.isEmpty
         ? SkillProvider()
-        : SkillProvider(skills: [...loadBuiltinSkills(), ...userSkills]);
+        : SkillProvider(skills: [
+            ...loadBuiltinSkills(),
+            ...userSkills,
+            ...projectSkills,
+          ]);
     // P1-D 技能目录冻结：同一会话沿用首次生成的目录文本（系统提示逐字节
     // 稳定，prompt cache/KV 前缀不因增删技能破掉）；load_skill 注册表用
     // 实时技能集，新增技能本会话内仍可按名拉取，只是目录不刷新。
