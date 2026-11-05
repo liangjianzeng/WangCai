@@ -222,6 +222,16 @@ class WangCaiPaths {
           '${Platform.pathSeparator}openvino${Platform.pathSeparator}libs';
       if (Directory(cand).existsSync()) return [cand];
     }
+    // 开发机回落（2026-11-05 实案：build/Release 直跑时仓库无 vendored ov 副本 →
+    // ovlibs 空 → llama-server 起不来 = 用户报"minicpm/lfm3 加载不动"）。
+    // 与 build-installer.ps1 的 $ovSrc 解析链对齐：本机 E:\dev-tools 解压布局
+    // （注意双层 openvino 目录）。装机/便携包形态走不到这里（引擎目录自带 ovlibs）。
+    for (final cand in [
+      r'E:\dev-tools\ov\openvino\openvino\libs',
+      r'C:\dev-tools\ov\openvino\openvino\libs',
+    ]) {
+      if (Directory(cand).existsSync()) return [cand];
+    }
     return const [];
   }
 }

@@ -45,7 +45,7 @@ const String wangcaiNpuManifestJson = '''
      "message": "4B 在 NPU -c>512 执行期 OUT_OF_HOST_MEMORY（status.md 缺陷5）",
      "suggestion": "ctx≤512，或改用 CUDA/Vulkan 引擎"}
   ],
-  "timingHints": {"coldCompileMs": 36000, "warmMs": 9000},
+  "timingHints": {"coldCompileMs": 600000, "warmMs": 15000},
   "hardFlagsHint": "-fa 1 -np 1 -dev OPENVINO3 --jinja（server 无 -st，M0-3 实测）"
 }
 ''';
