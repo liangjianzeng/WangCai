@@ -155,6 +155,24 @@ class BindingsStore {
     await put(b);
   }
 
+  /// 失败回退（世代自适应，2026-11-05）：驱动在 [failedCtx] 报
+  /// OUT_OF_HOST_MEMORY（NPU 驱动 per-process 预算，非系统内存，HANDOFF
+  /// 2026-11-02 深夜定案）→ 收回被证伪的实测上抬：`maxStableCtx ≥
+  /// failedCtx` 说明上抬值不再可信，直接弃回 null（clamp 回落到 preset
+  /// 出厂先验）；实测值低于失败值时不动（失败不证伪更低的已验证档位）。
+  Future<void> demoteCtx({
+    required String engineId,
+    required String modelId,
+    required int failedCtx,
+  }) async {
+    final b = await get(engineId, modelId);
+    if (b == null || b.maxStableCtx == null || b.maxStableCtx! < failedCtx) {
+      return;
+    }
+    b.maxStableCtx = null;
+    await put(b);
+  }
+
   Future<void> setStatus(String engineId, String modelId, String status,
       {bool? qualityPass}) async {
     final b = await get(engineId, modelId);

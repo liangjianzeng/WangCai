@@ -61,23 +61,48 @@ class EngineCapabilities {
 }
 
 /// 准入规则（设计 §4.1 admission）：违规在 UI 前置拦截并给改道建议，不等崩。
-/// 数据驱动：条件全部满足才触发。
+/// 数据驱动：条件全部满足才触发。世代自适应（2026-11-05）：可选
+/// [appliesGenerations]（NpuGeneration.name 集合）把规则限定到某些 NPU
+/// 世代；null = 全世代适用（保守默认 —— 一台机器实测到的驱动预算，
+/// 未验证世代同样先按它拦）。
 class AdmissionRule {
   const AdmissionRule({
     this.ifCtxGt,
     this.ifParamsBAtLeast,
+    this.appliesGenerations,
     required this.message,
     required this.suggestion,
   });
 
   final int? ifCtxGt;
   final double? ifParamsBAtLeast;
+
+  /// 适用世代（'ultra1'/'ultra2'/'ultra3'/'unknown'）；null = 全部。
+  final List<String>? appliesGenerations;
   final String message;
   final String suggestion;
 
-  bool triggers({required int? ctx, required double? paramsB}) {
+  bool triggers({
+    required int? ctx,
+    required double? paramsB,
+    String? generation,
+    int? measuredCtx,
+  }) {
     if (ifCtxGt != null && (ctx == null || ctx <= ifCtxGt!)) return false;
     if (ifParamsBAtLeast != null && (paramsB == null || paramsB < ifParamsBAtLeast!)) {
+      return false;
+    }
+    // generation=null（非 NPU 引擎/未探测）→ 不做世代过滤，规则照常生效；
+    // 已知世代不在适用名单 → 本条豁免。
+    if (generation != null &&
+        appliesGenerations != null &&
+        !appliesGenerations!.contains(generation)) {
+      return false;
+    }
+    // 实测豁免（保守起步+实测上探的另一半）：**ctx 门槛类**规则是某台机器
+    // 的先验预算，同 (引擎×模型) 绑定在该 ctx 已成功跑过 = 该先验被本机实测
+    // 证伪 → 让位。非 ctx 门槛（纯参数量禁令等）与实测档位无关，不让位。
+    if (ifCtxGt != null && measuredCtx != null && ctx != null && ctx <= measuredCtx) {
       return false;
     }
     return ifCtxGt != null || ifParamsBAtLeast != null;
@@ -86,6 +111,7 @@ class AdmissionRule {
   factory AdmissionRule.fromJson(Map<String, dynamic> j) => AdmissionRule(
         ifCtxGt: (j['ifCtxGt'] as num?)?.toInt(),
         ifParamsBAtLeast: (j['ifParamsBAtLeast'] as num?)?.toDouble(),
+        appliesGenerations: (j['appliesGenerations'] as List?)?.cast<String>(),
         message: j['message'] as String? ?? '',
         suggestion: j['suggestion'] as String? ?? '',
       );
@@ -205,10 +231,24 @@ class EngineManifest {
   }
 
   /// 返回违规说明列表（空 = 放行）。UI 据此弹改道建议（设计 §4.1）。
-  List<String> checkAdmission({required int? ctx, required double? paramsB}) {
+  /// [generation] = NpuGeneration.name（NPU 引擎的探测世代）；null = 不做
+  /// 世代过滤（非 NPU 引擎/未探测，规则全量生效）。
+  /// [measuredCtx] = 同 (引擎×模型) 绑定的实测稳定 ctx（ctx 门槛类规则的
+  /// 豁免依据，见 AdmissionRule.triggers）。
+  List<String> checkAdmission({
+    required int? ctx,
+    required double? paramsB,
+    String? generation,
+    int? measuredCtx,
+  }) {
     return [
       for (final r in admission)
-        if (r.triggers(ctx: ctx, paramsB: paramsB)) '${r.message}（建议：${r.suggestion}）',
+        if (r.triggers(
+            ctx: ctx,
+            paramsB: paramsB,
+            generation: generation,
+            measuredCtx: measuredCtx))
+          '${r.message}（建议：${r.suggestion}）',
     ];
   }
 }

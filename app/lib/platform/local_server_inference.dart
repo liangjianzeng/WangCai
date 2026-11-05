@@ -18,6 +18,7 @@ import '../engine/engine_registry.dart';
 import '../engine/engine_status.dart' show EngineLogLine;
 import '../engine/engine_store.dart';
 import '../engine/llama_server_host.dart';
+import '../engine/npu_profiles.dart';
 import '../engine/process_ledger.dart';
 import '../engine/routing_policy.dart';
 import 'inference_backend.dart';
@@ -268,6 +269,15 @@ class LocalServerInference implements InferenceBackend {
     }
   }
 
+  /// 该实例的探测世代（同步读探测缓存，**不**起子进程）：_route 是快决策
+  /// 路径，权威探测在 loadModel（await host.probeNpu()）。未探测过 = null
+  /// → 规则/上限走保守全量语义。
+  NpuGeneration? _genOf(EngineRegistry reg, EngineManifest m, String instId) {
+    if (!_npuGated(m)) return null;
+    final h = reg.hostOf(instId);
+    return h is LlamaServerHost ? h.lastNpuInfo?.generation : null;
+  }
+
   /// 路由决策（§7.3）：候选=已启用本地实例；binary 缺失=未装不作候选；
   /// admission 违例=blocked（带建议改道，不去拉必崩的 server）。
   /// [engineId] 非空 = 模型级引擎钉选（LocalModelConfig.engineId）：命中即
@@ -291,10 +301,23 @@ class LocalServerInference implements InferenceBackend {
           File(bin).existsSync();
       if (hit) {
         final p = _matchPreset(m, path);
+        final gen = _genOf(reg, m, engineId);
+        final measured = (await _bindingsFor(_basename(path)))
+            .where((b) => b.engineId == engineId)
+            .firstOrNull
+            ?.maxStableCtx;
         final requested = nCtx ?? inst.defaultConfig?.ctx ?? (p?.ctx ?? 1024);
-        final ceil = p?.ctx;
+        final ceil = _ctxCeilingFor(
+            presetCeiling: p?.ctx,
+            generation: gen,
+            presetName: p?.name,
+            measured: measured);
         final tentative = (ceil != null && requested > ceil) ? ceil : requested;
-        final v = m.checkAdmission(ctx: tentative, paramsB: p?.paramsB);
+        final v = m.checkAdmission(
+            ctx: tentative,
+            paramsB: p?.paramsB,
+            generation: gen?.name,
+            measuredCtx: measured);
         if (v.isNotEmpty) {
           return RoutingDecision.none('指定引擎拒绝（$engineId）：${v.join('；')}',
               '改用 Auto 路由，或调小上下文后重试');
@@ -320,11 +343,24 @@ class LocalServerInference implements InferenceBackend {
         installed: installed,
       ));
       final p = _matchPreset(m, path);
+      final gen = _genOf(reg, m, inst.id);
+      final measured = bindingsForModel
+          .where((b) => b.engineId == inst.id)
+          .firstOrNull
+          ?.maxStableCtx;
       final requested =
           nCtx ?? inst.defaultConfig?.ctx ?? (p?.ctx ?? 1024);
-      final ceil = p?.ctx;
+      final ceil = _ctxCeilingFor(
+          presetCeiling: p?.ctx,
+          generation: gen,
+          presetName: p?.name,
+          measured: measured);
       final tentative = (ceil != null && requested > ceil) ? ceil : requested;
-      final v = m.checkAdmission(ctx: tentative, paramsB: p?.paramsB);
+      final v = m.checkAdmission(
+          ctx: tentative,
+          paramsB: p?.paramsB,
+          generation: gen?.name,
+          measuredCtx: measured);
       if (v.isNotEmpty) blocked[inst.id] = v.join('；');
     }
     return chooseEngine(RoutingRequest(
@@ -348,6 +384,11 @@ class LocalServerInference implements InferenceBackend {
   @visibleForTesting
   EngineStore Function(EnginePaths paths, Directory? enginesDir)?
       engineStoreForTest;
+
+  /// @visibleForTesting：NPU 驱动版本探测注入（默认走 EngineStore 的 CIM
+  /// 查询——测试环境绝不起真 powershell）。
+  @visibleForTesting
+  Future<String?> Function()? npuDriverForTest;
 
   /// 下载并装配官方 llama.cpp 引擎：whitelist 版本 → EngineStore.install
   /// （镜像兜底 + sha256）→ 实例 binaryPath 落位 + enabled=true → engines.json。
@@ -420,6 +461,29 @@ class LocalServerInference implements InferenceBackend {
     }());
   }
 
+  /// NPU 预算门（世代自适应 2026-11-05）：只有 capabilities 声明 NPU 的
+  /// manifest 参与世代识别/实测上抬；cuda/vulkan 保持 preset.ctx 硬上限
+  /// 的旧语义（它们的预算在显存，另一套故事）。
+  bool _npuGated(EngineManifest m) =>
+      m.capabilities.devices.any((d) => d.toUpperCase().contains('NPU'));
+
+  /// ctx 上限（保守起步 + 实测上探，2026-11-05 定案）：
+  /// 先验 = 世代档案覆盖位 ?? preset.ctx（一代出厂实测）；实测
+  /// [measured]（该机成功跑过的 maxStableCtx）只**抬高**先验。
+  /// 先验为 null（NPU 无 preset 命中）时不做上抬 —— 不设上限 = 今天的
+  /// 行为，用户显式大 ctx 仍可入场，跑成后由 recordRun 落袋。
+  int? _ctxCeilingFor({
+    required int? presetCeiling,
+    required NpuGeneration? generation,
+    required String? presetName,
+    int? measured,
+  }) {
+    final prior =
+        profileFor(generation).ctxOverrideFor(presetName) ?? presetCeiling;
+    if (generation == null || prior == null) return prior;
+    return (measured != null && measured > prior) ? measured : prior;
+  }
+
   Preset? _matchPreset(EngineManifest manifest, String modelPath) {
     final base = _basename(modelPath);
     for (final p in manifest.presets) {
@@ -474,15 +538,31 @@ class LocalServerInference implements InferenceBackend {
       // manifest preset（出厂档）。null / 未配置 = 让位下一档。
       final preset = _matchPreset(manifest, path);
       final dc = reg.instance(instId)?.defaultConfig;
-      // ctx 收敛纪律（对两档显式值都生效）：preset.ctx 是**实测安全上限**
-      // （status.md 缺陷5：4B@c>512 OUT_OF_HOST_MEMORY）。显式值可抬高、
-      // 但顶不过实测上限——顶穿=admission 硬拒或执行期崩，宁可收敛留痕。
+      // ── 世代自适应（2026-11-05）：NPU 线的预算先验 = 一代出厂实测（preset），
+      // 世代档案可覆盖（数据位）、该机实测 maxStableCtx 可上抬；cuda/vulkan
+      // 不经此处逻辑（generation=null → 与旧行为逐位一致）。probeNpu 共享
+      // 进程级缓存，首载付一次子进程成本，后续命中缓存零开销。
+      final gate = _npuGated(manifest);
+      final npuInfo = gate ? await host.probeNpu() ?? host.lastNpuInfo : null;
+      final npuGen = gate ? npuInfo?.generation : null;
+      final bs = await _ensureBindings();
+      final measured = (await bs?.get(instId, _basename(path)))?.maxStableCtx;
+      // ctx 收敛纪律（对两档显式值都生效）：上限先验是 preset.ctx **实测安全
+      // 上限**（status.md 缺陷5：4B@c>512 OUT_OF_HOST_MEMORY）。显式值可抬高、
+      // 但顶不过上限——顶穿=admission 硬拒或执行期崩，宁可收敛留痕；例外只
+      // 有该机**跑成功过**的实测档位（maxStableCtx 上抬，见 _ctxCeilingFor）。
       final requestedCtx = nCtx ?? dc?.ctx ?? (preset?.ctx ?? 1024);
-      final ctxCeiling = preset?.ctx;
+      final ctxCeiling = _ctxCeilingFor(
+          presetCeiling: preset?.ctx,
+          generation: npuGen,
+          presetName: preset?.name,
+          measured: measured);
       final ctx =
           (ctxCeiling != null && requestedCtx > ctxCeiling) ? ctxCeiling : requestedCtx;
       if (ctx != requestedCtx) {
-        _log('ℹ️ ctx $requestedCtx → 收敛到预设上限 $ctx（${preset!.name} 实测上限；'
+        final learned = measured != null && ctxCeiling == measured;
+        _log('ℹ️ ctx $requestedCtx → 收敛到上限 $ctx（${learned ? '该机实测档位' : '${preset!.name} 实测先验'}'
+            '${npuGen != null ? ' · ${npuGen.label}' : ''}；'
             '更大上下文请改用 CUDA/Vulkan 引擎）');
       }
       // 自定义尾参：模型级 customArgs 整档赢过引擎 defaultConfig.args（计划
@@ -525,7 +605,11 @@ class LocalServerInference implements InferenceBackend {
         },
         extraArgs: tailArgs,
       );
-      final violations = manifest.checkAdmission(ctx: cfg.ctx, paramsB: cfg.paramsB);
+      final violations = manifest.checkAdmission(
+          ctx: cfg.ctx,
+          paramsB: cfg.paramsB,
+          generation: npuGen?.name,
+          measuredCtx: measured);
       if (violations.isNotEmpty) {
         for (final v in violations) {
           _log('⛔ $v');
@@ -548,6 +632,20 @@ class LocalServerInference implements InferenceBackend {
       if (!ok) {
         _loaded = false;
         _log('❌ 引擎未就绪: ${host.status.error ?? host.status.phase.name}');
+        // 世代自适应·失败回退：驱动侧 OUT_OF_HOST_MEMORY（per-process 预算，
+        // 非系统内存）证伪了实测上抬 → 收回 maxStableCtx，下次加载回落出厂
+        // 先验。真·首次加载就 OOM 时无实测可回退，demoteCtx 自然空转。
+        final errText = (host.status.error ?? '').toUpperCase();
+        if (gate && errText.contains('OUT_OF_HOST_MEMORY')) {
+          try {
+            await bs?.demoteCtx(
+                engineId: instId,
+                modelId: _basename(path),
+                failedCtx: cfg.ctx ?? 0);
+          } catch (_) {}
+          _log('⚠️ 驱动报 OUT_OF_HOST_MEMORY（ctx=${cfg.ctx}）：已收回该机实测 '
+              'ctx 上抬，下次加载按出厂先验 ${preset?.ctx ?? '（无上限）'} 起步');
+        }
         unawaited(host.stop());
         return false;
       }
@@ -555,6 +653,21 @@ class LocalServerInference implements InferenceBackend {
       _loaded = true;
       lastInstallSuggestion = null; // 加载成功即销掉下载建议
       reg.instance(instId)!.lastConfig = cfg;
+      if (gate && npuInfo != null) {
+        // 探测摘要随成功加载落 engines.json（诊断/引擎管理页）；驱动版本
+        // best-effort 追补（CIM 查询最坏数秒，不阻塞加载，补完再存一次）。
+        final inst = reg.instance(instId)!;
+        inst.lastNpuInfo = npuInfo.toSummary();
+        unawaited(() async {
+          try {
+            final dv = npuDriverForTest != null
+                ? await npuDriverForTest!()
+                : await EngineStore(reg.paths).npuDriverVersion();
+            if (dv != null) inst.lastNpuInfo = {...npuInfo.toSummary(), 'driver': dv};
+            await reg.save();
+          } catch (_) {}
+        }());
+      }
       unawaited(reg.save().catchError((Object _) {}));
       _log('✅ 引擎就绪: ${host.baseUrl}');
       _touchIdle(); // §7.3 空闲卸载计时启动
@@ -651,6 +764,11 @@ class LocalServerInference implements InferenceBackend {
     _registry = reg;
     _pathsOverride = paths;
     _swept = true;
+    // 绑定表缓存随 paths 走：用例间 tmp 数据目录不同，旧表必须弃用
+    // （close 尽力而为——文件可能已随 tmp 清理）。
+    final b = _bindings;
+    _bindings = null;
+    if (b != null) unawaited(b.close().catchError((Object _) {}));
   }
 
   /// 测试注入空闲卸载时长（非 null 时优先于 routing.json）。
