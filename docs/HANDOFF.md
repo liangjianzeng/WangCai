@@ -1153,3 +1153,14 @@ token 数 129–512 的 prefill 自动升 chunk256 图（该区间 chunk128 需 
   修复：改用 `getenv_str` 判 nullptr 区分"未设置"与"显式 0"。**教训：任何 default 翻转，
   必须用"env 完全不设"的探针验一遍，A/B 的 ON 臂是显式 =1，验不出翻转失效。**
   （受影响范围：6077ff8 起所有"默认开"路径；打包 zip 里的引擎同样是 OFF 的，需要重打包）
+
+### P19：chunk 尺寸轴收档——设备 scratch 崖实测（2026-11-05 深夜）
+pp512 轴（191.6，目标 203.4，差 6%）的最后候选：加大 chunk 摊薄 launch-bound Add 族
+（同 Add 数 × 2 token）。launch-bound 算术估 ck512 可到 206-240 t/s，探针两格：
+- **ck512**：图编译成功（blob 7.2GB，translator 侧无障碍），**infer warmup 即败**
+  （`ggml_backend_sched_graph_compute_async failed -1`）
+- **ck384**：同签名失败（blob 7.1GB 编译成功）→ **崖在 256-384 之间**
+- 结论：chunk256 就是 4B prefill 图的设备 scratch 物理上限（256 可跑，384/512 编译过但设备
+  实例化/执行超预算）。chunk 维度对 pp 轴的贡献已到头；pp2048ck128 与 pp512ck256 的剩余缺口
+  维持 NPUW 内部调度域定案。**4B prefill translator 级杠杆至此全部实测关闭**：
+  P15（MoE 无对象）/ P16（rope 被吸收）/ P17（DQ 族 decode 专属）/ P19（chunk 崖 256）。
