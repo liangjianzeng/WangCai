@@ -143,6 +143,29 @@ void main() {
     expect(inst.lastNpuInfo?['driver'], '32.0.100.3800');
   });
 
+  test('驱动版本会话级缓存：两次成功加载只付一次 CIM（复查 2026-11-06）',
+      () async {
+    var queries = 0;
+    inf.npuDriverForTest = () async {
+      queries++;
+      return '32.0.100.3800';
+    };
+    probeRunnerForTest = (_, __) async => enum3720;
+    expect(await load('Qwen3-4B-dv1.gguf', nCtx: 4096), isTrue);
+    // 追补是 unawaited：等 driver 落 lastNpuInfo（网关侧先写记忆再写摘要，
+    // 摘要落位 = 记忆已就位）再二载，避免竞态假绿。
+    for (var i = 0;
+        i < 20 &&
+            reg.instance('wangcai-npu')!.lastNpuInfo?['driver'] == null;
+        i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+    expect(await load('Qwen3-4B-dv2.gguf', nCtx: 4096), isTrue);
+    expect(queries, 1, reason: '同一会话第二载必须命中驱动记忆，不再起 CIM 查询');
+    expect(reg.instance('wangcai-npu')!.lastNpuInfo?['driver'],
+        '32.0.100.3800');
+  });
+
   test('保守起步·二代 3820：无实测不赌，仍按一代先验 512', () async {
     probeRunnerForTest = (_, __) async => enum3820;
     expect(await load('Qwen3-4B-gen2.gguf', nCtx: 4096), isTrue);

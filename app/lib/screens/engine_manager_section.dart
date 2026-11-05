@@ -607,6 +607,17 @@ class _NpuInfoLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final h = host; // 局部提升：public final 字段不做类型促升
+    // 复查 2026-11-06：只在实例最近配置**指向 NPU** 时展示 —— lastNpuInfo
+    // 没有清除时点，切 CPU/GPU 加载后旧行会误导排障（NPU 意图 = 显式 'NPU'
+    // 或直写 'OPENVINO3'；'OPENVINO0/1/2' 与 CPU/GPU 一律算非 NPU 指向）。
+    final dev = inst.lastConfig?.device?.toUpperCase();
+    final nonNpu = dev == 'CPU' ||
+        dev == 'GPU' ||
+        (dev?.startsWith('GPU.') ?? false) ||
+        dev == 'OPENVINO0' ||
+        dev == 'OPENVINO1' ||
+        dev == 'OPENVINO2';
+    if (nonNpu) return const SizedBox.shrink();
     final summary = inst.lastNpuInfo ??
         (h is LlamaServerHost ? h.lastNpuInfo?.toSummary() : null);
     if (summary == null) return const SizedBox.shrink();

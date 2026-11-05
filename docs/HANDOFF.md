@@ -177,6 +177,22 @@ best-effort，失败静默 null，成功加载后随 `lastNpuInfo` 摘要落 eng
 按需给规则标 `appliesGenerations`，并补 `minDriverVersion`（现在故意留空——编造版本线会
 误导用户升错驱动）；三代（Panther Lake）枚举名形态仍未实机核证，识别不出就走 unknown。
 
+## 2026-11-06：世代自适应复查三修——驱动查询会话缓存 / NPU 行按指向 gate /「实测上探」口径收真
+
+自查揪出三处，一刀修讫（行为红线不动：3720 仍逐位同 v0.0.5）：
+1. **驱动版本 CIM 查询无缓存**：原先每次成功加载都 spawn powershell 全枚举
+   （数秒级 CPU）。改会话级 memo（查而未得不缓存，下次重试；engines.json 已带
+   driver 直接沿用），网关级用例锁「两次加载只付一次」。
+2. **引擎卡 NPU 行不看设备指向**：`lastNpuInfo` 没有清除时点，切 CPU/GPU 加载后
+   旧行误导排障。`_NpuInfoLine` 按实例最近配置 gate（非 NPU 指向一律隐藏）。
+3. **「实测上探自动放开」表述超前（非 bug，口径收真）**：preset 命中模型上
+   clamp 先压 requested ≤ prior → recordRun 只会记 ≤ prior → `measured > prior`
+   今天不可达——上抬分支/实测豁免/demote 收回对 preset 档都是「管子在、水未通」
+   （单测 seed 验证的是管路）。活化入口 = preset 上调 / 档案 ctxOverrides 填行 /
+   无 preset 模型。已在 docs/npu-adaptation.md §3 落「重要口径」段。
+   **教训：闭环设计的每条腿都要追问「今天谁喂它数据」——测试 seed 通过 ≠
+   生产路径可达。**
+
 ## 2026-11-03：P8 结案——llama-completion fastfail 与 NPU 无关（jinja 模板 unsupported 未捕获异常）；"raw 流独立缺陷"证伪
 
 `llama-completion`（raw）4B 必崩 0xC0000409（1.7B 不崩、chunk/ctx 无关、REQUANT 无关、ASAN 构建同样崩且

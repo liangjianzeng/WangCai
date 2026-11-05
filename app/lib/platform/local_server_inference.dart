@@ -390,6 +390,11 @@ class LocalServerInference implements InferenceBackend {
   @visibleForTesting
   Future<String?> Function()? npuDriverForTest;
 
+  /// NPU 驱动版本会话级缓存（复查 2026-11-06）：CIM 全枚举数秒级开销，
+  /// 驱动不会在会话中途变，一个会话查一次就够。null = 未查或查而未得
+  /// （查而未得不缓存，下次成功加载重试，best-effort 语义不变）。
+  String? _npuDriverMemo;
+
   /// 下载并装配官方 llama.cpp 引擎：whitelist 版本 → EngineStore.install
   /// （镜像兜底 + sha256）→ 实例 binaryPath 落位 + enabled=true → engines.json。
   /// 返回 null = 成功；非 null = 错误文案（UI 弹层直接展示）。
@@ -657,16 +662,27 @@ class LocalServerInference implements InferenceBackend {
         // 探测摘要随成功加载落 engines.json（诊断/引擎管理页）；驱动版本
         // best-effort 追补（CIM 查询最坏数秒，不阻塞加载，补完再存一次）。
         final inst = reg.instance(instId)!;
-        inst.lastNpuInfo = npuInfo.toSummary();
-        unawaited(() async {
-          try {
-            final dv = npuDriverForTest != null
-                ? await npuDriverForTest!()
-                : await EngineStore(reg.paths).npuDriverVersion();
-            if (dv != null) inst.lastNpuInfo = {...npuInfo.toSummary(), 'driver': dv};
-            await reg.save();
-          } catch (_) {}
-        }());
+        final summary = npuInfo.toSummary();
+        // 复查 2026-11-06：驱动一个会话内不会变 —— 会话记忆或 engines.json
+        // 已带 driver 就直接沿用，不再每次成功加载都付一遍 CIM 全枚举。
+        final known =
+            _npuDriverMemo ?? (inst.lastNpuInfo?['driver'] as String?);
+        if (known != null) summary['driver'] = known;
+        inst.lastNpuInfo = summary;
+        if (known == null) {
+          unawaited(() async {
+            try {
+              final dv = npuDriverForTest != null
+                  ? await npuDriverForTest!()
+                  : await EngineStore(reg.paths).npuDriverVersion();
+              if (dv != null) {
+                _npuDriverMemo = dv;
+                inst.lastNpuInfo = {...npuInfo.toSummary(), 'driver': dv};
+              }
+              await reg.save();
+            } catch (_) {}
+          }());
+        }
       }
       unawaited(reg.save().catchError((Object _) {}));
       _log('✅ 引擎就绪: ${host.baseUrl}');
@@ -769,6 +785,7 @@ class LocalServerInference implements InferenceBackend {
     final b = _bindings;
     _bindings = null;
     if (b != null) unawaited(b.close().catchError((Object _) {}));
+    _npuDriverMemo = null; // 驱动记忆同理随 registry 换代（用例隔离）。
   }
 
   /// 测试注入空闲卸载时长（非 null 时优先于 routing.json）。

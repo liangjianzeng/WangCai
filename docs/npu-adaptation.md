@@ -55,12 +55,24 @@ measured（BindingsStore.maxStableCtx，该机此模型跑成功过的最大档�
   >  manifest preset.ctx（出厂先验 = 一代实测）
 ```
 
+**重要口径（2026-11-06 复查，勿高估今天的自动化程度）**：preset 命中的模型上，
+clamp 先把请求 ctx 压到 ≤ prior，`recordRun` 因此只会记下 ≤ prior 的值 ——
+`measured > prior` **今天到不了**：`_ctxCeilingFor` 的上抬分支、admission 的实测
+豁免、`demoteCtx` 的收回分支对 preset 档都是「管子在、水未通」（单测的 seed
+验证的是管路本身）。实测真正活化的入口：① manifest preset 上调（出厂重新实测
+后放宽先验）；② 世代档案 `ctxOverrides` 填行；③ 无 preset 命中的模型
+（prior=null 不 clamp，用户显式 ctx 可入场，跑成后落袋）。`demoteCtx` 在 preset
+档目前只清绑定行、不改 clamp 行为，完整意义随 ①② 兑现。这是「保守起步」的
+自然结果：宁可保守到机械化，也不在无实测的机器上放行未验证档位。
+
 - **上探**：每次成功推理 `recordRun` 单调回写 `maxStableCtx`（bindings_store.dart），
   下次加载同模型直接放行到该档。admission 的 ctx 门槛规则被实测**豁免**
   （`AdmissionRule.triggers` 的 `measuredCtx`：只有 ctx 门槛类规则让位，
   纯参数量规则——如 OOM 与参数量的硬关系——永不让位）。
 - **回退**：加载失败且驱动报 `OUT_OF_HOST_MEMORY` → `demoteCtx(failedCtx)` 收回
   被证伪的上抬（失败值 ≥ 实测值才收；**失败不证伪更低档**）。
+- **驱动版本只查一次**（2026-11-06 复查）：CIM 全枚举数秒级开销，会话级记忆
+  + engines.json 已带 driver 直接沿用；查而未得不缓存，下次成功加载重试。
 - **MiB 只是诊断**：`totalMib/freeMib` 进 UI 与 engines.json，但**绝不参与预算**
   ——NPU 的 OUT_OF_HOST_MEMORY 是驱动 per-process 预算而非系统内存
   （[HANDOFF.md](HANDOFF.md) 2026-11-02 深夜定案），拿它当依据会得出系统性错误结论。
