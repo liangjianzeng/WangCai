@@ -19,7 +19,8 @@ void main() {
       expect(s.agentTokensPerRound, 1024);
       expect(s.agentToolTimeoutMs, 15000);
       expect(s.agentAllowParallelTools, isFalse);
-      expect(s.webSearchEnabled, isFalse);
+      // 2026-11-06：联网搜索默认开启（用户要求智能体联网搜索默认打开）。
+      expect(s.webSearchEnabled, isTrue);
       expect(s.agentShellEnabled, isTrue);
       expect(s.agentPythonEnabled, isTrue);
       expect(s.agentFullFileAccess, isFalse);

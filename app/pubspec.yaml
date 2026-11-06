@@ -59,6 +59,8 @@ dependencies:
   # ── Windows 桌面专属（设计 §3）─────────────────────────────────────────────
   window_manager: ^0.4.0
   tray_manager: ^0.2.0
+  # 紧凑窄长窗（消息 APP 形态）：取屏幕尺寸算紧凑窗高度（window_manager 无 getScreen）
+  screen_retriever: ^0.2.2
 
 
 dependency_overrides:
@@ -87,9 +89,11 @@ flutter:
   assets:
     - assets/models_catalog.json
     - assets/tray_icon.ico
-    # 汪柴品牌 Logo（2026-11-06）：空会话占位与关于卡用，唯一出处
-    # widgets/wangcai_logo.dart（源图 repo assets/wangchai_blue_id_square_295.png）。
+    # 汪柴品牌 Logo（2026-11-06）：唯一出处 widgets/wangcai_logo.dart。
+    # 方版（蓝底）= 侧栏/关于卡；抠图（透明底）= 消息界面空会话占位。
+    # 源图 repo assets/ 存档（wangchai_blue_id_square_295 / wangchai_cutout_transparent）。
     - assets/wangchai_logo.png
+    - assets/wangchai_logo_cutout.png
     # M3 唤醒：ARMED 提示音 + 托盘状态三色（tool/gen_voice_assets.dart 生成）
     - assets/wake_cue.wav
     - assets/tray/voice_armed.ico

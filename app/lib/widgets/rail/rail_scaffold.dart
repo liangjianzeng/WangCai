@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../wangcai_logo.dart';
+
 /// 左栏 harness（2026-10-24 UI 改造，设计稿见会话存档）：
 ///
 /// - [AppRail]：56dp 能力图标栏（Logo + 主图标组 + 底部组）。插件可经
@@ -149,29 +151,12 @@ class _RailLogo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 设计稿 logo：紫→蓝对角渐变（纯色太闷）。
-    final logo = Material(
-      color: Colors.transparent,
-      borderRadius: BorderRadius.circular(10),
-      child: Ink(
-        decoration: const BoxDecoration(
-          borderRadius: BorderRadius.all(Radius.circular(10)),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [Color(0xFF7C5CFC), Color(0xFF5B8DEF)],
-          ),
-        ),
-        child: InkWell(
-          borderRadius: const BorderRadius.all(Radius.circular(10)),
-          onTap: onTap,
-          child: const SizedBox(
-            width: 30,
-            height: 30,
-            child: Icon(Icons.auto_awesome, size: 16, color: Colors.white),
-          ),
-        ),
-      ),
+    // 2026-11-06 用户定案：左栏 logo 同走汪柴品牌 Logo（唯一出处
+    // WangCaiLogo），旧紫渐变磁贴 + auto_awesome 占位一并退役。
+    final logo = InkWell(
+      borderRadius: const BorderRadius.all(Radius.circular(10)),
+      onTap: onTap,
+      child: const WangCaiLogo(size: 30, radius: 10),
     );
     if (tooltip == null) return logo;
     return Tooltip(message: tooltip, child: logo);

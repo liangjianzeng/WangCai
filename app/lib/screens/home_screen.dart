@@ -32,6 +32,8 @@ import '../providers/settings_provider.dart' show settingsProvider;
 import '../services/attachment_service.dart'
     show kMaxAttachments, kSupportedExtensions;
 import '../platform/inference_gateway.dart';
+import '../platform/tray_service.dart';
+import '../platform/window_geometry.dart' show WindowCompact;
 import '../providers/shared_providers.dart';
 import '../providers/context_usage_provider.dart' show contextUsageProvider;
 import '../models/agent_persona.dart' show AgentPersona, kStandardPersonaId;
@@ -170,6 +172,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // 项目头部/面板的连接色要跟着"激活工作区 / SSH 连接状态"实时变。
     DevSessionController.instance.addListener(_onDevChanged);
     SshEnvironmentService.instance.addListener(_onDevChanged);
+    // 2026-11-06：托盘右键「设置」→ 打开「更多」面板（TrayService 静态回调桥接）。
+    TrayService.onOpenSettingsPanel = () => _railPanel.open('more');
   }
 
   // ---- M3 常驻唤醒（说「汪柴」免触发起会话；设置页负责引导与开关）----
@@ -885,7 +889,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // 且收窄到与图标按钮同宽的量级（见 AppRail）。手动 Logo 收起仍可用，
     // 收起后窄窗给汉堡（直达「会话」面板）、宽窗给恢复 Logo。
     final narrowWindow = MediaQuery.sizeOf(context).width < 700;
-    final railVisible = !_railCollapsed;
+    // 2026-11-06 消息 APP 形态：紧凑窗口模式 → 左栏恒收起（纯单列聊天）；
+    // 非紧凑时仍跟随手动 _railCollapsed（Logo 收起 / 恢复）。
+    final railVisible =
+        !(_railCollapsed || ref.watch(settingsProvider).compactWindow);
 
     // harness 布局：左栏（能力/配置入口）+ 主区（AppBar + 消息 + composer）。
     // 面板从左滑入、只盖主区（含 AppBar），rail 恒可见。
@@ -984,25 +991,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                         // Center + 固定尺寸：AppBar leading 默认约束会把
                         // 无对齐的 Container 拉伸变形（2026-10-25 真机截图）。
                         child: Center(
-                          child: Container(
-                            width: 30,
-                            height: 30,
-                            alignment: Alignment.center,
-                            decoration: const BoxDecoration(
-                              borderRadius:
-                                  BorderRadius.all(Radius.circular(10)),
-                              gradient: LinearGradient(
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                                colors: [
-                                  Color(0xFF7C5CFC),
-                                  Color(0xFF5B8DEF)
-                                ],
-                              ),
-                            ),
-                            child: const Icon(Icons.auto_awesome,
-                                size: 16, color: Colors.white),
-                          ),
+                          // 侧栏收起态的恢复 Logo：同走汪柴品牌 Logo（蓝底方版，
+                          // 与左栏 _RailLogo 一致），旧紫渐变磁贴 + auto_awesome 退役。
+                          child: const WangCaiLogo(size: 30, radius: 10),
                         ),
                       ),
                     )),
@@ -1018,6 +1009,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                       overflow: TextOverflow.ellipsis,
                     ),
               actions: [
+                // 2026-11-06 消息 APP 形态：顶栏一键切换紧凑窄长窗（消息模式）。
+                // 与「更多 → 窗口」开关同源：setCompactWindow + WindowCompact.apply。
+                // 图标随状态翻转：竖长矩形=进入紧凑，横矩形=退出紧凑。
+                IconButton(
+                  icon: Icon(
+                    ref.watch(settingsProvider).compactWindow
+                        ? Icons.crop_landscape
+                        : Icons.crop_portrait,
+                  ),
+                  tooltip: ref.watch(settingsProvider).compactWindow
+                      ? '退出紧凑窗口'
+                      : '紧凑窗口（消息模式）',
+                  onPressed: () async {
+                    final on = !ref.read(settingsProvider).compactWindow;
+                    await ref
+                        .read(settingsProvider.notifier)
+                        .setCompactWindow(on);
+                    await WindowCompact.apply(on);
+                  },
+                ),
                 // v0.0.4.1 DSH ui-trajectory：会话第二个视图开关（对话 ⇄ 轨迹）。
                 if (_currentConversationId != null)
                   IconButton(
@@ -1664,6 +1675,37 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
               ],
             ),
+            // 窗口（2026-11-06 消息 APP 形态）：关闭行为 + 紧凑窄长窗。
+            _railSection('窗口'),
+            _railCard(
+              Column(
+                children: [
+                  _railRow(
+                    title: '关闭时最小化到托盘',
+                    subtitle: '关窗缩到托盘（单击还原）；关 = 关窗直接退出',
+                    trailing: _railSwitch(
+                      ref.watch(settingsProvider).closeToTray,
+                      (on) => ref
+                          .read(settingsProvider.notifier)
+                          .setCloseToTray(on),
+                    ),
+                  ),
+                  _railRow(
+                    title: '紧凑窗口（消息模式）',
+                    subtitle: '窄高窗 + 收起左栏，纯单列聊天',
+                    trailing: _railSwitch(
+                      ref.watch(settingsProvider).compactWindow,
+                      (on) async {
+                        await ref
+                            .read(settingsProvider.notifier)
+                            .setCompactWindow(on);
+                        await WindowCompact.apply(on);
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
             _railSection('快捷设置'),
             // composer 快捷图标带管理（KV 环右侧）：默认全关，
             // 开哪个 composer 就出现哪个图标（agent=直切开关，其余=开面板）。
@@ -2249,10 +2291,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const WangCaiLogo(size: 64, radius: 14),
+                // 消息界面空会话占位：透明底抠图（融入背景），尺寸/圆角按现状。
+                const WangCaiLogo(
+                  size: 64,
+                  radius: 14,
+                  variant: WangCaiLogoVariant.cutout,
+                ),
                 const SizedBox(height: 16),
                 Text(
-                  '你好！我是汪柴\n端到端离线的 AI 助手',
+                  '你好！我是汪柴\n可以端到端的AI离线助手，联网功能会更强大',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey.shade600, fontSize: 16),
                 ),

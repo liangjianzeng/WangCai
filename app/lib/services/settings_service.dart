@@ -222,6 +222,15 @@ class InferenceSettings {
   /// 应用外观（2026-10-25）：`system`（跟随系统，默认）/ `light` / `dark`。
   final String themeMode;
 
+  /// 关闭窗口时最小化到托盘（默认开）：true = 关窗隐藏到托盘（进程驻留，
+  /// 托盘单击还原）；false = 关窗直接退出（卸载引擎 + destroy）。
+  /// 消息 APP 形态（2026-11-06 用户定案）。
+  final bool closeToTray;
+
+  /// 紧凑窄长窗模式（默认关）：开启后主窗口切到窄高预设（~400 宽 × 屏幕高
+  /// 85%），左栏自动收起，纯单列聊天——类似消息通信 APP 的沉浸窄窗。
+  final bool compactWindow;
+
   /// 子代理工具（subagent，spawn/fork）注册开关。默认开??
   /// 不变量固定（深度 ??2 / 子代理审批恒 never / 每层独立预算）??
   final bool agentSubagentEnabled;
@@ -312,7 +321,7 @@ class InferenceSettings {
   /// 整份事件流写 `ApplicationSupport/traces/*.jsonl`（回放/评估/排障用）。
   final bool agentTraceExportEnabled;
 
-  /// 联网搜索工具总开关（默认关闭：web_search 默认不注册，需手动开启）??
+  /// 联网搜索工具总开关（默认开启：web_search 默认注册，可手动关闭）??
   final bool webSearchEnabled;
 
   /// 联网搜索 SearXNG 实例地址（用户在「设????API 接入 ??联网搜索」填写）??
@@ -547,6 +556,8 @@ class InferenceSettings {
     this.composerQuickActions = const [],
     this.autoCompactThreshold = 0.8,
     this.themeMode = 'system',
+    this.closeToTray = true,
+    this.compactWindow = false,
     this.agentSubagentEnabled = true,
     this.agentSubagentApiModelId = '',
     this.agentCompressionApiModelId = '',
@@ -571,7 +582,7 @@ class InferenceSettings {
     this.voiceWakeKws = false,
     this.voiceWakeSensitivity = 0.75,
     this.agentTraceExportEnabled = false,
-    this.webSearchEnabled = false,
+    this.webSearchEnabled = true,
     this.webSearchSearXngBaseUrl = kDefaultSearXngBaseUrl,
     this.webSearchSearXngApiKey,
     this.webSearchSearXngMaxResults = 8,
@@ -732,6 +743,8 @@ class InferenceSettings {
     List<String>? composerQuickActions,
     double? autoCompactThreshold,
     String? themeMode,
+    bool? closeToTray,
+    bool? compactWindow,
     bool? agentSubagentEnabled,
     String? agentSubagentApiModelId,
     String? agentCompressionApiModelId,
@@ -851,6 +864,8 @@ class InferenceSettings {
       composerQuickActions: composerQuickActions ?? this.composerQuickActions,
       autoCompactThreshold: autoCompactThreshold ?? this.autoCompactThreshold,
       themeMode: themeMode ?? this.themeMode,
+      closeToTray: closeToTray ?? this.closeToTray,
+      compactWindow: compactWindow ?? this.compactWindow,
       agentSubagentEnabled: agentSubagentEnabled ?? this.agentSubagentEnabled,
       agentSubagentApiModelId:
           agentSubagentApiModelId ?? this.agentSubagentApiModelId,
@@ -975,6 +990,8 @@ class InferenceSettings {
         'composerQuickActions': composerQuickActions,
         'autoCompactThreshold': autoCompactThreshold,
         'themeMode': themeMode,
+        'closeToTray': closeToTray,
+        'compactWindow': compactWindow,
         'agentSubagentEnabled': agentSubagentEnabled,
         'agentSubagentApiModelId': agentSubagentApiModelId,
         'agentCompressionApiModelId': agentCompressionApiModelId,
@@ -1141,6 +1158,8 @@ class InferenceSettings {
         final raw = json['themeMode'];
         return raw is String && known.contains(raw) ? raw : 'system';
       }(),
+      closeToTray: json['closeToTray'] as bool? ?? true,
+      compactWindow: json['compactWindow'] as bool? ?? false,
       agentSubagentEnabled: json['agentSubagentEnabled'] as bool? ?? true,
       agentSubagentApiModelId: json['agentSubagentApiModelId'] as String? ?? '',
       agentCompressionApiModelId:
@@ -1180,7 +1199,7 @@ class InferenceSettings {
           (json['voiceWakeSensitivity'] as num?)?.toDouble() ?? 0.75,
       agentTraceExportEnabled:
           json['agentTraceExportEnabled'] as bool? ?? false,
-      webSearchEnabled: json['webSearchEnabled'] as bool? ?? false,
+      webSearchEnabled: json['webSearchEnabled'] as bool? ?? true,
       // 联网搜索 SearXNG 配置：旧配置缺字段时用默认值（向后兼容）??
       // 空地址 = 未配置，此时联网搜索工具会给??请先在设置里填地址"的诊断??
       webSearchSearXngBaseUrl:

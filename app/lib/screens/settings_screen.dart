@@ -6372,6 +6372,9 @@ class WebSearchSettingsBodyState extends ConsumerState<WebSearchSettingsBody> {
               value: settings.webSearchEnabled,
               onChanged: (v) => _notifier.setWebSearchEnabled(v),
             ),
+            // ---- 端侧直连引擎（SearXNG 地址为空时生效）----
+            // 2026-11-06：与 SearXNG 模块调换位置（用户要求直连在上、SearXNG 在下）。
+            _buildDirectEngineSection(context, notConfigured, settings),
             // ---- SearXNG 实例配置（直连引擎开关打开时优先级更高）----
             const SizedBox(height: 8),
             TextField(
@@ -6493,7 +6496,7 @@ class WebSearchSettingsBodyState extends ConsumerState<WebSearchSettingsBody> {
             if (notConfigured) ...[
               const SizedBox(height: 6),
               Text(
-                '尚未填写地址：联网搜索将使用端侧直连引擎（下方可开关选择）。'
+                '尚未填写地址：联网搜索将使用端侧直连引擎（上方可开关选择）。'
                 '填好地址点「测试连接」可改用 SearXNG 实例。',
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
               ),
@@ -6508,8 +6511,6 @@ class WebSearchSettingsBodyState extends ConsumerState<WebSearchSettingsBody> {
                 ),
               ),
             ],
-            // ---- 端侧直连引擎（SearXNG 地址为空时生效）----
-            _buildDirectEngineSection(context, notConfigured, settings),
           ],
         ),
       ),
@@ -6570,7 +6571,7 @@ class WebSearchSettingsBodyState extends ConsumerState<WebSearchSettingsBody> {
           dense: true,
           title: const Text('端侧直连引擎（优先级最高）', style: TextStyle(fontSize: 14)),
           subtitle: Text(
-            directOn ? '已启用：优先用端侧直连，忽略上方 SearXNG 地址' : '已关闭：使用上方配置的 SearXNG 实例',
+            directOn ? '已启用：优先用端侧直连，忽略下方 SearXNG 地址' : '已关闭：使用下方配置的 SearXNG 实例',
             style: const TextStyle(fontSize: 12),
           ),
           value: directOn,

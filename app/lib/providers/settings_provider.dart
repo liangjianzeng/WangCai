@@ -535,6 +535,19 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
     await _persist();
   }
 
+  /// 关窗最小化到托盘（更多 → 窗口）：true = 关窗隐藏到托盘；false = 关窗直接退出。
+  Future<void> setCloseToTray(bool value) async {
+    state = state.copyWith(closeToTray: value);
+    await _persist();
+  }
+
+  /// 紧凑窄长窗模式（更多 → 窗口）。实际改窗尺寸由调用方触发
+  /// WindowCompact.apply（见 home_screen 开关 handler），此处只持久化标志。
+  Future<void> setCompactWindow(bool value) async {
+    state = state.copyWith(compactWindow: value);
+    await _persist();
+  }
+
   /// 开/关单个快捷图标。
   Future<void> toggleComposerQuickAction(String id, bool on) async {
     final cur = [...state.composerQuickActions];

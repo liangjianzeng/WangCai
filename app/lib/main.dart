@@ -21,6 +21,7 @@ import 'providers/chat_provider.dart' show currentConversationIdProvider;
 import 'providers/settings_provider.dart' show settingsProvider;
 import 'screens/home_screen.dart';
 import 'platform/inference_gateway.dart';
+import 'platform/tray_service.dart';
 import 'platform/wangcai_paths.dart';
 import 'platform/window_geometry.dart';
 import 'services/model_manager.dart';
@@ -157,6 +158,10 @@ class WangCaiApp extends ConsumerWidget {
       'dark' => ThemeMode.dark,
       _ => ThemeMode.system,
     };
+    // 2026-11-06 消息 APP 形态：把「关闭时最小化到托盘」同步进 TrayService
+    // （单例非 Riverpod widget；本 build 已 watch settingsProvider，设置变化即重建，
+    // 此处直接同步即覆盖初始值与后续变化）。
+    TrayService.instance.syncFromSettings(settings);
     return MaterialApp(
       builder: (context, child) {
         final mq = MediaQuery.of(context);

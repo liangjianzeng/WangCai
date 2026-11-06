@@ -25,15 +25,18 @@ Future<void> initInferenceEngine() async {
     databaseFactory = databaseFactoryFfi;
   }
   if (Platform.isWindows) {
-    await LocalServerInference.instance.initialize();
     // M3-a：托盘驻留（关窗=隐藏；main.dart 零 vendored diff —— 分支收敛在此）。
-    // 失败（如测试环境无插件）不阻断主流程。
+    // 2026-11-06 修：托盘先于引擎初始化——原先引擎抛异常（强杀留下的孤儿
+    // llama-server 让启动账本扫描炸即如此）会把整段托盘带走：没图标、没右键
+    // 菜单、且 setPreventClose 没设 → 点关闭直接退进程（用户实测「关窗都死、
+    // 右键毛都没有」）。托盘与引擎互不依赖，失败（如测试环境无插件）均不阻断。
     try {
       await TrayService.instance.init();
       _bindTrayVoice();
     } catch (e) {
       debugPrint('[TrayService] init skipped: $e');
     }
+    await LocalServerInference.instance.initialize();
   } else {
     await InferenceService().initialize();
   }
