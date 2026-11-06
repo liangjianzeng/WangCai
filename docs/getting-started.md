@@ -178,8 +178,9 @@ scatter 里修掉的缺陷。
 1. `--list-devices` 显示出你以为选中的那个设备，并且运行日志里点明了后端。
 2. 对 `GGML_OPENVINO_DUMP_BIN` 转储（dump）出来的结果跑 `tools/top-token.ps1`：如果两个设备的张量完全
    一致，说明其中一方在说谎。它们从来不会一致，NPU 的转储结果也确实不同。
-3. 就当前情况，这个模型在 NPU 上的吞吐*明显更慢*，慢于 OpenVINO-CPU（解码（decode）≈8 t/s，对比
-   ≈22–29 t/s）。如果你的“NPU”运行报出的是 CPU 量级的数字，那它其实跑在 CPU 上。
+3. 就当前情况，这个模型在 NPU 上的吞吐*明显更慢*，慢于 OpenVINO-CPU（多跨度 decode 图组落地后
+   1.7B decode ≈14–15 t/s 且与上下文长度无关，对比 CPU 静态 ≈22–29 t/s；现状数字见
+   [benchmarks.md](benchmarks.md)）。如果你的“NPU”运行报出的是 CPU 量级的数字，那它其实跑在 CPU 上。
 
 ## 后续
 
