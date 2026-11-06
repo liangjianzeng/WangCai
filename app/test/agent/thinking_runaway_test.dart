@@ -70,24 +70,28 @@ const _overflow = LlmFailure(
 
 void main() {
   group('AgentStreamProcessor · 思考失控守卫口径（累计）', () {
-    test('跨块累计：每块闭合后总量仍继续累加', () {
+    // 口径更替（2026-11-06 对齐）：旧「跨块反复横跳累计」契约让位位置门
+    // （dllm-CLOVER-APP-FIX 2026-10-30，真机 830 实锤）——本轮出现过思考后，
+    // 正文中途再冒的 think 碎片一律按字面保留，不再进思考态。守卫的横跳防线
+    // 因此收缩为「闭合后累计不清零」这条底线，由下面两例锁定。
+    test('闭合后累计不清零；正文再冒的 think 块按字面保留（位置门）', () {
       final p = AgentStreamProcessor();
-      // 三段各 300 字的思考：现行「当前块长」口径每块归零 → 永远不触发
-      for (var i = 0; i < 3; i++) {
-        p.add('$_open${_fill(300, '第${i}轮')}$_close');
-      }
+      p.add('$_open${_fill(300, '第0轮')}$_close');
       expect(p.thinking.length, 0, reason: '闭合后当前块应清空');
-      expect(p.totalThinkingChars, greaterThanOrEqualTo(900),
-          reason: '累计口径必须跨块合计');
+      expect(p.totalThinkingChars, greaterThanOrEqualTo(300),
+          reason: '累计口径不得随块闭合归零（闭合后无产出仍可判失控）');
+      p.add('$_open${_fill(4000, '第1轮')}$_close');
+      expect(p.visibleText, contains('第1轮'),
+          reason: '位置门：Clover 系正文碎片再触发按字面保留，吞正文才是实害');
     });
 
-    test('累计超阈值且无产出 → 判失控（现行块长口径会漏）', () {
+    test('长思考闭合后仍无产出 → 判失控（当前块长口径归零后会漏）', () {
       final p = AgentStreamProcessor();
-      for (var i = 0; i < 25; i++) {
-        p.add('$_open${_fill(300, '第${i}轮')}$_close');
-      }
-      expect(p.thinking.length, lessThan(6000), reason: '单块远未超阈值');
-      expect(p.thinkingRunaway(6000), isTrue, reason: '累计 7500 字应判失控');
+      p.add('$_open${_fill(7000)}$_close');
+      p.add('嗯。');
+      expect(p.thinking.length, lessThan(6000), reason: '当前块已闭合清零');
+      expect(p.thinkingRunaway(6000), isTrue,
+          reason: '累计 7000+ 字且无产出：闭合不豁免，应判失控');
     });
 
     test('已产出答案 → 同长度不判失控（不误杀长推理）', () {

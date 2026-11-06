@@ -44,11 +44,17 @@
 | 9 | `lib/providers/settings_provider.dart` `_load`/`_persist` | 共约 8 行：API key 迁安全存储+内存叠加（_load）、落盘前清洗（_persist）；实现全在新增件 `lib/services/api_key_store.dart` | 设计 §6.1，密钥不落 settings JSON 明文 |
 | 10 | vendored 接线总账（M1-c 起） | `lib/main.dart`+`lib/screens/home_screen.dart`（initInferenceEngine 门控初始化）；`lib/providers/shared_providers.dart`（inferenceServiceProvider 类型改 InferenceBackend）；`lib/providers/chat_provider.dart`/`model_provider.dart`/`lib/plugins/local_adapter.dart`/`lib/agent/llm/host_llm.dart`（类型换 InferenceBackend）；`lib/services/inference_service.dart`（implements InferenceBackend）；`lib/services/model_storage_service.dart`（4 处 Platform.isWindows 分支走 WangCaiPaths） | 设计 §2.3 D2/D3：平台分支唯一化到 inference_gateway |
 
-## M0 实测记入的上游债务（非移植回归，上游同跑同挂）
+## M0 实测记入的上游债务 —— 已全部清账（2026-11-06）
 
-- `test/agent/thinking_runaway_test.dart`（2 例）、`test/models/model_catalog_test.dart`、
-  `test/providers/agent_stream_processor_test.dart`（1 例）——上游 TongYi-Lite 同样失败。
-  修复归上游；本仓 M1 收编 `AgentStreamProcessor` 时顺带对齐。
+独立化后「修复归上游」失效，三例由本仓自行对齐 `AgentStreamProcessor` 现契约：
+
+- `test/models/model_catalog_test.dart`：v0.0.5 目录重 pin 时已修（本仓目录演进，非上游问题）。
+- `test/agent/thinking_runaway_test.dart`（2 例）与 `test/providers/agent_stream_processor_test.dart`
+  （1 例）：旧「跨块反复横跳累计 / 孤立 response 隐式 opener」契约让位位置门
+  （dllm-CLOVER-APP-FIX 2026-10-30，真机 830 实锤：正文中途 ` think`/` response`
+  碎片按字面保留，误吞答案比漏防失控伤害大）。测试改为「闭合后累计不清零 + 本轮
+  思考闭合后再冒的 think/response 碎片按字面」并由用例锁死位置门本身。
+  本仓自此**无基线失败**（`flutter test` 全绿为常态口径）。
 
 ## 回流纪律
 

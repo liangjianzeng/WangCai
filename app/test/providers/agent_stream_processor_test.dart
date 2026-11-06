@@ -81,20 +81,28 @@ void main() {
       expect(p.visibleText.contains('think'), isFalse);
     });
 
-    test('孤立 response 闭合记号（无前置 think）→ 隐式 opener，续写丢弃', () {
+    test('孤立 response 闭合记号（无前置 think、开头 16 字内）→ 隐式 opener', () {
+      final p = AgentStreamProcessor();
+      p.add('好的 response');
+      p.add('泄漏的续写');
+      expect(p.visibleText, '好的');
+      expect(p.thinkingActive, isTrue);
+      p.finish(); // EOS：短未闭合块恢复可见（_recoverUnclosedThinkingMaxChars 内）
+      expect(p.visibleText, '好的泄漏的续写');
+    });
+
+    test('已闭合过思考后再冒的 response 记号 → 字面保留不吞（位置门，Clover 2026-10-30）', () {
       final p = AgentStreamProcessor();
       p.add('先思考 think');
       p.add('\n\n推理一');
-      p.add(' response');
+      p.add(' response'); // 正常闭合第一块
       p.add('\n\n回答一');
-      // 模型再输出一个无前置 opener 的 ` response`——提前闭合的思考续写。
-      // 当作隐式 opener 重新进入思考态，续写一并丢弃（不渗进可见回答）。
+      // 位置门：本轮已出现并闭合过思考，正文中途的 ` response` 是 Clover 系
+      // 混合输出碎片（真机 830 实锤吞答案）——按字面保留，不再当隐式 opener。
       p.add(' response');
-      p.add('这段泄漏的续写会一直持续');
-      expect(p.visibleText, '先思考\n\n回答一');
-      expect(p.thinkingActive, isTrue);
-      p.finish(); // EOS：未闭合思考块整体丢弃
-      expect(p.visibleText, '先思考\n\n回答一');
+      p.add('这段续写保持可见');
+      expect(p.visibleText, '先思考\n\n回答一 response这段续写保持可见');
+      expect(p.thinkingActive, isFalse);
     });
 
     test('英文词 response（如 API response）不误吞', () {
