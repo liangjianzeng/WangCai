@@ -1264,3 +1264,14 @@ ck256，pp512+tg128 同 invocation）：
   合并出的算子在 4B 的稠密大 MatMul 图上落点更差
 - 结论：**FOLD=NO 对 4B 同样成立**，编译旋钮面最后一格关闭。4B prefill 的 translator 可达域
   全部实测完毕：P15（MoE 无对象）/ P16（rope 吸收）/ P17（DQ 族）/ P19（chunk 崖 256）/ P20（FOLD 反噬）
+
+### 缺陷：P14e 默认 ON = NPU 全线垃圾文本（2026-11-06，打包验收现场抓获）
+真机验收（ASR&TTS 合入后的便携包）报「Omni 复读机」，绕开 App 用 llama-cli 做变量矩阵：
+CPU 干净 / NPU 全配置复读（逐字节一致=确定性图错）/ **显式 `KV_HOST_WRITE=0` 即愈且不掉速**；
+1.7B、Spark-4B 同中招——**爆炸半径=NPU 上的一切**。元凶即上方 P14e「转默认 ON」
+（Nov 5 12:30 DLL，源码含超出 patches/0001 的未版本化改动；VIEW 警告不在补丁内）。
+6077ff8 教训（翻转要探针验生效）只防了「翻不动」，没防「翻本身坏」：**A/B 全绿在 t/s 上，
+垃圾 token 同样计 t/s——默认翻转从此必须过文本质量闸**。已止血：bundled_manifests envTemplate
+钉 `{kvHostWrite=0}`、deep preset 的 1 改 0（其「9.1 t/s」降级为存疑数字待复测）。
+全文：docs/defect-npu-p14e-kvhostwrite.md（复现命令+行动项在彼处，含 src/llama 未入 git
+致无法 bisect 的立案）。

@@ -32,6 +32,19 @@ void main() {
   });
 
   group('内置 manifest', () {
+    test('P14e 钉死：KV_HOST_WRITE 模板默认 0，任何 preset 不得翻 1（缺陷回归锚）', () {
+      // 根因与证据：docs/defect-npu-p14e-kvhostwrite.md——Nov 5 引擎 DLL 默认 ON
+      // 致 NPU 全线垃圾文本（Omni/1.7B 复读、Spark 乱码）；引擎侧修复并过文本闸
+      // 之前，清单必须显式压 0。渲染语义 {name=default} 由上方「模板渲染」组锁定。
+      final npu = bundledManifests()['wangcai-npu']!;
+      expect(npu.envTemplate['GGML_OPENVINO_KV_HOST_WRITE'], '{kvHostWrite=0}',
+          reason: 'envTemplate 必须自带显式 0 默认（未注入也压过 DLL 默认 ON）');
+      for (final p in npu.presets) {
+        expect(p.extraEnv['GGML_OPENVINO_KV_HOST_WRITE'], isNot('1'),
+            reason: 'preset ${p.name} 重新打开了 P14e');
+      }
+    });
+
     test('四个驱动可解析且关键字段正确', () {
       final m = bundledManifests();
       expect(m.keys, containsAll(['wangcai-npu', 'llamacpp-vulkan', 'llamacpp-cuda', 'openai-remote']));
