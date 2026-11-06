@@ -33,9 +33,13 @@ void main() {
     final dirs = paths.enginesDir
         .listSync()
         .whereType<Directory>()
-        .where((d) =>
-            re.hasMatch(d.uri.pathSegments.last) &&
-            store.findServerExe(d) != null)
+        .where((d) {
+          // 2026-11-07 修：Directory.uri 对目录补尾斜杠 → pathSegments.last
+          // 恒为 ''，正则永远失配 = 本测试在 Windows 上从未真跑（skip 一直
+          // 被误当成「模型/引擎缺失」）。改取 path 的 basename。
+          final name = d.path.split(Platform.pathSeparator).last;
+          return re.hasMatch(name) && store.findServerExe(d) != null;
+        })
         .toList();
     if (dirs.isEmpty) return null;
     dirs.sort((a, b) => a.path.compareTo(b.path));
@@ -231,5 +235,78 @@ void main() {
     },
     timeout: const Timeout(Duration(minutes: 10)),
     skip: skipReason,
+  );
+
+  // ── Spark 真机两线（2026-11-07，defect-npu-spark-b12034 的 app 侧行为锚）──
+  final spark =
+      File('${modelDir.path}${Platform.pathSeparator}spark-x2.6-4b-q4_k_m.gguf');
+  final sparkSkip = (skipReason != false || !spark.existsSync())
+      ? '需要真机条件（同上）+ Spark gguf 在模型库'
+      : false;
+
+  test(
+    'Spark NPU 改道（真机锚）：npu 档 + Spark → NPU 被 admission 拦 → 自动改道 GPU 拉起',
+    () async {
+      // 2026-11-07 真机实锤行为语义：Auto/npu 档下 NPU 被 Spark 禁入规则拦
+      // → 路由自动改道 Vulkan/CUDA（日志留禁入文案+建议）——用户重跑原操作
+      // 直接落健康引擎，不再歇菜；钉选 wangcai-npu 才是硬拒（单测锚）。
+      final inf = LocalServerInference.instance;
+      await inf.unloadModel(); // 前测残留防御（失败中止不会走各测的尾清场）
+      await inf.setRoutingTier('npu');
+      final logs = <String>[];
+      inf.onLoadingLog = (m) {
+        if (m != null) logs.add(m);
+        // ignore: avoid_print
+        print('[engine] $m');
+      };
+      addTearDown(() => inf.onLoadingLog =
+          (m) {
+            // ignore: avoid_print
+            if (m != null) print('[engine] $m');
+          });
+      final ok = await inf.loadModel(spark.path, nCtx: 4096);
+      expect(ok, isTrue, reason: 'NPU 被禁入拦后必须自动改道，而不是加载失败');
+      final landed = inf.debugHost()!.instanceId;
+      expect(landed, isNot('wangcai-npu'),
+          reason: '改道目标绝不能还是 NPU（真机落点：Vulkan/CUDA）');
+      expect(logs.join(), contains('defect-npu-spark-b12034'),
+          reason: '改道理由必须留痕（禁入文案+建议）');
+      final sb = StringBuffer();
+      await for (final tok in inf.completionWithMessages(
+          prompt: '2+2 等于几？只报数字', messagesJson: '[]', maxTokens: 24)) {
+        sb.write(tok);
+      }
+      // ignore: avoid_print
+      print('Spark@$landed: ${sb.toString().trim()}');
+      expect(sb.toString().trim(), isNotEmpty, reason: '改道后必须真能答');
+      await inf.unloadModel();
+    },
+    timeout: const Timeout(Duration(minutes: 10)),
+    skip: sparkSkip,
+  );
+
+  test(
+    'Spark CUDA 真机线：改道建议的健康路径 → CUDA 拉起真回复',
+    () async {
+      final inf = LocalServerInference.instance;
+      await inf.unloadModel(); // 前测残留防御
+      // 钉选 CUDA（speed 档设备启发在 Spark×无实测时可能去 Vulkan——
+      // 用户实际操作是按改道建议手动选引擎，钉选即等价形态）。
+      final ok = await inf.loadModel(spark.path, nCtx: 4096,
+          engineId: 'llamacpp-cuda');
+      expect(ok, isTrue, reason: 'CUDA Spark 加载失败（见 [engine] 日志）');
+      expect(inf.debugHost()!.instanceId, 'llamacpp-cuda');
+      final sb = StringBuffer();
+      await for (final tok in inf.completionWithMessages(
+          prompt: '2+2 等于几？只报数字', messagesJson: '[]', maxTokens: 24)) {
+        sb.write(tok);
+      }
+      // ignore: avoid_print
+      print('CUDA Spark: ${sb.toString().trim()}');
+      expect(sb.toString().trim(), isNotEmpty);
+      await inf.unloadModel();
+    },
+    timeout: const Timeout(Duration(minutes: 10)),
+    skip: sparkSkip,
   );
 }
