@@ -125,23 +125,26 @@ void main() {
         expect(m.content, isNot(startsWith('⚠️')), reason: '落库失败消息：${m.content}');
       }
 
-      // 3) 设置页把 ctx 改成 512 → 重载 → 启动命令必须 -c 512（生效证据）。
-      await settings.setContextSize(512);
+      // 3) 设置页把全局 ctx 改成 6144 → 重载 → 启动命令必须 -c 6144
+      //（生效证据；2026-11-06 全局 ctx 口径：滑杆 4096..16384 每档 512）。
+      await settings.setContextSize(6144);
       await mgr.unloadModel();
       expect(await mgr.loadModel('LFM3-1.7B-Q4_K_M'), isTrue,
           reason: '重载失败：${mgr.loadingLogs.join('\n')}');
-      expect(inf.debugHost()!.lastSpawnArgs, containsAllInOrder(['-c', '512']),
+      expect(inf.debugHost()!.lastSpawnArgs, containsAllInOrder(['-c', '6144']),
           reason: '设置页 contextSize 未生效');
       final r2 = await chat.sendMessage(conv.id, '回一个字：好');
       expect(r2.trim(), isNotEmpty);
 
-      // 4) 模型管理页换 4B（preset 上限 512；此时设置也是 512）→ 再答一问。
+      // 4) 全局 ctx 回到 4096（最基本档，4B 也放行）→ 模型管理页换 4B 再答一问。
+      await settings.setContextSize(4096);
       expect(await mgr.loadModel('Qwen3-4B-Q4_K_M'), isTrue,
           reason: '4B 加载失败：${mgr.loadingLogs.join('\n')}');
       final args4b = inf.debugHost()!.lastSpawnArgs!;
       expect(args4b[0], '-m');
       expect(args4b[1], contains('Qwen3-4B'));
-      expect(args4b, containsAllInOrder(['-c', '512']));
+      expect(args4b, containsAllInOrder(['-c', '4096']),
+          reason: '4096 是最基本档：4B 也必须放行');
       final r3 = await chat.sendMessage(conv.id, '打个招呼，十个字以内');
       expect(r3.trim(), isNotEmpty);
 

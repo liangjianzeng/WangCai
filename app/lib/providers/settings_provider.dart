@@ -56,10 +56,11 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
     await _persist();
   }
 
-  /// 设置上下文大小（KV 缓存窗口）。上??65536，下??1??
+  /// 设置全局上下文（KV 缓存窗口）——所有本地模型共用的一档
+  /// （2026-11-06 拍板：默认 4096「最基本」，滑杆 512 一档至 16K）。
   Future<void> setContextSize(int value) async {
-    // 防御性夹紧，避免越界值进入原生层??
-    final clamped = value.clamp(1, 65536);
+    // 就近对齐 512 刻度并夹进 4096..16384（越界/脏值不进引擎层）。
+    final clamped = InferenceSettings.snapContextSize(value);
     state = state.copyWith(contextSize: clamped);
     await _persist();
   }

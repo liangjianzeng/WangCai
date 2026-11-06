@@ -431,9 +431,11 @@ class ModelManagerNotifier extends StateNotifier<ModelState> {
       );
       final ok = await _inference.loadModel(
         cfg.modelPath,
-        // 未表态项传 null → local_server_inference 走
-        // defaultConfig > preset 回落（不再兜底手机端全局参数）。
-        nCtx: cfg.ctx,
+        // ctx 单口子（2026-11-06 拍板）：模型级未表态 → 全局滑杆档
+        // （InferenceSettings.contextSize，默认 4096）；引擎 defaultConfig
+        // 仍能压过它（优先级链在 local_server_inference），preset 已不带 ctx。
+        // chunk/gpuLayers 未表态仍传 null 走引擎/出厂回落。
+        nCtx: cfg.ctx ?? settingsAll.contextSize,
         chunk: cfg.chunk,
         gpuLayers: cfg.gpuLayers,
         mmprojPath: cfg.hasMmproj ? cfg.mmprojPath : null,

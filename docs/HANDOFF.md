@@ -1290,3 +1290,24 @@ CPU 干净 / NPU 全配置复读（逐字节一致=确定性图错）/ **显式 
 - **UI**：聊天顶栏 chip 加载期透出最新进度行（剥时间戳掐尾 56 字，tooltip 全文）；
   引擎管理页 warming→「装载中」、新增 prewarming「预热编译…」。
 测试：engine 91 全绿（+6 锚：状态机×3、host 预热门/失败不阻塞/开关×3）。
+
+### 全局 ctx 单口子（2026-11-06，用户拍板：「全部模型默认 CTX 4096，这是最基本的，否则狗毛都干不了；设置里拖到 16K，每刻度 512；没有必要一个模型一个 ctx」）
+per-model ctx 时代终结：bundled wangcai-npu 的 **preset 全部去掉 ctx 字段**（chunk/device/
+paramsB/extraEnv 等质量臂数据保留），`lfm3-1.7b-deep` 档位退役；「保守起步+实测上抬」的
+preset.ctx 上限先验随之退役（npu_generation_adapt 全套锚按新口径重写）。新口径：
+- **唯一真源 = InferenceSettings.contextSize**（默认 4096，`snapContextSize` 吸 512 网格、
+  夹 4096..16384；设置页那张既有「上下文大小」滑杆收编为唯一入口——发现它本来就在
+  （1k~64k/1k 档），**没有另造第二个滑杆**；引擎管理页新加的临时滑杆已回滚）。
+  catalog 链路经 nCtx 入场；`loadModelByLocalConfig`（NPU 预置虚拟条目）补齐
+  `cfg.ctx ?? settingsAll.contextSize` 兜底，杜绝「模型未表态 → 网关常量」的双源漂移。
+- **网关**：requested = 模型级 > 引擎 defaultConfig > `kGlobalCtxDefault`(4096 同值常量)；
+  `_ctxCeilingFor` 只剩世代档案覆盖位一个 clamp 源（空表=原样放行）；admission 4B 线
+  512→4096（**4096 最基本档对一切模型放行**是硬红线，锦在 manifest_test +
+  npu_generation_adapt「回归锚」）；越 4096 才有先验拦+实测豁免两半（实测不外溢、
+  OOM 回退后 4096 仍稳——全部有锚）。
+- **深上下文臂**：ctx>4096 自动挂 `NPUW_FOLD=YES`（run-npu-16k.bat 配方进网关，KV 仍由
+  模板钉 0），不再是一个模型档位；超 4096 的 4B 被准入拦（建议 CUDA/Vulkan）。
+- 附带账：Omni 智能体 860>512 的 400 至此自然消解（4096 装得下），无需单独 deep preset。
+测试：manifest/chain/generation_adapt/settings_service/download 五套件改写，新增 snap 锚；
+真机门控 app_npu_flow 的「设置页 ctx 生效」锚改 6144/4096 双段。
+教训入规：**新增设置项先搜全库确认没有既有真源**——本次差点造出第二个 ctx 滑杆。

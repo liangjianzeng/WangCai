@@ -41,6 +41,35 @@ void main() {
     });
   });
 
+  group('全局 ctx（2026-11-06 拍板：默认 4096，滑杆 512 一档至 16K）', () {
+    test('默认档 = 4096「最基本」', () {
+      const s = InferenceSettings();
+      expect(s.contextSize, 4096);
+      expect(InferenceSettings.kContextSizeDefault, 4096);
+      expect(InferenceSettings.kContextSizeMin, 4096);
+      expect(InferenceSettings.kContextSizeMax, 16384);
+      expect(InferenceSettings.kContextSizeStep, 512);
+    });
+
+    test('snapContextSize：就近吸到 512 网格并夹进合法域', () {
+      expect(InferenceSettings.snapContextSize(4300), 4096);
+      expect(InferenceSettings.snapContextSize(4400), 4608);
+      expect(InferenceSettings.snapContextSize(6144), 6144);
+      expect(InferenceSettings.snapContextSize(99999), 16384);
+      // 低于最基本档 → 抬回 4096（旧 1k 滑杆时代的低档回不来了）。
+      expect(InferenceSettings.snapContextSize(512), 4096);
+      expect(InferenceSettings.snapContextSize(100), 4096);
+    });
+
+    test('老 settings 历史档（1024/65536）fromJson 一律吸回合法网格', () {
+      Map<String, dynamic> j(int v) => {'contextSize': v};
+      expect(InferenceSettings.fromJson(j(1024)).contextSize, 4096);
+      expect(InferenceSettings.fromJson(j(65536)).contextSize, 16384);
+      expect(InferenceSettings.fromJson(j(5000)).contextSize, 5120);
+      expect(InferenceSettings.fromJson({}).contextSize, 4096);
+    });
+  });
+
   group('InferenceSettings 智能体配置持久化', () {
     test('toJson → fromJson 往返一致', () {
       const s = InferenceSettings(

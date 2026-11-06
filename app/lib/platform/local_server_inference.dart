@@ -242,6 +242,15 @@ class LocalServerInference implements InferenceBackend {
     return (tier: tier, idleMinutes: idle is num ? idle.toInt() : 0);
   }
 
+  // ── 全局上下文（2026-11-06 用户拍板）────────────────────────────────
+  // 「全部模型默认 CTX 4096，这是最基本的，否则狗毛都干不了；设置里自己拖
+  // 到 16K，每刻度 512」。ctx 只有一个口子：模型级覆盖 > 引擎默认配置 >
+  // 全局档（InferenceSettings.contextSize：设置页滑杆 4096..16384，512 一
+  // 档，经 loadModel 的 nCtx 入场）；这里只兜底「谁都没表态」的直连调用
+  // （插件宿主/测试）。manifest preset 不再携带 ctx（旧的 per-model ctx
+  // 与 lfm3-1.7b-deep 档位随之退役）。
+  static const int kGlobalCtxDefault = 4096;
+
   Future<Map<String, dynamic>> _readRoutingJson() async {
     try {
       final f = File('${_enginePaths().dataDir.path}'
@@ -313,12 +322,9 @@ class LocalServerInference implements InferenceBackend {
             .where((b) => b.engineId == engineId)
             .firstOrNull
             ?.maxStableCtx;
-        final requested = nCtx ?? inst.defaultConfig?.ctx ?? (p?.ctx ?? 1024);
+        final requested = nCtx ?? inst.defaultConfig?.ctx ?? kGlobalCtxDefault;
         final ceil = _ctxCeilingFor(
-            presetCeiling: p?.ctx,
-            generation: gen,
-            presetName: p?.name,
-            measured: measured);
+            generation: gen, presetName: p?.name, measured: measured);
         final tentative = (ceil != null && requested > ceil) ? ceil : requested;
         final v = m.checkAdmission(
             ctx: tentative,
@@ -355,13 +361,9 @@ class LocalServerInference implements InferenceBackend {
           .where((b) => b.engineId == inst.id)
           .firstOrNull
           ?.maxStableCtx;
-      final requested =
-          nCtx ?? inst.defaultConfig?.ctx ?? (p?.ctx ?? 1024);
+      final requested = nCtx ?? inst.defaultConfig?.ctx ?? kGlobalCtxDefault;
       final ceil = _ctxCeilingFor(
-          presetCeiling: p?.ctx,
-          generation: gen,
-          presetName: p?.name,
-          measured: measured);
+          generation: gen, presetName: p?.name, measured: measured);
       final tentative = (ceil != null && requested > ceil) ? ceil : requested;
       final v = m.checkAdmission(
           ctx: tentative,
@@ -474,24 +476,22 @@ class LocalServerInference implements InferenceBackend {
   }
 
   /// NPU 预算门（世代自适应 2026-11-05）：只有 capabilities 声明 NPU 的
-  /// manifest 参与世代识别/实测上抬；cuda/vulkan 保持 preset.ctx 硬上限
-  /// 的旧语义（它们的预算在显存，另一套故事）。
+  /// manifest 参与世代识别/档案上限；cuda/vulkan 不经档案（它们的预算在
+  /// 显存，另一套故事），全局 ctx 原样入场。
   bool _npuGated(EngineManifest m) =>
       m.capabilities.devices.any((d) => d.toUpperCase().contains('NPU'));
 
-  /// ctx 上限（保守起步 + 实测上探，2026-11-05 定案）：
-  /// 先验 = 世代档案覆盖位 ?? preset.ctx（一代出厂实测）；实测
-  /// [measured]（该机成功跑过的 maxStableCtx）只**抬高**先验。
-  /// 先验为 null（NPU 无 preset 命中）时不做上抬 —— 不设上限 = 今天的
-  /// 行为，用户显式大 ctx 仍可入场，跑成后由 recordRun 落袋。
+  /// ctx 上限（2026-11-06 全局 ctx 拍板后收窄）：preset 不再提供先验
+  /// （per-model ctx 退役），唯一上限来源 = 世代档案覆盖位（数据位，当前
+  /// 为空表 = 不设上限，全局 ctx 原样生效）；实测 [measured]（该机成功跑
+  /// 过的 maxStableCtx）只**抬高**先验。超预算的真实护栏是 admission 规则
+  /// （4B@c>4096 拦截）与驱动 OOM 失败回退（demoteCtx），不是这里。
   int? _ctxCeilingFor({
-    required int? presetCeiling,
     required NpuGeneration? generation,
     required String? presetName,
     int? measured,
   }) {
-    final prior =
-        profileFor(generation).ctxOverrideFor(presetName) ?? presetCeiling;
+    final prior = profileFor(generation).ctxOverrideFor(presetName);
     if (generation == null || prior == null) return prior;
     return (measured != null && measured > prior) ? measured : prior;
   }
@@ -559,23 +559,27 @@ class LocalServerInference implements InferenceBackend {
       final npuGen = gate ? npuInfo?.generation : null;
       final bs = await _ensureBindings();
       final measured = (await bs?.get(instId, _basename(path)))?.maxStableCtx;
-      // ctx 收敛纪律（对两档显式值都生效）：上限先验是 preset.ctx **实测安全
-      // 上限**（status.md 缺陷5：4B@c>512 OUT_OF_HOST_MEMORY）。显式值可抬高、
-      // 但顶不过上限——顶穿=admission 硬拒或执行期崩，宁可收敛留痕；例外只
-      // 有该机**跑成功过**的实测档位（maxStableCtx 上抬，见 _ctxCeilingFor）。
-      final requestedCtx = nCtx ?? dc?.ctx ?? (preset?.ctx ?? 1024);
+      // ctx 单口子（2026-11-06 拍板）：模型级 > 引擎默认配置 > 全局值
+      // （默认 4096，设置页滑杆 512 一档至 16K）。preset 不再参与 ctx 决策；
+      // 唯一 clamp 来源 = 世代档案覆盖位数据位（当前空表 = 原样生效）。
+      final requestedCtx = nCtx ?? dc?.ctx ?? kGlobalCtxDefault;
       final ctxCeiling = _ctxCeilingFor(
-          presetCeiling: preset?.ctx,
-          generation: npuGen,
-          presetName: preset?.name,
-          measured: measured);
+          generation: npuGen, presetName: preset?.name, measured: measured);
       final ctx =
           (ctxCeiling != null && requestedCtx > ctxCeiling) ? ctxCeiling : requestedCtx;
       if (ctx != requestedCtx) {
         final learned = measured != null && ctxCeiling == measured;
-        _log('ℹ️ ctx $requestedCtx → 收敛到上限 $ctx（${learned ? '该机实测档位' : '${preset!.name} 实测先验'}'
+        _log('ℹ️ ctx $requestedCtx → 收敛到上限 $ctx（${learned ? '该机实测档位' : '世代档案上限'}'
             '${npuGen != null ? ' · ${npuGen.label}' : ''}；'
             '更大上下文请改用 CUDA/Vulkan 引擎）');
+      }
+      // 深上下文臂（2026-11-06，替代已退役的 lfm3-1.7b-deep preset 档位）：
+      // NPU 且 ctx>4096 自动挂 NPUW_FOLD=YES（run-npu-16k.bat 实测配方）；
+      // KV_HOST_WRITE 由 envTemplate 钉 0（P14e 缺陷未修死）。首载付一次
+      // 懒编译（blob 落盘后秒开），引擎 defaultConfig.extraEnv 同键可覆盖。
+      if (gate && ctx > kGlobalCtxDefault) {
+        _log('🧬 深上下文臂: ctx=$ctx>$kGlobalCtxDefault → NPUW_FOLD=YES'
+            '（首编一次性，blob 落盘后秒开）');
       }
       // 自定义尾参：模型级 customArgs 整档赢过引擎 defaultConfig.args（计划
       // 定案，非合并语义）。草稿头经 --model-draft 尾参入场（桌面侧
@@ -613,6 +617,8 @@ class LocalServerInference implements InferenceBackend {
         // profileId 指纹（D6：换 env = 换编译缓存目录）。
         extraEnv: <String, String>{
           ...?preset?.extraEnv,
+          if (gate && ctx > kGlobalCtxDefault)
+            'GGML_OPENVINO_NPU_COMPILE_OVERRIDES': 'NPUW_FOLD=YES',
           ...?dc?.extraEnv,
         },
         extraArgs: tailArgs,
@@ -650,8 +656,8 @@ class LocalServerInference implements InferenceBackend {
         _loaded = false;
         _log('❌ 引擎未就绪: ${host.status.error ?? host.status.phase.name}');
         // 世代自适应·失败回退：驱动侧 OUT_OF_HOST_MEMORY（per-process 预算，
-        // 非系统内存）证伪了实测上抬 → 收回 maxStableCtx，下次加载回落出厂
-        // 先验。真·首次加载就 OOM 时无实测可回退，demoteCtx 自然空转。
+        // 非系统内存）证伪了实测上抬 → 收回 maxStableCtx，下次加载回落全局
+        // ctx 档。真·首次加载就 OOM 时无实测可回退，demoteCtx 自然空转。
         final errText = (host.status.error ?? '').toUpperCase();
         if (gate && errText.contains('OUT_OF_HOST_MEMORY')) {
           try {
@@ -661,7 +667,7 @@ class LocalServerInference implements InferenceBackend {
                 failedCtx: cfg.ctx ?? 0);
           } catch (_) {}
           _log('⚠️ 驱动报 OUT_OF_HOST_MEMORY（ctx=${cfg.ctx}）：已收回该机实测 '
-              'ctx 上抬，下次加载按出厂先验 ${preset?.ctx ?? '（无上限）'} 起步');
+              'ctx 上抬，下次加载回落全局上下文档（设置页滑杆可调）');
         }
         unawaited(host.stop());
         return false;

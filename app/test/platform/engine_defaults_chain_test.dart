@@ -109,11 +109,30 @@ void main() {
     expect(ok, isTrue, reason: 'fake probe/health 恒通，$name 应加载成功');
   }
 
-  test('出厂基线：无 dc 无模型级 → ctx 1024、无 chunk env、无尾参', () async {
+  test('出厂基线：无 dc 无模型级 → ctx=全局默认 4096、无 chunk env、无尾参',
+      () async {
+    // 2026-11-06 拍板：ctx 单口子，默认档 4096（「最基本」），preset 不再给值。
     await loadNpu('Generic-Fake.gguf');
-    expect(spawns.byExe['npu'], containsAllInOrder(['-c', '1024']));
+    expect(spawns.byExe['npu'], containsAllInOrder(['-c', '4096']));
     expect(spawns.envByExe['npu']!['GGML_OPENVINO_PREFILL_CHUNK_SIZE'], isNull);
     expect(spawns.byExe['npu']!.last, isNot('--foo'));
+  });
+
+  test('深上下文臂：ctx>4096 自动挂 NPUW_FOLD=YES（16K 不再靠 deep preset）',
+      () async {
+    final logs = <String>[];
+    inf.onLoadingLog = (m) {
+      if (m != null) logs.add(m);
+    };
+    await loadNpu('LFM3-1.7B-deep-arm.gguf', nCtx: 16384);
+    expect(spawns.byExe['npu'], containsAllInOrder(['-c', '16384']));
+    expect(spawns.envByExe['npu']!['GGML_OPENVINO_NPU_COMPILE_OVERRIDES'],
+        'NPUW_FOLD=YES');
+    expect(logs.any((l) => l.contains('深上下文臂')), isTrue, reason: '$logs');
+    // 默认档 4096 不挂臂（run-npu-16k 配方只属于超档）。
+    await loadNpu('LFM3-1.7B-flat.gguf');
+    expect(spawns.envByExe['npu']!['GGML_OPENVINO_NPU_COMPILE_OVERRIDES'],
+        isNull);
   });
 
   test('引擎 defaultConfig 中间档：ctx/chunk/extraEnv/尾参全部入场', () async {
@@ -148,11 +167,14 @@ void main() {
         reason: 'customArgs 非空 = 整档替换 defaultConfig.args（计划定案）');
   });
 
-  test('preset 仍是出厂档 + ctx 收敛纪律：preset 命中时实测上限压过一切', () async {
+  test('preset 只剩质量臂：chunk 出厂实测值仍压场，ctx 不再被 preset 压回',
+      () async {
+    // 旧口径「preset.ctx 当上限把 4096 收敛回 512」已随全局 ctx 拍板退役；
+    // preset 的价值 = chunk128（qwen3-4b 实测配置）这类质量臂数据。
     reg.instance('wangcai-npu')!.defaultConfig = const EngineDefaults(ctx: 4096);
     await loadNpu('Qwen3-4B-Fake.gguf', nCtx: 4096);
-    // qwen3-4b preset：ctx 上限 512、chunk 128（实测配置顶不得穿）
-    expect(spawns.byExe['npu'], containsAllInOrder(['-c', '512']));
+    expect(spawns.byExe['npu'], containsAllInOrder(['-c', '4096']),
+        reason: '4096 是最基本档：任何 preset 都不得再压小 ctx');
     expect(spawns.envByExe['npu']!['GGML_OPENVINO_PREFILL_CHUNK_SIZE'], '128');
   });
 
@@ -187,8 +209,8 @@ void main() {
   });
 
   test('钉选引擎受 admission 约束：超限配置被拒而不是拉必崩 server', () async {
-    // qwen3-4b paramsB=4.0 + NPU admission（-c>512 拒绝）：钉 npu 且模型级
-    // 不表态时 dc.ctx 收敛到 preset 512 → 放行；构造 preset 不命中的大 ctx：
+    // 全局 ctx 口径（2026-11-06）：准入线 4096，4096 本身全线放行；构造
+    // preset 不命中（paramsB 未知）的大参数量模型验证钉选分支原样放行：
     reg.instance('wangcai-npu')!.defaultConfig = const EngineDefaults(ctx: 4096);
     final ok = await inf.loadModel(
         '${tmp.path}${Platform.pathSeparator}BigModel-8B.gguf',

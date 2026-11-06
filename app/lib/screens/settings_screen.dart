@@ -1255,7 +1255,9 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
                   _buildSectionHeader('🧩 上下文大小（Context Size）', context),
                   const SizedBox(height: 4),
                   const Text(
-                    '模型可记忆的对话长度上限，越大占用内存越多',
+                    '所有本地模型共用的一档：4096 起步已够日常与智能体；'
+                    '每刻度 512，最高 16K。上调后重新加载模型生效，'
+                    '首载多付一次性编译。',
                     style: TextStyle(fontSize: 12, color: Colors.grey),
                   ),
                   const SizedBox(height: 12),
@@ -1263,21 +1265,29 @@ class InferenceEngineSettingsBody extends ConsumerWidget {
                     children: [
                       Expanded(
                         child: Slider(
-                          value: gpuSettings.contextSize.toDouble(),
-                          min: 1024,
-                          max: 65536,
-                          divisions: 63,
-                          // k 级显示（1k 步进恒整 k），不再显示裸数值。
-                          label: '${gpuSettings.contextSize ~/ 1024}k',
+                          value: gpuSettings.contextSize
+                              .toDouble()
+                              .clamp(InferenceSettings.kContextSizeMin
+                                  .toDouble(),
+                                  InferenceSettings.kContextSizeMax
+                                      .toDouble()),
+                          min: InferenceSettings.kContextSizeMin.toDouble(),
+                          max: InferenceSettings.kContextSizeMax.toDouble(),
+                          // 2026-11-06 拍板：每刻度 512（旧 1k~64k/1k 档退役，
+                          // 512 网格下 k 级显示会碎，直接报裸 token 数）。
+                          divisions: (InferenceSettings.kContextSizeMax -
+                                  InferenceSettings.kContextSizeMin) ~/
+                              InferenceSettings.kContextSizeStep,
+                          label: '${gpuSettings.contextSize}',
                           onChanged: (v) =>
                               gpuNotifier.setContextSize(v.round()),
                         ),
                       ),
                       const SizedBox(width: 8),
                       SizedBox(
-                        width: 78,
+                        width: 92,
                         child: Text(
-                          '${gpuSettings.contextSize ~/ 1024}k token',
+                          '${gpuSettings.contextSize} token',
                           textAlign: TextAlign.center,
                           style: const TextStyle(fontWeight: FontWeight.w500),
                         ),

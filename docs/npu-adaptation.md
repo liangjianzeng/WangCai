@@ -9,6 +9,15 @@ admission「4B@ctx>512 → OUT_OF_HOST_MEMORY」、`-dev` 回退 `OPENVINO2`、�
 的保守先验，绝不预填乐观数字（无实测不赌）；该机跑成功过的档位由绑定表记住后自动
 放开，执行期失败自动收回。
 
+> **2026-11-06 口径修订（全局 ctx 拍板，读本文前先换脑）**：「preset.ctx 当上限先验 +
+> 4B@ctx>512 拦」已退役——用户裁决「4096 是最基本的，否则狗毛都干不了」。ctx 只有
+> 一个口子：设置页滑杆（`InferenceSettings.contextSize`，默认 4096，每刻度 512 至 16K，
+> `snapContextSize` 夹紧）；preset 不再携带 ctx；admission 先验抬到 4096，**4096 对一切
+> 模型放行是硬红线**。「保守起步+实测上探」现在只剩两半：越 4096 的实测豁免、执行期
+> OOM 的 `demoteCtx` 回退；clamp 唯一来源 = 世代档案 `ctxOverrides` 数据位（当前空表 =
+> 原样放行）。16K 深上下文臂（`NPUW_FOLD=YES`）由网关在 ctx>4096 时自动挂载
+> （KV_HOST_WRITE 仍钉 0，见 defect-npu-p14e-kvhostwrite.md）。
+
 ---
 
 ## 1. 世代识别：型号码为锚，识别不了就 unknown

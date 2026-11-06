@@ -34,6 +34,21 @@ const List<String> kHighRiskEngineIds = ['sogou', 'baidu', 'quark'];
 const List<String> kDefaultDirectEngines = kDirectEngineIds;
 
 class InferenceSettings {
+  /// 全局上下文档（2026-11-06 用户拍板）：「全部模型默认 CTX 4096，这是
+  /// 最基本的，否则狗毛都干不了；设置里自己拖到 16K，每刻度 512」。这是
+  /// 所有本地模型 ctx 的唯一 UI 真源（模型级 > 引擎默认 > 此值经 nCtx
+  /// 入场；网关兜底档同值 = LocalServerInference.kGlobalCtxDefault）。
+  static const int kContextSizeDefault = 4096;
+  static const int kContextSizeMin = 4096;
+  static const int kContextSizeMax = 16384;
+  static const int kContextSizeStep = 512;
+
+  /// 就近对齐 512 刻度并夹进合法域：滑杆天然踩格；setter/fromJson 用它
+  /// 防脏值（老 settings 里 65536/1024 之类的历史档一律吸回合法网格）。
+  static int snapContextSize(int v) =>
+      ((v / kContextSizeStep).round() * kContextSizeStep)
+          .clamp(kContextSizeMin, kContextSizeMax);
+
   final int gpuLayers;
   final int contextSize;
 
@@ -484,7 +499,7 @@ class InferenceSettings {
     // 异步 _load() 完成前，UI/加载逻辑若读取默认值，仍应??GPU 路径??
     // 避免启动后首次加载模型意外落??CPU??
     this.gpuLayers = 100,
-    this.contextSize = 4096,
+    this.contextSize = kContextSizeDefault,
     this.enableThinking = false,
     Map<String, bool>? visionEnabledByModel,
     this.defaultModelId,
@@ -1025,7 +1040,10 @@ class InferenceSettings {
       // 缺省/旧文件未存该字段时默认开??GPU：auto 后端会在??GPU 时自??
       // 回落 CPU，V0.1.5 已验??Adreno 825 OpenCL/Vulkan 均正常??
       gpuLayers: (json['gpuLayers'] as num?)?.toInt() ?? 100,
-      contextSize: (json['contextSize'] as num?)?.toInt() ?? 4096,
+      // 全局 ctx 单口子（2026-11-06）：老文件里的历史档（1024/65536…）
+      // 一律吸回 4096..16384 的 512 网格。
+      contextSize: snapContextSize(
+          (json['contextSize'] as num?)?.toInt() ?? kContextSizeDefault),
       enableThinking: json['enableThinking'] as bool? ?? false,
       // （v0.0.3 Phase 4：MTP/dspark/MoE bank/oomGuard/GPU 后端等手机端引擎
       // 配置的 JSON key 在此**静默忽略**——老 settings 文件照读不炸，字段已删。）

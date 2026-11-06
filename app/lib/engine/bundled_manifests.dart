@@ -4,6 +4,14 @@
 // 实锤致 NPU 全线垃圾文本（Omni-2B/1.7B 复读、Spark-4B 乱码汤，CPU 干净、
 // 显式 0 即愈——docs/defect-npu-p14e-kvhostwrite.md）；引擎侧根因修复前，
 // 本清单以模板默认 0 钉死关闭（留 {kvHostWrite=…} 开关位供未来翻档）。
+//
+// ctx 口径（2026-11-06 用户拍板，替代旧 per-preset ctx）：「4096 是最基本，
+// 否则狗毛都干不了」——preset 不再携带 ctx，全线走**全局单值**（默认 4096，
+// 设置页滑杆 512 一档至 16K，持久化 routing.json ctx 键，见
+// local_server_inference.setGlobalCtx）。preset 只保留质量臂数据：chunk、
+// device、paramsB、extraEnv（DISABLE_DECODE_LEVELS 等实测必需项）。
+// 旧的 16K deep preset 已删：深上下文臂（NPUW_FOLD=YES）由网关在
+// ctx>4096 时自动挂载，不再是一个模型档位。
 import 'engine_manifest.dart';
 
 const String wangcaiNpuManifestJson = '''
@@ -23,32 +31,27 @@ const String wangcaiNpuManifestJson = '''
   "capabilities": {"nativeToolCall": true, "vision": true, "audio": false,
                    "devices": ["NPU", "CPU(OPENVINO0)"]},
   "presets": [
-    {"name": "lfm3-1.7b", "modelGlob": "LFM3-1.7B*.gguf", "ctx": 1024, "chunk": 256,
+    {"name": "lfm3-1.7b", "modelGlob": "LFM3-1.7B*.gguf", "chunk": 256,
      "paramsB": 1.7, "device": "NPU"},
-    {"name": "qwen3-4b", "modelGlob": "Qwen3-4B*.gguf", "ctx": 512, "chunk": 128,
+    {"name": "qwen3-4b", "modelGlob": "Qwen3-4B*.gguf", "chunk": 128,
      "paramsB": 4.0, "device": "NPU",
      "note": "副靶配置 chunk128（status.md 3/3）；compile overrides 串在 M2 对齐 spark-npu-accept.ps1"},
-    {"name": "spark-x2.6-4b", "modelGlob": "Spark-X2.6-4B*.gguf", "ctx": 512, "chunk": 128,
+    {"name": "spark-x2.6-4b", "modelGlob": "Spark-X2.6-4B*.gguf", "chunk": 128,
      "paramsB": 4.0, "device": "NPU",
      "extraEnv": {"GGML_OPENVINO_DISABLE_DECODE_LEVELS": "1"},
      "note": "副靶（讯飞 Spark-X2.6-4B Q4_K_M）：chunk128 + 关 decode level 必需（spark-npu-accept.ps1 3/3、HANDOFF 2026-11-01）"},
-    {"name": "lfm3-omni-2b", "modelGlob": "LFM3-Omni-2B*.gguf", "ctx": 512, "chunk": 128,
+    {"name": "lfm3-omni-2b", "modelGlob": "LFM3-Omni-2B*.gguf", "chunk": 128,
      "paramsB": 2.0, "device": "NPU",
      "extraEnv": {"GGML_OPENVINO_DISABLE_DECODE_LEVELS": "1"},
      "note": "Omni-2B 文本线（chunk128 实测口径）；视觉塔走 cuda/vulkan —— NPU mtmd 有缺陷，见 defect-npu-mtmd.md"},
-    {"name": "lfm3-1.7b-deep", "modelGlob": "LFM3-1.7B*.gguf", "ctx": 16384, "chunk": 256,
-     "paramsB": 1.7, "device": "NPU",
-     "extraEnv": {"GGML_OPENVINO_NPU_COMPILE_OVERRIDES": "NPUW_FOLD=YES",
-                  "GGML_OPENVINO_KV_HOST_WRITE": "0"},
-     "note": "16K 深上下文（智能体模式）：KV_HOST_WRITE 显式钉 0（P14e 默认 ON 致 NPU 垃圾文本，defect-npu-p14e-kvhostwrite.md；原「9.1 t/s」系 P14e ON 下未验文本的存疑数字，待引擎修复后复测）。首会话有 1-7 分钟懒编译（blob 落盘后秒开）；16K 全量 prefill ~3.3 分钟、增量回合 ~22s/K token——CPU 空闲时同深度 27.9 t/s 更快，本 preset 是无 CPU 时的 NPU 兜底"},
-    {"name": "minicpm5-2b", "modelGlob": "MiniCPM5-2B*.gguf", "ctx": 512, "chunk": 256,
+    {"name": "minicpm5-2b", "modelGlob": "MiniCPM5-2B*.gguf", "chunk": 256,
      "paramsB": 2.6, "device": "NPU",
      "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：默认臂 1.7B-like chunk256+decode levels；OOM 回落 spark 臂（chunk128+DISABLE_DECODE_LEVELS）——tools/minicpm5-npu-accept.ps1；thinking 模型 CoT 预算 n≥192"}
   ],
   "admission": [
-    {"ifCtxGt": 512, "ifParamsBAtLeast": 3.5,
-     "message": "4B 在 NPU -c>512 执行期 OUT_OF_HOST_MEMORY（status.md 缺陷5）",
-     "suggestion": "ctx≤512，或改用 CUDA/Vulkan 引擎"}
+    {"ifCtxGt": 4096, "ifParamsBAtLeast": 3.5,
+     "message": "4B 在 NPU 超 4096 上下文执行期 OUT_OF_HOST_MEMORY（status.md 缺陷5 外推；4096 默认档实测放行）",
+     "suggestion": "全局上下文调回 ≤4096，或改用 CUDA/Vulkan 引擎"}
   ],
   "timingHints": {"coldCompileMs": 600000, "warmMs": 15000},
   "hardFlagsHint": "-fa 1 -np 1 -dev OPENVINO3 --jinja（server 无 -st，M0-3 实测）"

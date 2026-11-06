@@ -48,10 +48,12 @@ void main() {
     final lfm3 = entryOf('lfm3-1.7b');
     expect(lfm3, isNotNull);
     expect(lfm3!.id, 'LFM3-1.7B-Q4_K_M');
-    // ModelScope API 回报的字节数基线（2026-11-05 本机实况）。
+    // ModelScope API 回报的字节数基线（2026-11-05 本机实况，±2% 容忍带：
+    // 精确字节由下载期 sha256 把关，此测防量级挂错档）。
     expectSize(lfm3.sizeBytes, 1099627808, 'lfm3-1.7b');
-    // deep 预设共用同一份 gguf（同 glob），映射必须落到同一条目。
-    expect(entryOf('lfm3-1.7b-deep')?.id, lfm3.id);
+    // 旧 lfm3-1.7b-deep 档位已随「全局 ctx」拍板退役（16K 走设置页滑杆，
+    // 同一份 gguf），条目必须已不存在。
+    expect(npu.presetByName('lfm3-1.7b-deep'), isNull);
 
     final minicpm = entryOf('minicpm5-2b');
     expect(minicpm?.id, 'minicpm5-2b-q4_k_m'); // 双档取最小（非 q8_0）
@@ -69,7 +71,7 @@ void main() {
   });
 
   test('映射条目满足下载契约：落盘名命中 glob + 三镜像 + 真 sha256', () {
-    for (final name in ['lfm3-1.7b', 'lfm3-1.7b-deep', 'minicpm5-2b',
+    for (final name in ['lfm3-1.7b', 'minicpm5-2b',
         'spark-x2.6-4b', 'lfm3-omni-2b']) {
       final preset = npu.presetByName(name)!;
       final e = entryOf(name)!;

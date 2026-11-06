@@ -60,11 +60,29 @@ void main() {
       expect(m['openai-remote']!.kind, 'remote');
     });
 
-    test('admission：4B@c1024 拦截；1.7B@c1024 与 4B@c512 放行', () {
+    test('admission（2026-11-06 全局 ctx 口径）：4B@4096 放行；4B@8192 拦；1.7B@16384 放行', () {
+      // 「4096 是最基本」拍板后准入线从 512 抬到 4096：默认档必须全线放行，
+      // 4B 越 4096 才按驱动预算拦（status.md 缺陷5 外推，实测豁免见下）。
       final npu = bundledManifests()['wangcai-npu']!;
-      expect(npu.checkAdmission(ctx: 1024, paramsB: 4.0), isNotEmpty);
-      expect(npu.checkAdmission(ctx: 1024, paramsB: 1.7), isEmpty);
-      expect(npu.checkAdmission(ctx: 512, paramsB: 4.0), isEmpty);
+      expect(npu.checkAdmission(ctx: 4096, paramsB: 4.0), isEmpty,
+          reason: '全局默认档 4096 连 4B 都要放行，否则狗毛都干不了');
+      expect(npu.checkAdmission(ctx: 8192, paramsB: 4.0), isNotEmpty);
+      expect(npu.checkAdmission(ctx: 16384, paramsB: 1.7), isEmpty);
+    });
+
+    test('全局 ctx 口径（2026-11-06）：preset 不再携带 ctx；deep 档位已退役', () {
+      // per-model ctx 退役：ctx 只有一个口子（设置页滑杆 → routing.json，
+      // 见 local_server_inference.setGlobalCtx）；preset 只剩质量臂数据
+      // （chunk/device/paramsB/extraEnv）。16K 深档 = 网关 ctx>4096 自动挂
+      // NPUW_FOLD=YES，不再是一条 preset。
+      final npu = bundledManifests()['wangcai-npu']!;
+      for (final p in npu.presets) {
+        expect(p.ctx, isNull, reason: 'preset ${p.name} 又带上 ctx 了');
+      }
+      expect(npu.presetByName('lfm3-1.7b-deep'), isNull);
+      // 质量臂数据仍在：Spark 关 decode level 是实测必需（spark-npu-accept 3/3）。
+      expect(npu.presetByName('spark-x2.6-4b')!.extraEnv['GGML_OPENVINO_DISABLE_DECODE_LEVELS'],
+          '1');
     });
 
     test('admission 世代条件（2026-11-05）：appliesGenerations 名单外豁免', () {

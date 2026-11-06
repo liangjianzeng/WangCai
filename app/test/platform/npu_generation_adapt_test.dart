@@ -1,6 +1,9 @@
-// 世代自适应网关级单测（2026-11-05）：探测→世代→clamp→实测上抬→OOM 回退
-// 全链离线验证。fake 进程/health/端口（同 engine_defaults_chain 纪律），
-// 绑定表走 sqlite ffi（同 m2_dod）。红线：3720 无实测时行为与 v0.0.5 逐位一致。
+// 世代自适应网关级单测（2026-11-05；2026-11-06 随「全局 ctx」拍板改口径）：
+// 探测→世代→档案上限→实测豁免→OOM 回退全链离线验证。fake 进程/health/
+// 端口（同 engine_defaults_chain 纪律），绑定表走 sqlite ffi（同 m2_dod）。
+// 旧「preset.ctx 先验 clamp（4B 收敛 512）」已退役——ctx 只有一个口子：
+// 模型级 > 引擎默认 > 全局值（默认 4096）。红线：**4096 最基本档全线放行**，
+// 越 4096 才有 admission 先验拦（4B 驱动预算）与实测豁免两半。
 import 'dart:convert';
 import 'dart:io';
 
@@ -103,14 +106,16 @@ void main() {
         engineId: 'wangcai-npu', modelId: modelId, device: 'NPU', ctx: ctx);
   }
 
-  test('回归锚·3720 无实测：4B nCtx4096 收敛 512 + chunk128，逐位同 v0.0.5',
-      () async {
+  test('回归锚·3720 无实测：4B nCtx4096 放行 + chunk128 质量臂保留', () async {
+    // 「4096 是最基本」——旧 512 收敛先验不得复活；chunk128 属质量臂不受影响。
     probeRunnerForTest = (_, __) async => enum3720;
     expect(await load('Qwen3-4B-anchor.gguf', nCtx: 4096), isTrue);
     final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
     expect(h.lastSpawnArgs, containsAllInOrder(['-dev', 'OPENVINO3']));
-    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']));
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '4096']));
     expect(h.lastSpawnEnv?['GGML_OPENVINO_PREFILL_CHUNK_SIZE'], '128');
+    expect(h.lastSpawnEnv?['GGML_OPENVINO_NPU_COMPILE_OVERRIDES'], isNull,
+        reason: '4096 档不挂深上下文臂（FOLD 只属于超档）');
     // 探测摘要 + 驱动注入随成功加载落实例。
     expect(h.lastNpuInfo?.generation, NpuGeneration.ultra1);
     final inst = reg.instance('wangcai-npu')!;
@@ -145,32 +150,36 @@ void main() {
         '32.0.100.3800');
   });
 
-  test('保守起步·二代 3820：无实测不赌，仍按一代先验 512', () async {
+  test('世代不再充当 ctx 预算：二代 3820 4B@4096 原样放行', () async {
+    // 旧「无实测不赌、按一代先验收敛 512」随 per-model ctx 一起退役；
+    // 4096 最基本档对任何世代都放行。
     probeRunnerForTest = (_, __) async => enum3820;
     expect(await load('Qwen3-4B-gen2.gguf', nCtx: 4096), isTrue);
     final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
     expect(h.lastNpuInfo?.generation, NpuGeneration.ultra2);
-    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']));
-  });
-
-  test('实测上探：该机跑成功过 4096 → 上限与 admission 双双让位实测', () async {
-    probeRunnerForTest = (_, __) async => enum3820;
-    await seedStable('Qwen3-4B-up.gguf', 4096);
-    expect(await load('Qwen3-4B-up.gguf', nCtx: 4096), isTrue,
-        reason: 'maxStableCtx=4096：clamp 抬到实测档，ctx 门槛规则被实测豁免');
-    final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
     expect(h.lastSpawnArgs, containsAllInOrder(['-c', '4096']));
   });
 
-  test('实测上探不外溢：别的模型没跑过 → 仍 512', () async {
+  test('实测豁免：该机跑成功过 8192 → admission 让位实测 + 超档自动挂深臂',
+      () async {
     probeRunnerForTest = (_, __) async => enum3820;
-    await seedStable('Qwen3-4B-a.gguf', 4096);
-    expect(await load('Qwen3-4B-b.gguf', nCtx: 4096), isTrue);
+    await seedStable('Qwen3-4B-up.gguf', 8192);
+    expect(await load('Qwen3-4B-up.gguf', nCtx: 8192), isTrue,
+        reason: '8192>4096 触发 4B 先验，但 maxStableCtx=8192 实测豁免');
     final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
-    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']));
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '8192']));
+    expect(h.lastSpawnEnv?['GGML_OPENVINO_NPU_COMPILE_OVERRIDES'],
+        'NPUW_FOLD=YES');
   });
 
-  test('档案数据位：注入 ultra2 覆盖（lfm3→4096）驱动 clamp，一代不受影响',
+  test('实测豁免不外溢：别的模型没跑过 → 越档照样被准入前置拦', () async {
+    probeRunnerForTest = (_, __) async => enum3820;
+    await seedStable('Qwen3-4B-a.gguf', 8192);
+    expect(await load('Qwen3-4B-b.gguf', nCtx: 8192), isFalse,
+        reason: 'b 无实测背书 → 4B@>4096 先验照常拦，不拉必崩 server');
+  });
+
+  test('档案数据位：注入 ultra2 覆盖（lfm3→4096）压显式 8192，一代原样放行',
       () async {
     probeRunnerForTest = (_, __) async => enum3820;
     profileOverrideForTest = {
@@ -182,27 +191,31 @@ void main() {
     expect(await load('LFM3-1.7B-prof.gguf', nCtx: 8192), isTrue);
     final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
     expect(h.lastSpawnArgs, containsAllInOrder(['-c', '4096']),
-        reason: 'ultra2 档案覆盖位赢过 preset 1024 先验');
-    // 同档案对一代机不生效（覆盖表按世代隔离）。
+        reason: '档案覆盖位 = 唯一的 clamp 来源，压过显式 ctx');
+    // 同档案对一代机不生效（覆盖表按世代隔离）；一代无覆盖位 = 不设上限。
     probeRunnerForTest = (_, __) async => enum3720;
     clearOpenvinoProbeCache();
     expect(await load('LFM3-1.7B-prof1.gguf', nCtx: 8192), isTrue);
-    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '1024']));
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '8192']),
+        reason: '无档案覆盖位 = 显式 ctx 原样入场（preset 先验已退役）');
   });
 
-  test('失败回退：实测档执行期 OOM → 收回上抬，重载回落出厂先验', () async {
+  test('失败回退：实测档执行期 OOM → 收回上抬；重载越档回准入拦、4096 仍稳',
+      () async {
     probeRunnerForTest = (_, __) async => enum3720;
-    await seedStable('Qwen3-4B-demote.gguf', 4096);
-    // 第一载：实测档放行 → spawn 即 OOM → 加载失败 + demoteCtx。
+    await seedStable('Qwen3-4B-demote.gguf', 8192);
+    // 第一载：实测豁免放行 → spawn 即 OOM → 加载失败 + demoteCtx。
     oomOnSpawn = true;
-    expect(await load('Qwen3-4B-demote.gguf', nCtx: 4096), isFalse);
+    expect(await load('Qwen3-4B-demote.gguf', nCtx: 8192), isFalse);
     expect((await readBinding('Qwen3-4B-demote.gguf'))!.maxStableCtx, isNull,
-        reason: '被证伪的实测上抬必须收回');
-    // 第二载：回到出厂先验。
+        reason: '被证伪的实测豁免必须收回');
+    // 第二载：无实测背书 → 先验准入回位，越档拒载。
     oomOnSpawn = false;
+    expect(await load('Qwen3-4B-demote.gguf', nCtx: 8192), isFalse);
+    // 最基本档不受回退牵连：4096 永远放行。
     expect(await load('Qwen3-4B-demote.gguf', nCtx: 4096), isTrue);
     final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
-    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']));
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '4096']));
   });
 
   test('demoteCtx store 语义：低于失败值保留 / 无行空转（失败不证伪更低档）',
