@@ -118,12 +118,15 @@ class AdmissionRule {
 }
 
 class TimingHints {
-  const TimingHints({this.coldCompileMs = 36000, this.warmMs = 9000});
+  // 缺省 = 冷编保守上界（2026-11-06 健康检查）：这不只是展示提示——就绪超时
+  // 直接用它（llama_server_host.dart:269），36000 的旧缺省会让缺 timingHints
+  // 的自定义 manifest 在 NPU 冷编（开发机实测 ~10min）下必超时误杀。宁慢报。
+  const TimingHints({this.coldCompileMs = 600000, this.warmMs = 9000});
   final int coldCompileMs;
   final int warmMs;
 
   factory TimingHints.fromJson(Map<String, dynamic> j) => TimingHints(
-        coldCompileMs: (j['coldCompileMs'] as num?)?.toInt() ?? 36000,
+        coldCompileMs: (j['coldCompileMs'] as num?)?.toInt() ?? 600000,
         warmMs: (j['warmMs'] as num?)?.toInt() ?? 9000,
       );
 }

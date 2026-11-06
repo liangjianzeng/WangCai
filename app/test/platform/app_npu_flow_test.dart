@@ -1,5 +1,6 @@
 // M1-d DoD · 「App 内三问 + 设置页改配置生效」的 provider 层复验（真机门控）。
-// 跑法（app/ 下，同 gateway_npu_test 的三件套 env；用正斜杠防 MSYS 削路径）：
+// 跑法（app/ 下，同 gateway_npu_test 的三件套 env + E2E 显式开关；用正斜杠防 MSYS 削路径）：
+//   export WANGCAI_NPU_E2E=1
 //   export WANGCAI_MODEL_DIR=E:/DTXY/WangCai/models
 //   export WANGCAI_SERVER_EXE=E:/DTXY/WangCai/src/llama/build/bin/llama-server.exe
 //   export WANGCAI_OV_LIBS=E:/DTXY/WangCai/ov/openvino/libs
@@ -59,8 +60,13 @@ void main() {
   final dir = WangCaiPaths.modelsRoot();
   final lfm = File('${dir.path}${sep}LFM3-1.7B-Q4_K_M.gguf');
   final qwen = File('${dir.path}${sep}Qwen3-4B-Q4_K_M.gguf');
-  final skipReason = (!Platform.isWindows || !lfm.existsSync() || !qwen.existsSync())
-      ? '需要 Windows + LFM3-1.7B-Q4_K_M.gguf + Qwen3-4B-Q4_K_M.gguf（WANGCAI_MODEL_DIR）'
+  // 真机 E2E 显式开启（WANGCAI_NPU_E2E=1）：与 gateway_npu/agent_npu 同纪律——
+  // flutter test 全量会并行跑多套件，真 spawn 引擎互抢端口/设备，默认必须跳过。
+  final skipReason = (!Platform.isWindows ||
+          Platform.environment['WANGCAI_NPU_E2E'] != '1' ||
+          !lfm.existsSync() ||
+          !qwen.existsSync())
+      ? '需要 Windows + WANGCAI_NPU_E2E=1 + LFM3-1.7B-Q4_K_M.gguf + Qwen3-4B-Q4_K_M.gguf（WANGCAI_MODEL_DIR，真机 E2E）'
       : false;
 
   test(

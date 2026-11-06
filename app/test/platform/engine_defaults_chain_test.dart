@@ -1,8 +1,6 @@
 // Phase 3b 参数体系离线单测：优先级链 **模型级（loadModel 参数）>
 // EngineInstance.defaultConfig > manifest preset/模板**。
 // fake 进程/health/端口注入，绝不 spawn 真进程（同 single_active 纪律）。
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart' hide EnginePhase;
@@ -12,27 +10,7 @@ import 'package:wangcai/engine/engine_registry.dart';
 import 'package:wangcai/engine/openvino_probe.dart';
 import 'package:wangcai/platform/local_server_inference.dart';
 
-class FakeProcess implements EngineProcess {
-  final stdoutCtl = StreamController<List<int>>();
-  final stderrCtl = StreamController<List<int>>();
-  final _exit = Completer<int>();
-  bool killed = false;
-
-  @override
-  final int pid = 4242;
-  @override
-  Stream<List<int>> get stdout => stdoutCtl.stream;
-  @override
-  Stream<List<int>> get stderr => stderrCtl.stream;
-  @override
-  Future<int> get exitCode => _exit.future;
-  @override
-  bool kill() {
-    killed = true;
-    if (!_exit.isCompleted) _exit.complete(0);
-    return true;
-  }
-}
+import '../helpers/fake_process.dart';
 
 /// 假 server 进程池 + spawn 取证（args/env 与实例 id 对应）。
 class SpawnLog {

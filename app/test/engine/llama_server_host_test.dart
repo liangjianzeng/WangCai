@@ -1,7 +1,5 @@
 // 假进程/假 health/假时钟驱动 LlamaServerHost 全路径：
 // ready 流、参数与环境注入正确性（M0-3 校正）、崩溃重启预算、错误日志、停止清理。
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 // flutter_test 自带 EnginePhase（binding 内部用），hide 掉避免撞名。
@@ -15,32 +13,7 @@ import 'package:wangcai/engine/llama_server_host.dart';
 import 'package:wangcai/engine/npu_profiles.dart';
 import 'package:wangcai/engine/openvino_probe.dart';
 
-class FakeProcess implements EngineProcess {
-  final stdoutCtl = StreamController<List<int>>();
-  final stderrCtl = StreamController<List<int>>();
-  final _exit = Completer<int>();
-  bool killed = false;
-
-  @override
-  final int pid = 4242;
-  @override
-  Stream<List<int>> get stdout => stdoutCtl.stream;
-  @override
-  Stream<List<int>> get stderr => stderrCtl.stream;
-  @override
-  Future<int> get exitCode => _exit.future;
-  @override
-  bool kill() {
-    killed = true;
-    if (!_exit.isCompleted) _exit.complete(0);
-    return true;
-  }
-
-  void emitOut(String s) => stdoutCtl.add(utf8.encode(s));
-  void exitWith(int code) {
-    if (!_exit.isCompleted) _exit.complete(code);
-  }
-}
+import '../helpers/fake_process.dart';
 
 class Harness {
   final tmp = Directory.systemTemp.createTempSync('m1_host');

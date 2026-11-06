@@ -35,25 +35,34 @@ void main() {
   ModelConfig? entryOf(String presetName) => downloadEntryForNpuGlob(
       npu.presetByName(presetName)?.modelGlob, catalog);
 
+  // 字节数用 ±2% 容忍带（2026-11-06 健康检查）：精确字节由下载期 sha256 校验
+  // 把关，这里防的是「量级挂错档」（q8 挂成 q4、整文件挂成半截），
+  // 上游镜像重传造成的精确字节漂移不该红一条契约测试。
+  void expectSize(int actual, int pinned, String what) => expect(
+        actual,
+        inInclusiveRange((pinned * 0.98).round(), (pinned * 1.02).round()),
+        reason: '$what 偏离基线 $pinned 超 ±2%（检查 catalog 是否挂错量化档）',
+      );
+
   test('NPU 主打预置都有映射下载条目（id/大小与磁盘实况对齐）', () {
     final lfm3 = entryOf('lfm3-1.7b');
     expect(lfm3, isNotNull);
     expect(lfm3!.id, 'LFM3-1.7B-Q4_K_M');
-    // ModelScope API 回报的精确字节数（也是本机已下文件的大小）。
-    expect(lfm3.sizeBytes, 1099627808);
+    // ModelScope API 回报的字节数基线（2026-11-05 本机实况）。
+    expectSize(lfm3.sizeBytes, 1099627808, 'lfm3-1.7b');
     // deep 预设共用同一份 gguf（同 glob），映射必须落到同一条目。
     expect(entryOf('lfm3-1.7b-deep')?.id, lfm3.id);
 
     final minicpm = entryOf('minicpm5-2b');
     expect(minicpm?.id, 'minicpm5-2b-q4_k_m'); // 双档取最小（非 q8_0）
-    expect(minicpm!.sizeBytes, 1561318368);
+    expectSize(minicpm!.sizeBytes, 1561318368, 'minicpm5-2b');
 
     expect(entryOf('spark-x2.6-4b')?.id, 'spark-x2.6-4b-q4_k_m');
 
     final omni = entryOf('lfm3-omni-2b');
     expect(omni?.id, 'LFM3-Omni-2B-Q4_0');
     expect(omni!.mmproj, isNotNull); // 视觉塔两文件形态
-    expect(omni.mmproj!.sizeBytes, 270576544);
+    expectSize(omni.mmproj!.sizeBytes, 270576544, 'omni mmproj');
 
     // catalog 无条目的预置（qwen3-4b）→ null，UI 保留手动放文件指引。
     expect(entryOf('qwen3-4b'), isNull);

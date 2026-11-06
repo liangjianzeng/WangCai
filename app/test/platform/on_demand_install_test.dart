@@ -1,7 +1,6 @@
 // Phase 3c 按需下载闭环离线单测：路由无本地引擎 → decision.needInstall →
 // lastInstallSuggestion → installEngine（假 EngineStore 落位 exe）→ 实例装配
 // + engines.json 持久化 → loadModel 重试成功。假进程，绝不 spawn 真进程、绝不联网。
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -9,28 +8,10 @@ import 'package:flutter_test/flutter_test.dart' hide EnginePhase;
 import 'package:wangcai/engine/engine_paths.dart';
 import 'package:wangcai/engine/engine_registry.dart';
 import 'package:wangcai/engine/engine_store.dart';
-import 'package:wangcai/engine/engine_host.dart' show EngineProcess;
 import 'package:wangcai/engine/openvino_probe.dart';
 import 'package:wangcai/platform/local_server_inference.dart';
 
-class FakeProcess implements EngineProcess {
-  final stdoutCtl = StreamController<List<int>>();
-  final stderrCtl = StreamController<List<int>>();
-  final _exit = Completer<int>();
-  @override
-  final int pid = 4242;
-  @override
-  Stream<List<int>> get stdout => stdoutCtl.stream;
-  @override
-  Stream<List<int>> get stderr => stderrCtl.stream;
-  @override
-  Future<int> get exitCode => _exit.future;
-  @override
-  bool kill() {
-    if (!_exit.isCompleted) _exit.complete(0);
-    return true;
-  }
-}
+import '../helpers/fake_process.dart';
 
 /// 假引擎商店：不落网络，install() 直接在目标目录写出 llama-server.exe。
 /// 记录 mirrors/目录透传，验证 installEngine 的参数接线。

@@ -1,7 +1,5 @@
 // M2-e 调度护栏离线单测（§7.3）：单 active 互斥 + 空闲超时卸载。
 // fake 进程/health/端口注入，绝不 spawn 真进程。
-import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart' hide EnginePhase;
@@ -10,35 +8,12 @@ import 'package:wangcai/engine/engine_config.dart';
 import 'package:wangcai/engine/engine_paths.dart';
 import 'package:wangcai/engine/engine_registry.dart';
 import 'package:wangcai/engine/engine_status.dart' show EnginePhase;
-import 'package:wangcai/engine/engine_host.dart' show EngineProcess;
 import 'package:wangcai/engine/llama_server_host.dart' show LlamaServerHost;
 import 'package:wangcai/engine/openvino_probe.dart';
 import 'package:wangcai/platform/local_server_inference.dart';
 import 'package:wangcai/providers/shared_providers.dart';
 
-class FakeProcess implements EngineProcess {
-  final stdoutCtl = StreamController<List<int>>();
-  final stderrCtl = StreamController<List<int>>();
-  final _exit = Completer<int>();
-  bool killed = false;
-
-  @override
-  final int pid = 4242;
-  @override
-  Stream<List<int>> get stdout => stdoutCtl.stream;
-  @override
-  Stream<List<int>> get stderr => stderrCtl.stream;
-  @override
-  Future<int> get exitCode => _exit.future;
-  @override
-  bool kill() {
-    killed = true;
-    if (!_exit.isCompleted) _exit.complete(0);
-    return true;
-  }
-
-  void emitOut(String s) => stdoutCtl.add(utf8.encode(s));
-}
+import '../helpers/fake_process.dart';
 
 void main() {
   late Directory tmp;

@@ -5,16 +5,13 @@
 // skip 门控：CUDA/Vulkan 引擎未安装（商店产物不存在）→ 整体跳过，不阻塞 CI。
 import 'dart:io';
 
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:wangcai/engine/bindings_store.dart';
 import 'package:wangcai/engine/engine_config.dart' show EngineConfig;
-import 'package:wangcai/engine/engine_paths.dart';
 import 'package:wangcai/engine/engine_store.dart';
 import 'package:wangcai/platform/local_server_inference.dart';
 import 'package:wangcai/platform/wangcai_paths.dart';
-import 'package:wangcai/providers/shared_providers.dart';
 
 void main() {
   // 刻意不 ensureInitialized（M1-d 教训：binding 把 HttpClient mock 成 400，
@@ -27,19 +24,35 @@ void main() {
 
   final paths = WangCaiPaths.enginePaths();
   final store = EngineStore(paths);
-  final cudaDir = Directory(
-      '${paths.enginesDir.path}${Platform.pathSeparator}llamacpp-b12034-cuda');
-  final vulkanDir = Directory(
-      '${paths.enginesDir.path}${Platform.pathSeparator}llamacpp-b12034-vulkan');
+  // 商店目录跟随已装版本发现（2026-11-06 健康检查）：原先钉死 b12034，商店白名单
+  // 升版后目录不存在 → skipReason 静默永久 skip，DoD 无声失守。改为扫描
+  // llamacpp-*-{cuda,vulkan} 取字典序最新（tag 形如 bNNNNN，定宽即版本序）。
+  Directory? installedEngineDir(String variant) {
+    if (!paths.enginesDir.existsSync()) return null;
+    final re = RegExp('^llamacpp-.*-$variant\$');
+    final dirs = paths.enginesDir
+        .listSync()
+        .whereType<Directory>()
+        .where((d) =>
+            re.hasMatch(d.uri.pathSegments.last) &&
+            store.findServerExe(d) != null)
+        .toList();
+    if (dirs.isEmpty) return null;
+    dirs.sort((a, b) => a.path.compareTo(b.path));
+    return dirs.last;
+  }
+
+  final cudaDir = installedEngineDir('cuda');
+  final vulkanDir = installedEngineDir('vulkan');
   final modelDir = WangCaiPaths.modelsRoot();
   final qwen = File('${modelDir.path}${Platform.pathSeparator}Qwen3-4B-Q4_K_M.gguf');
   final lfm = File('${modelDir.path}${Platform.pathSeparator}LFM3-1.7B-Q4_K_M.gguf');
   final skipReason = (!Platform.isWindows ||
-          !cudaDir.existsSync() ||
-          !vulkanDir.existsSync() ||
+          cudaDir == null ||
+          vulkanDir == null ||
           !qwen.existsSync() ||
           !lfm.existsSync())
-      ? '需要 Windows + 商店已装 b12034 (cuda+vulkan) + Qwen3-4B/LFM3 gguf'
+      ? '需要 Windows + 商店已装 llama.cpp 引擎（cuda+vulkan，任意已装版本）+ Qwen3-4B/LFM3 gguf'
       : false;
 
   setUpAll(() {
@@ -65,6 +78,9 @@ void main() {
           'blackwellReady=${cuda.blackwellReady}');
       expect(cuda.blackwellReady, isTrue, reason: '5060Ti(sm_120) 需驱动 ≥570');
 
+      // ignore: avoid_print
+      print('商店引擎目录（跟随已装版本）: cuda=${cudaDir!.path} '
+          'vulkan=${vulkanDir!.path}');
       final vulkanServer =
           store.findServerExe(vulkanDir) ?? store.findServerExe(cudaDir);
       expect(vulkanServer, isNotNull);

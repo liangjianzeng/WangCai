@@ -1,14 +1,12 @@
 // 世代自适应网关级单测（2026-11-05）：探测→世代→clamp→实测上抬→OOM 回退
 // 全链离线验证。fake 进程/health/端口（同 engine_defaults_chain 纪律），
 // 绑定表走 sqlite ffi（同 m2_dod）。红线：3720 无实测时行为与 v0.0.5 逐位一致。
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart' hide EnginePhase;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:wangcai/engine/bindings_store.dart';
-import 'package:wangcai/engine/engine_host.dart' show EngineProcess;
 import 'package:wangcai/engine/engine_paths.dart';
 import 'package:wangcai/engine/engine_registry.dart';
 import 'package:wangcai/engine/llama_server_host.dart';
@@ -16,27 +14,7 @@ import 'package:wangcai/engine/npu_profiles.dart';
 import 'package:wangcai/engine/openvino_probe.dart';
 import 'package:wangcai/platform/local_server_inference.dart';
 
-class FakeProcess implements EngineProcess {
-  final stdoutCtl = StreamController<List<int>>();
-  final stderrCtl = StreamController<List<int>>();
-  final _exit = Completer<int>();
-  bool killed = false;
-
-  @override
-  final int pid = 4242;
-  @override
-  Stream<List<int>> get stdout => stdoutCtl.stream;
-  @override
-  Stream<List<int>> get stderr => stderrCtl.stream;
-  @override
-  Future<int> get exitCode => _exit.future;
-  @override
-  bool kill() {
-    killed = true;
-    if (!_exit.isCompleted) _exit.complete(0);
-    return true;
-  }
-}
+import '../helpers/fake_process.dart';
 
 void main() {
   setUpAll(() {
