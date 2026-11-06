@@ -8,6 +8,80 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 ## [Unreleased]
 
+0.0.5 合流（6c72416）之后已入库、随下一版发布的改动。
+
+### 新增 —— NPU 世代自适应（2026-11-05/06，Core Ultra 一/二/三代）
+
+- 探测从「只取 `OPENVINO{n}` 下标」升级为 `NpuDeviceInfo` 全貌（型号名/npuCode/MiB）；
+  世代表决 `npu_profiles.dart`（3720=一代 / 3820=二代 / 4000 系=三代 / 未知→一代保守
+  基线；名称兜底走带 `\b` 正则，防 `NPU 37200` 松匹配误判）。
+- clamp 链 `maxStableCtx`（该机实测）> 档案 `ctxOverrides`（当前空表）> `preset.ctx`；
+  实测上探闭环（成功单调回写、`OUT_OF_HOST_MEMORY` 自动 `demoteCtx` 收回被证伪档位、
+  admission 仅 ctx 门槛类规则让位实测证据）；CIM 驱动版本会话级缓存；引擎卡亮出
+  「型号 · 世代 · -dev 档位」；口径入 `docs/npu-adaptation.md`（保守起步+实测上探，
+  MiB 只当诊断不当预算）。回归锚：3720 行为逐位同 v0.0.5。
+
+### 新增 —— 语音 ASR&TTS 重构 M0–M3（2026-11-06 合流，c944c1c）
+
+- `lib/voice/` 统一编排：唤醒 KWS 双引擎仲裁、麦克风仲裁、`VoiceService`
+  （识别/播报会话状态机）；Edge TTS 降为引擎层，新增 offline 链
+  （matcha/vits → Edge 回落）与失败留痕；设置页语音区语义并入
+  （`voiceEnabled && voiceAutoSpeak` 总开关）。母方案与施工计划见
+  `docs/asr-tts-refactor-*.md`、`docs/voice-wakeup-min-spec.md`。
+
+### 修复 —— 全面健康检查清账（2026-11-06）
+
+- **基线三败清零，`flutter test` 全绿自此为常态**（1321 pass/18 skip/0 fail 首破）：
+  `thinking_runaway`（2 例）与 `agent_stream_processor`（孤立 response 记号）对齐
+  `AgentStreamProcessor` 位置门（Clover 2026-10-30）后契约，位置门行为由用例锁死；
+  UPSTREAM.md 上游债务段转已清账。
+- `TimingHints` 类默认 36000→600000：缺省被当就绪超时预算用，缺 `timingHints` 的
+  自定义 manifest 在 NPU 冷编（实测 ~10min）下必被误杀。
+- 测试腐化修：FakeProcess×5 逐字副本收编 `test/helpers/fake_process.dart`；
+  m2_dod b12034 钉死目录改扫已装 `llamacpp-*-{cuda,vulkan}`（防商店升版后静默永久
+  skip）；preset 钉字节 ±2% 容忍带（精确字节归 sha256 把关）；app_npu_flow 补
+  `WANGCAI_NPU_E2E=1` 显式门。
+- 可观测性：十三处静默 `catch (_) {}` 加 `debugPrint` 留痕（engine_store 安装/卸载、
+  chat_provider 会话随删、ssh 安全存储取密钥、routing.json 档位读写），控制流零改动。
+- 打包链：`wangcai-setup.iss` 取料统一走 `build-installer.ps1` 的 `stage\`（此前
+  硬编码 `E:\dev-tools` OV 直取，与 ps1 的 vendored 优先解析成两条链）；
+  packaging/README 从 v0.0.2 陈旧流程重写为 ps1 单一入口。
+- 文档失实修正：roadmap Phase 1 状态注记、getting-started NPU decode 数（8→14–15 t/s）。
+- 仓库卫生：`.git` 110MB→3MB（113MB 孤儿大 blob 系 reflog 持根，expire+gc 回收）；
+  `.gitignore` 补 `.zcode/`。
+
+## [0.0.5] — 2026-11-05 · 引擎线合流收官（`6c72416`）
+
+- origin/main 引擎线 P15–P20 合入：`KV_HOST_WRITE` 默认翻转修复、P16 rope、
+  P18 chunk 自动升档（`583d9ef`）。
+- 引擎线三项：`lfm3-1.7b-deep` 16K NPU 预设；按需安装 **zip 流式解包**（CUDA 包
+  800MB+ 全量驻内存导致「下载完成后崩溃」的根因修复）；引擎参数按设备条件显示。
+- 侧边栏常显并收窄到按钮宽度（用户定案）。
+- 版本串全线（pubspec / iss / ps1）+ 便携包打出。
+
+## [0.0.4] — 2026-11-05 · 数据家统一与桌面基本件（`a1d05c6`）
+
+- **数据家统一**：四家并一家进 `%APPDATA%\WangCai`（DSH 纪律；搬迁语义 6 用例：
+  子目录搬迁/幂等/冲突 `.migrated`/`.migrating` 自愈/SQLite copy 迁移/无旧库不落盘）。
+- **路由定调**（用户拍板）：NPU 主打，CUDA/Vulkan 是外挂，auto 档恒 NPU 优先。
+- JSONL 真相源通电：write-through + fast path + cwd 盖章。
+- 窗口与桌面基本件：几何记忆/最小尺寸/单实例/真标题/快捷键/右键菜单。
+- 交互去手机化三辑：main 死代码清退+附件桌面化 → sheet 全量清退+审批 composer
+  接管+缩放快捷键 → SafeArea 清退。
+- 便携包 `WangCai-0.0.4-win-x64-portable.zip`（108.1MB）打出。
+
+## [0.0.3] — 2026-11-04 · 桌面独立化 Phase 0–4
+
+- **独立化定案**：脱离上游 TongYi-Lite 独立演进（UPSTREAM.md 转分叉存档；包名
+  `tongyi_lite`→`wangcai`、品牌 WangCai/汪柴 全线换装，冻结提示词按字节一致同步）。
+- 会话/项目重构：项目 × 工作空间层级 + SQLite v7（`%APPDATA%` 项目树）。
+- 引擎管理：本地模型登记 + 参数优先级链（customArgs > defaultConfig > 模板）+
+  cuda/vulkan 按需下载 + OPENVINO 探测 + 签名瘦身。
+- 桌面 UI 重写 + 手机端配置清理（Termux 向导删除；ADB 按用户指令保留）。
+- `local_exec` 桌面执行层（cmd.exe 壳 + `LocalGit` 凭据注入）替换嵌入式沙箱。
+
+## [0.0.2] — 2026-11-03 · 汪柴助手壳 M1–M4 + 引擎横切修复
+
 2026-11-01/02 在硬件上验证的四批改动。
 
 ### 新增 —— Assistant v0.0.2（汪柴助手，2026-11-02/03 在开发机验证）
