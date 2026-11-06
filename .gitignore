@@ -76,3 +76,6 @@ tmp_store/
 
 # build artifacts — portable zip is 100+ MB, must never enter git (GitHub 100 MB blob limit)
 packaging/dist/
+
+# ZCode 会话私有草稿（计划书等，同 .claude/ 一类 agent 记忆）
+.zcode/
