@@ -48,8 +48,6 @@ dependencies:
   flutter_secure_storage: ^10.3.4
   sherpa_onnx: 1.13.8
   record: 6.2.1
-  # TODO(M2, 设计 §2.2)：background_downloader 仅 Android/iOS，ASR 模型下载器将换 dio 后移除
-  background_downloader: 8.9.5
   lpinyin: 2.0.3
   # Edge 在线 TTS（免费 neural 语音，Sec-MS-GEC 本地 token，纯 Dart WebSocket）
   edge_tts: ^0.1.5
@@ -89,3 +87,8 @@ flutter:
   assets:
     - assets/models_catalog.json
     - assets/tray_icon.ico
+    # M3 唤醒：ARMED 提示音 + 托盘状态三色（tool/gen_voice_assets.dart 生成）
+    - assets/wake_cue.wav
+    - assets/tray/voice_armed.ico
+    - assets/tray/voice_capture.ico
+    - assets/tray/voice_speak.ico

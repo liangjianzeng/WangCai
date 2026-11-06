@@ -663,6 +663,74 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
     await _persist();
   }
 
+  // ---- 语音交互总控（ASR&TTS 重构专项 §6；消费方 = VoiceService）----
+
+  /// 语音交互总开关（关 = 不占麦不加载模型，零 footprint）。
+  Future<void> setVoiceEnabled(bool value) async {
+    state = state.copyWith(voiceEnabled: value);
+    await _persist();
+  }
+
+  /// 唤醒对话开关。
+  Future<void> setVoiceWakeEnabled(bool value) async {
+    state = state.copyWith(voiceWakeEnabled: value);
+    await _persist();
+  }
+
+  /// 唤醒对话「定稿后自动发送」（D2：默认自动）。
+  Future<void> setVoiceWakeAutoSend(bool value) async {
+    state = state.copyWith(voiceWakeAutoSend: value);
+    await _persist();
+  }
+
+  /// 唤醒后无输入结束秒数（3–30）。
+  Future<void> setVoiceWakeNoInputSec(int value) async {
+    state = state.copyWith(voiceWakeNoInputSec: value.clamp(3, 30));
+    await _persist();
+  }
+
+  /// 单次输入最长秒数（5–600）。
+  Future<void> setVoiceWakeMaxInputSec(int value) async {
+    state = state.copyWith(voiceWakeMaxInputSec: value.clamp(5, 600));
+    await _persist();
+  }
+
+  /// VAD 段尾静音定稿毫秒（600–1200）。
+  Future<void> setVoiceVadTailSilenceMs(int value) async {
+    state = state.copyWith(voiceVadTailSilenceMs: value.clamp(600, 1200));
+    await _persist();
+  }
+
+  /// TTS 引擎（'offline' 离线默认 / 'edge' 在线优先，失败回落离线）。
+  Future<void> setVoiceTtsEngine(String value) async {
+    state = state.copyWith(voiceTtsEngine: value == 'edge' ? 'edge' : 'offline');
+    await _persist();
+  }
+
+  /// 自动朗读总开关（生效 = voiceEnabled && voiceAutoSpeak）。
+  Future<void> setVoiceAutoSpeak(bool value) async {
+    state = state.copyWith(voiceAutoSpeak: value);
+    await _persist();
+  }
+
+  /// 快速响应模式（SenseVoice/TTS 常驻预热）。
+  Future<void> setVoiceQuickResponse(bool value) async {
+    state = state.copyWith(voiceQuickResponse: value);
+    await _persist();
+  }
+
+  /// 常驻语音唤醒「汪柴」（KWS）开关——副作用（引导下载/起停麦）在设置页处理。
+  Future<void> setVoiceWakeKws(bool value) async {
+    state = state.copyWith(voiceWakeKws: value);
+    await _persist();
+  }
+
+  /// 唤醒灵敏度（UI 0.3–0.9；到底层阈值的映射在 kwsThresholdFromSensitivity）。
+  Future<void> setVoiceWakeSensitivity(double value) async {
+    state = state.copyWith(voiceWakeSensitivity: value.clamp(0.3, 0.9));
+    await _persist();
+  }
+
   // ---- 语音播报（Edge TTS）----
 
   /// Edge TTS 总开关。

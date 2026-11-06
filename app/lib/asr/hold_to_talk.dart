@@ -3,23 +3,26 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import 'asr_settings.dart';
-import 'asr_model_manager.dart';
-import 'sherpa_streaming_asr.dart';
+import '../voice/voice_model_manager.dart' show VoiceModelManager, VoiceModels, VoiceDownloadCancelled;
+import '../voice/voice_service.dart';
 
-/// 按住说话会话：长按语音按钮期间的浮层 UI + 引擎生命周期。
+/// 按住说话会话：长按语音按钮期间的浮层 UI（引擎生命周期已收编 VoiceService，
+/// T1.8 消费方收口——会话只是门面上的一个场景句柄）。
 ///
 /// 交互（微信式）：
-/// - `start`：先插浮层（「准备中」），引擎就绪后切换实时回显；
+/// - `start`：先插浮层（「准备中」），[VoiceService.beginCapture] 就绪后切换实时回显；
 /// - 上滑超过阈值 → cancelMode（浮层提示「松开取消」）；
 /// - `end`：松手时取终稿（cancelMode 或空文本返回空串）。
 ///
-/// 生命周期坑（真机实测）：首次 start 要加载 ~160MB 模型（数秒），期间
-/// 用户可能已松手——调用方必须在 start 前把会话登记到持有方，松手时若
-/// 引擎未就绪则置 [cancelRequested]，由 start 完成侧负责收尾，避免会话
-/// 孤儿化（浮层滞留 + 麦克风常开）。
+/// 生命周期坑（真机实测，语义原样保留）：首次 start 要加载 ~160MB 模型（数秒），
+/// 期间用户可能已松手——调用方必须在 start 前把会话登记到持有方，松手时若引擎
+/// 未就绪则置 [cancelRequested]，由 start 完成侧负责收尾，避免会话孤儿化
+/// （浮层滞留 + 麦克风常开）。
 class HoldToTalkSession {
-  HoldToTalkSession();
+  HoldToTalkSession({VoiceService? service})
+      : _service = service ?? VoiceService.instance;
+
+  final VoiceService _service;
 
   /// 实时转写文本（已断句定稿 + 当前 partial）。
   final ValueNotifier<String> partial = ValueNotifier('');
@@ -34,10 +37,8 @@ class HoldToTalkSession {
   bool cancelRequested = false;
 
   OverlayEntry? _overlay;
-  SherpaStreamingAsr? _engine;
   StreamSubscription<String>? _sub;
   bool _engineStarted = false;
-  bool _aborted = false;
 
   /// 引擎是否已开始录音（end 语义分叉的依据）。
   bool get isStarted => _engineStarted;
@@ -45,47 +46,27 @@ class HoldToTalkSession {
   /// 上滑取消的位移阈值（逻辑像素，相对长按起点）。
   static const double cancelSlop = 70;
 
-  /// 启动会话：插浮层 → 加载引擎 → 开始录音 → 切实时回显。
-  /// 返回 false = 启动失败（浮层已自行撤除）。
+  /// 启动会话：插浮层 → 门面开麦 → 切实时回显。
+  /// 返回 false = 启动失败（浮层已自行撤除；被拒原因见 VoiceService 日志：
+  /// 会话互斥 / 播报期关麦 / 引擎起不来）。
   Future<bool> start(BuildContext context) async {
     // 先取 OverlayState（context 跨 async gap 使用会告警）
     final overlay = Overlay.of(context, rootOverlay: true);
     _overlay = OverlayEntry(builder: (_) => _HoldOverlay(session: this));
     overlay.insert(_overlay!);
-    bool recording = false;
-    // 成功标记必须在 try 内置位：finally 不能用 [_engineStarted] 判断——
-    // 它在 finally 之后才置 true，恒为 false 会把成功路径也当成失败清理
-    // （引擎刚启动即被 stop/dispose，随后 _engine! 空指针崩溃，真机实测）。
-    bool success = false;
-    try {
-      // 按配置的增强档位加载引擎：同一流式模型，增强档位启用
-      // beam search + 热词 + blankPenalty（不新增下载、流式不变）。
-      final enhanced = await AsrSettings.loadAsrMode() == AsrMode.enhanced;
-      _engine = await SherpaStreamingAsr.create(
-          await AsrModelManager.modelDir(),
-          enhanced: enhanced);
-      if (_aborted) return false;
-      await _engine!.start();
-      recording = true;
-      if (_aborted) return false;
-      success = true;
-    } catch (e) {
-      debugPrint('[DSH][asr] session start failed: $e');
+    final ok = await _service.beginCapture(scene: VoiceScene.holdToTalk);
+    if (cancelRequested) {
+      // 加载期间用户已松手：门面侧按取消收尾（归还麦克风），会话报废。
+      await _service.cancelCapture();
+      _removeOverlay();
       return false;
-    } finally {
-      if (!success) {
-        // 失败或加载期间被中止：清理浮层与引擎
-        _removeOverlay();
-        final engine = _engine;
-        _engine = null;
-        if (engine != null) {
-          if (recording) await engine.stop();
-          await engine.dispose();
-        }
-      }
+    }
+    if (!ok) {
+      _removeOverlay();
+      return false;
     }
     _engineStarted = true;
-    _sub = _engine!.partialText.listen((t) {
+    _sub = _service.partialText.listen((t) {
       partial.value = t;
     });
     ready.value = true;
@@ -93,10 +74,9 @@ class HoldToTalkSession {
   }
 
   /// 结束会话：[cancelled] 为 true 时丢弃结果。返回终稿文本（可能为空串）。
-  /// 引擎尚未就绪时调用 = 请求中止，由 start 的 finally 负责清理。
+  /// 引擎尚未就绪时调用 = 请求中止，由 start 侧负责收尾。
   Future<String> end({bool cancelled = false}) async {
     if (!_engineStarted) {
-      _aborted = true;
       cancelRequested = true;
       _removeOverlay();
       return '';
@@ -104,9 +84,8 @@ class HoldToTalkSession {
     _removeOverlay();
     await _sub?.cancel();
     _sub = null;
-    final text = cancelled ? '' : await _engine?.stop() ?? '';
-    await _engine?.dispose();
-    _engine = null;
+    final text = await _service.endCapture(cancelled: cancelled);
+    _engineStarted = false;
     return text.trim();
   }
 
@@ -295,22 +274,36 @@ class _ListeningIndicatorState extends State<_ListeningIndicator>
 class AsrModelGate {
   AsrModelGate._();
 
-  /// 确保模型就绪。已就绪直接返回 true；否则弹下载对话框：
-  /// 完成 → true；用户取消/失败未重试 → false（调用方回落系统识别）。
-  static Future<bool> ensureModelReady(BuildContext context) async {
-    if (await AsrModelManager.isReady()) return true;
+  /// 确保模型就绪（T2.2 起支持任意注册表条目——唤醒对话下 sensevoice+vad）。
+  /// 已就绪直接返回 true；否则弹下载对话框：完成 → true；用户取消/失败未
+  /// 重试 → false（调用方回落）。
+  static Future<bool> ensureModelReady(
+    BuildContext context, {
+    String id = VoiceModels.streaming,
+    String title = '启用端侧语音识别',
+    String intro = '首次使用需下载中文识别模型（约 160MB，一次即可）：',
+  }) async {
+    if (await VoiceModelManager.isReady(id)) return true;
     if (!context.mounted) return false;
     final ok = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => const _AsrDownloadDialog(),
+      builder: (_) => _AsrDownloadDialog(id: id, title: title, intro: intro),
     );
     return ok == true;
   }
 }
 
 class _AsrDownloadDialog extends StatefulWidget {
-  const _AsrDownloadDialog();
+  const _AsrDownloadDialog({
+    required this.id,
+    required this.title,
+    required this.intro,
+  });
+
+  final String id;
+  final String title;
+  final String intro;
 
   @override
   State<_AsrDownloadDialog> createState() => _AsrDownloadDialogState();
@@ -334,7 +327,7 @@ class _AsrDownloadDialogState extends State<_AsrDownloadDialog> {
       _status = '准备下载…';
     });
     try {
-      await AsrModelManager.download(
+      await VoiceModelManager.download(widget.id,
         onProgress: (p, file) {
           _progress.value = p;
           if (mounted) {
@@ -346,7 +339,7 @@ class _AsrDownloadDialogState extends State<_AsrDownloadDialog> {
       );
       if (!mounted) return;
       Navigator.of(context).pop(true);
-    } on AsrDownloadCancelled {
+    } on VoiceDownloadCancelled {
       if (mounted) Navigator.of(context).pop(false);
     } catch (e) {
       debugPrint('[DSH][asr] download failed: $e');
@@ -358,12 +351,12 @@ class _AsrDownloadDialogState extends State<_AsrDownloadDialog> {
 
   Future<void> _cancel() async {
     _cancelled = true;
-    await AsrModelManager.cancelDownloads();
+    await VoiceModelManager.cancelDownloads();
   }
 
   @override
   void dispose() {
-    if (!_cancelled) unawaited(AsrModelManager.cancelDownloads());
+    if (!_cancelled) unawaited(VoiceModelManager.cancelDownloads());
     _progress.dispose();
     super.dispose();
   }
@@ -372,16 +365,15 @@ class _AsrDownloadDialogState extends State<_AsrDownloadDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return AlertDialog(
-      title: const Text('启用端侧语音识别'),
+      title: Text(widget.title),
       content: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('首次使用需下载中文识别模型（约 160MB，一次即可）：'),
+          Text(widget.intro),
           const SizedBox(height: 8),
           const Text('· 下载到应用私有目录，不打包也无需重复下载\n'
-              '· 中断（断网/杀 App）后自动断点续传\n'
-              '· 下载完成后长按右侧语音按钮即可按住说话'),
+              '· 中断（断网/杀 App）后自动断点续传'),
           const SizedBox(height: 14),
           ValueListenableBuilder<double>(
             valueListenable: _progress,

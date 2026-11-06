@@ -4,6 +4,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../asr/hold_to_talk.dart';
+import '../asr/kws_engine.dart' show kwsThresholdFromSensitivity;
+import '../voice/voice_service.dart';
+import '../voice/voice_model_manager.dart' show VoiceModels;
+import '../voice/wake_session.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:permission_handler/permission_handler.dart'
     show openAppSettings;
@@ -146,6 +150,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// 缓冲期内尚未定稿的会话（供 [_cancelPendingVoiceEnd] 丢弃/收尾）。
   HoldToTalkSession? _pendingVoiceSession;
 
+  /// 唤醒对话会话（T2.2 模拟态）：按钮触发，浮条收稿，D2 缓冲自动发送。
+  WakeSession? _wakeSession;
+
   // 附件面板的暂存选择（bottom sheet 回调里不能直接 await pick，
   // 先落字段、pop 后统一分发）。
   // 会话批量选择状态
@@ -158,9 +165,62 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     _initStoragePermission();
     _initConversation();
     _initAutoLoadDefaultModel();
+    _initWakeKws();
     // 项目头部/面板的连接色要跟着"激活工作区 / SSH 连接状态"实时变。
     DevSessionController.instance.addListener(_onDevChanged);
     SshEnvironmentService.instance.addListener(_onDevChanged);
+  }
+
+  // ---- M3 常驻唤醒（说「汪柴」免触发起会话；设置页负责引导与开关）----
+
+  StreamSubscription<void>? _wakeDetectedSub;
+
+  void _initWakeKws() {
+    _wakeDetectedSub =
+        VoiceService.instance.wakeDetected.listen((_) => _onWakeDetected());
+    // 首帧后按设置拉起待命麦（不就位静默：模型缺/总开关关，留痕在门面）。
+    WidgetsBinding.instance.addPostFrameCallback((_) => _maybeStartWakeListening());
+  }
+
+  Future<void> _maybeStartWakeListening() async {
+    final s = ref.read(settingsProvider);
+    if (!s.voiceEnabled || !s.voiceWakeEnabled || !s.voiceWakeKws) return;
+    await VoiceService.instance.startWakeListening(
+        threshold: kwsThresholdFromSensitivity(s.voiceWakeSensitivity));
+  }
+
+  void _onWakeDetected() {
+    if (!mounted) return;
+    final current = _wakeSession;
+    if (current != null && current.active) return; // 会话期命中忽略（麦本就让着）
+    final s = ref.read(settingsProvider);
+    final session = WakeSession(
+      onDeliver: _deliverWakeText,
+      onEnded: () {
+        if (mounted) setState(() => _wakeSession = null);
+      },
+      autoSend: s.voiceWakeAutoSend,
+      noInputSec: s.voiceWakeNoInputSec,
+      maxInputSec: s.voiceWakeMaxInputSec,
+    );
+    unawaited(_launchKickedWakeSession(session));
+  }
+
+  Future<void> _launchKickedWakeSession(WakeSession session) async {
+    // KWS 起时已过权限/模型闸；这里失败 = 中途麦被占/识别模型被删，
+    // 提示后回待命（VoiceService.endCapture 路径会自动 resumeWakeListening）。
+    final ok = await session.start(this.context);
+    if (!mounted) {
+      unawaited(session.abort());
+      return;
+    }
+    if (ok) {
+      setState(() => _wakeSession = session);
+    } else {
+      setState(() => _wakeSession = null);
+      ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(
+          content: Text('唤醒会话启动失败（识别模型或麦克风异常）')));
+    }
   }
 
   void _onDevChanged() {
@@ -171,6 +231,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   void dispose() {
     DevSessionController.instance.removeListener(_onDevChanged);
     SshEnvironmentService.instance.removeListener(_onDevChanged);
+    unawaited(_wakeDetectedSub?.cancel());
+    unawaited(_wakeSession?.abort());
+    _wakeSession = null;
     _scrollController.dispose();
     _textController.dispose();
     _conversationSearchCtrl.dispose();
@@ -554,6 +617,96 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (timer == null) return;
     timer.cancel();
     if (session != null) await _finalizeVoice(session, cancelled: true);
+  }
+
+  // ---- 唤醒对话（T2.2/T2.4，模拟态：按钮触发；KWS 常驻 M3）---------------
+
+  /// 唤醒对话入口（输入行 🎙️ 按钮）。再点一次 = 结束当前会话。
+  Future<void> _startWakeSession() async {
+    final settings = ref.read(settingsProvider);
+    // 总开关语义（§6）：关 = 不占麦不加载零 footprint——入口直接拦。
+    if (!settings.voiceEnabled) {
+      if (mounted) {
+        ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(
+            content: Text('语音交互总开关未开启（设置 → 语音 → 语音交互）')));
+      }
+      return;
+    }
+    if (!settings.voiceWakeEnabled) {
+      if (mounted) {
+        ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(
+            content: Text('唤醒对话未开启（设置 → 语音 → 唤醒对话）')));
+      }
+      return;
+    }
+    // 进行中再点 = 结束（浮条里也有「结束」，双出口一致）。
+    final current = _wakeSession;
+    if (current != null && current.active) {
+      _wakeSession = null;
+      await current.stop();
+      return;
+    }
+    try {
+      final hasMic =
+          await StoragePermissionService.requestMicrophonePermission();
+      if (!hasMic) {
+        if (mounted) _showMicPermissionDialog();
+        return;
+      }
+      // 模型 gate：唤醒对话 = SenseVoice（高精度）+ VAD（分段），各自引导下载。
+      if (!await AsrModelGate.ensureModelReady(this.context,
+          id: VoiceModels.sensevoice,
+          title: '启用唤醒对话',
+          intro: '首次使用需下载唤醒对话识别模型（约 240MB，一次即可）：')) {
+        return;
+      }
+      if (!await AsrModelGate.ensureModelReady(this.context,
+          id: VoiceModels.vad,
+          title: '启用唤醒对话',
+          intro: '还需下载语音分段模型（约 1MB，一次即可）：')) {
+        return;
+      }
+      final session = WakeSession(
+        onDeliver: _deliverWakeText,
+        onEnded: () {
+          if (mounted) setState(() => _wakeSession = null);
+        },
+        autoSend: settings.voiceWakeAutoSend, // D2：默认自动发送
+        noInputSec: settings.voiceWakeNoInputSec,
+        maxInputSec: settings.voiceWakeMaxInputSec,
+      );
+      final ok = await session.start(this.context);
+      if (!mounted) return;
+      if (ok) {
+        setState(() => _wakeSession = session);
+      } else {
+        ScaffoldMessenger.of(this.context).showSnackBar(const SnackBar(
+            content: Text('唤醒会话启动失败（语音可能正忙，稍后再试）')));
+      }
+    } catch (e) {
+      debugPrint('[Voice] wake session error: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(this.context)
+            .showSnackBar(SnackBar(content: Text('唤醒会话异常：$e')));
+      }
+    }
+  }
+
+  /// 唤醒定稿出口：进输入框；[send] = D2 自动发送（3s 缓冲期到点）。
+  Future<void> _deliverWakeText(String text, bool send) async {
+    if (!mounted) return;
+    setState(() => _wakeSession = null);
+    final existing = _textController.text.trim();
+    _textController.text = existing.isEmpty ? text : '$existing $text';
+    _textController.selection = TextSelection.fromPosition(
+        TextPosition(offset: _textController.text.length));
+    if (send) {
+      try {
+        await _sendMessage();
+      } catch (e) {
+        debugPrint('[Voice] wake send error: $e');
+      }
+    }
   }
 
   /// 麦克风权限被拒：引导去系统设置授权（无需重装 APK）。
@@ -2334,6 +2487,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   _buildContextUsageRing(),
                   _buildQuickActions(),
                   const Spacer(),
+                  // 唤醒对话入口（T2.2 模拟态：按钮触发，KWS 常驻 M3）；
+                  // 进行中变为高亮 stop 态，再点一次收尾（浮条里也有「结束」）。
+                  IconButton(
+                    visualDensity: PluginInputIcon.kDensity,
+                    icon: Icon(
+                      _wakeSession?.active ?? false
+                          ? Icons.stop_circle_outlined
+                          : Icons.record_voice_over_outlined,
+                      size: PluginInputIcon.kIconSize,
+                      color: _wakeSession?.active ?? false
+                          ? Theme.of(context).colorScheme.primary
+                          : null,
+                    ),
+                    tooltip: '唤醒对话（说完停顿自动识别）',
+                    constraints: const BoxConstraints(
+                        minWidth: PluginInputIcon.kBoxSize,
+                        minHeight: PluginInputIcon.kBoxSize),
+                    padding: EdgeInsets.zero,
+                    onPressed: _startWakeSession,
+                  ),
                   if (!isGenerating) _buildMicKey(),
                   _buildSendKey(isGenerating),
                 ],

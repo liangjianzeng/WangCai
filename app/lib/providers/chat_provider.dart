@@ -6,7 +6,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
-import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import '../models/chat_message.dart';
 import '../models/conversation.dart';
@@ -28,7 +27,7 @@ import '../agent/dev/workspace.dart' show DevWorkspace;
 import '../agent/web_search/web_search_provider.dart';
 import '../agent/context_eng/compaction.dart' show DeterministicCompaction;
 import '../agent/context_eng/token_estimate.dart' show estimateContextTokens;
-import '../tts/edge_tts_service.dart' show EdgeTtsService;
+import '../voice/voice_service.dart';
 import '../agent/loop/agent.dart'
     show ReactLoopAgent, TurnEndReason, TurnEndReasonKind;
 import '../agent/loop/config.dart' as loopConfig;
@@ -532,18 +531,23 @@ class ChatNotifier extends StateNotifier<bool> {
   ///
   /// [imagePaths] 多图（≤10，首张即 [imagePath]）；[attachmentPaths] 智能体
   /// 附件（≤5，仅智能体模式消费——普通聊天引擎无文件阅读能力，忽略并提示）。
-  /// 自动播报（Edge TTS，设置开启时）：回复落库后朗读；失败静默不打断聊天。
+  /// 自动播报（T2.7 语义并入 + T2.5 引擎链）：生效条件 =
+  /// `voiceEnabled && voiceAutoSpeak`（总开关语义，母方案 §5.2）；
+  /// 引擎按 voiceTtsEngine 选路（offline 默认 = matcha/vits → Edge 回落；
+  /// edge = 在线优先），失败留痕（设置页黄条）不打断聊天。
   void _maybeAutoSpeak(String conversationId, String text) {
     final settings = _ref.read(settingsProvider);
-    if (!settings.edgeTtsEnabled || !settings.edgeTtsAutoSpeak) return;
+    if (!settings.voiceEnabled || !settings.voiceAutoSpeak) return;
     if (text.trim().isEmpty) return;
-    unawaited(EdgeTtsService.instance.speak(
+    unawaited(VoiceService.instance.speakReply(
+      'auto-$conversationId',
       text,
-      key: 'auto-$conversationId',
       voice: settings.edgeTtsVoice,
       rate: settings.edgeTtsRate,
       pitch: settings.edgeTtsPitch,
       volume: settings.edgeTtsVolume,
+      preferEdge: settings.voiceTtsEngine == 'edge',
+      edgeAllowed: settings.edgeTtsEnabled,
     ));
   }
 
@@ -557,7 +561,8 @@ class ChatNotifier extends StateNotifier<bool> {
     // 路由未定时先按纯槽位计数预检；路由确定后再补「本地互斥」校验。
     final settings = _ref.read(settingsProvider);
     // 新消息发出 → 停掉正在进行的播报（避免旧回答声音与新提问交叠）。
-    unawaited(EdgeTtsService.instance.stop());
+    // T1.8：播控经 VoiceService 门面（无条件停，含遗留播报位）。
+    unawaited(VoiceService.instance.stopSpeak());
     final admission = checkTurnAdmission(
       activeCount: _activeTurns.length,
       activeHasLocal: false,
@@ -2815,7 +2820,8 @@ class ChatNotifier extends StateNotifier<bool> {
   /// 为空停**全部**活跃回合（模型卸载前调用，避免引擎被并行回合占用）。
   Future<void> stopGeneration({String? conversationId}) async {
     // 停止生成的同时停掉播报（用户明确喊停，不应继续出声）。
-    unawaited(EdgeTtsService.instance.stop());
+    // T1.8：播控经 VoiceService 门面（无条件停）。
+    unawaited(VoiceService.instance.stopSpeak());
     final ids = conversationId != null
         ? (_activeTurns.containsKey(conversationId)
             ? [conversationId]

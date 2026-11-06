@@ -327,41 +327,8 @@ class InferenceService implements InferenceBackend {
     }
   }
 
-  // ------------------------------------------------------------------
-  // 语音输入（端侧拾音 + 原生语音理解）
-  // ------------------------------------------------------------------
-
-  /// 当前已加载模型是否支持语音（音频）理解。false 时麦克风按钮应禁用。
-  Future<bool> supportsAudio() async {
-    try {
-      return await _channel.invokeMethod('supportsAudio') == true;
-    } catch (e) {
-      debugPrint('[InferenceService] supportsAudio failed: $e');
-      return false;
-    }
-  }
-
-  /// 开始麦克风拾音（按住说话）。返回 true 表示已开始；原生侧按模型要求的
-  /// 采样率录制 16-bit PCM 单声道。
-  Future<bool> startRecording() async {
-    try {
-      return await _channel.invokeMethod('startRecording') == true;
-    } catch (e) {
-      debugPrint('[InferenceService] startRecording failed: $e');
-      return false;
-    }
-  }
-
-  /// 停止拾音并落盘 WAV 文件。返回 WAV 路径；过短/失败时返回 null。
-  Future<String?> stopRecording() async {
-    try {
-      final path = await _channel.invokeMethod('stopRecording');
-      return path as String?;
-    } catch (e) {
-      debugPrint('[InferenceService] stopRecording failed: $e');
-      return null;
-    }
-  }
+  // 语音输入三件套（supportsAudio/startRecording/stopRecording）已随 D4 裁决删除：
+  // 端侧拾音归 VoiceService（sherpa 引擎族），不再走推理通道。
 
   Future<Map<String, double>> benchmark({
     String prompt = 'List 5 common fruits.',

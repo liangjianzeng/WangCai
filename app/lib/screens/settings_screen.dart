@@ -6,6 +6,7 @@
 // Tab 3: ℹ️ 关于 - 应用信息
 // ============================================================
 
+import 'dart:async';
 import 'dart:io';
 import '../plugins/panel/plugins_screen.dart';
 
@@ -45,8 +46,11 @@ import 'engine_manager_section.dart' show EngineManagerSection; // WangCai 分�
 import '../agent/adb/adb_client.dart';
 import '../agent/adb/adb_targets.dart';
 import '../agent/mcp/mcp_client.dart' show McpServerConfig;
-import '../asr/asr_model_manager.dart' show AsrModelManager;
+import '../voice/voice_model_manager.dart'
+    show VoiceModelManager, VoiceModels;
+import '../voice/voice_service.dart';
 import '../asr/hold_to_talk.dart' show AsrModelGate;
+import '../asr/kws_engine.dart' show kwsThresholdFromSensitivity;
 import '../asr/default_hotwords.dart'
     show
         HotwordCategory,
@@ -3933,303 +3937,10 @@ class CapabilitySettingsBody extends ConsumerStatefulWidget {
 class CapabilitySettingsBodyState
     extends ConsumerState<CapabilitySettingsBody> {
   void _gotoAgentTab() => widget.controller?.animateTo(3);
-  // ================= 语音（Edge TTS 播报 + 端侧 ASR 输入）=================
-
-  /// Edge TTS 音色列表（null = 拉取中；失败回退内置常用清单）。
-  List<TtsVoiceInfo>? _ttsVoices;
-  Future<bool>? _asrModelReady;
-
-  Future<void> _loadTtsVoices() async {
-    final voices = await EdgeTtsService.instance.listVoices();
-    if (!mounted) return;
-    setState(() => _ttsVoices = voices);
-  }
-
-  static String _signedPct(int v) => '${v >= 0 ? '+' : ''}$v%';
-  static String _signedHz(int v) => '${v >= 0 ? '+' : ''}$v Hz';
-
-  @override
-  void initState() {
-    super.initState();
-    _loadTtsVoices();
-  }
-
-  Widget _buildTtsCard(InferenceSettings settings, SettingsNotifier notifier) {
-    final voices = _ttsVoices;
-    final groups = groupTtsVoices(voices ?? kFallbackVoices);
-    final tts = EdgeTtsService.instance;
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildToggleTitle(
-              '🔊 语音播报（Edge TTS）',
-              settings.edgeTtsEnabled,
-              notifier.setEdgeTtsEnabled,
-              subtitle: '开 = 回答气泡出现 🔊 播报按钮；需联网（免费在线接口，'
-                  '微软侧随时可能调整，失败会静默降级不打断聊天）',
-            ),
-            const SizedBox(height: 8),
-            // 子设置：总开关关闭时置灰。
-            Opacity(
-              opacity: settings.edgeTtsEnabled ? 1.0 : 0.45,
-              child: IgnorePointer(
-                ignoring: !settings.edgeTtsEnabled,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    _buildToggleTitle(
-                      '回复后自动播报',
-                      settings.edgeTtsAutoSpeak,
-                      notifier.setEdgeTtsAutoSpeak,
-                    ),
-                    const SizedBox(height: 8),
-                    // 音色下拉（拉取失败回退内置清单）。
-                    // isExpanded=true：选中项占满行宽——方言音色全名很长
-                    // （zh-CN-shaanxi-XiaoniNeural），不放开会把 suffixIcon
-                    // 挤出界 → RenderFlex RIGHT OVERFLOWED 溢出条遮挡 UI
-                    //（真机实锤 87px）。
-                    DropdownButtonFormField<String>(
-                      value: _ttsVoiceInList(voices, settings.edgeTtsVoice),
-                      isExpanded: true,
-                      decoration: InputDecoration(
-                        labelText: '音色',
-                        border: const OutlineInputBorder(),
-                        isDense: true,
-                        suffixIcon: voices == null
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: Padding(
-                                  padding: EdgeInsets.all(8),
-                                  child:
-                                      CircularProgressIndicator(strokeWidth: 2),
-                                ),
-                              )
-                            : IconButton(
-                                icon: const Icon(Icons.refresh, size: 18),
-                                onPressed: () {
-                                  setState(() => _ttsVoices = null);
-                                  _loadTtsVoices();
-                                },
-                              ),
-                      ),
-                      items: [
-                        // 分组头（不可点，value 用哨兵防与真实音色冲突）。
-                        for (var i = 0; i < groups.length; i++) ...[
-                          DropdownMenuItem<String>(
-                            enabled: false,
-                            value: '◆group$i',
-                            child: Text(
-                              '── ${groups[i].title} ──',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: Theme.of(context).colorScheme.primary,
-                              ),
-                            ),
-                          ),
-                          for (final v in groups[i].voices)
-                            DropdownMenuItem(
-                              value: v.shortName,
-                              child: Text('${v.localName} · ${v.shortName}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(fontSize: 13)),
-                            ),
-                        ],
-                      ],
-                      onChanged: (v) {
-                        if (v != null) notifier.setEdgeTtsVoice(v);
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    _buildSliderRow(
-                      label: '语速',
-                      value: settings.edgeTtsRate,
-                      min: -50,
-                      max: 100,
-                      divisions: 30,
-                      display: _signedPct(settings.edgeTtsRate),
-                      onChanged: notifier.setEdgeTtsRate,
-                    ),
-                    _buildSliderRow(
-                      label: '音调',
-                      value: settings.edgeTtsPitch,
-                      min: -50,
-                      max: 50,
-                      divisions: 20,
-                      display: _signedHz(settings.edgeTtsPitch),
-                      onChanged: notifier.setEdgeTtsPitch,
-                    ),
-                    _buildSliderRow(
-                      label: '音量',
-                      value: settings.edgeTtsVolume,
-                      min: -50,
-                      max: 50,
-                      divisions: 20,
-                      display: _signedPct(settings.edgeTtsVolume),
-                      onChanged: notifier.setEdgeTtsVolume,
-                    ),
-                    const SizedBox(height: 4),
-                    // 试听：播报中显示停止。
-                    ValueListenableBuilder<String?>(
-                      valueListenable: tts.playingKey,
-                      builder: (context, playing, _) {
-                        final isPreview = playing == 'preview';
-                        return OutlinedButton.icon(
-                          icon: Icon(
-                            isPreview ? Icons.stop : Icons.volume_up,
-                            size: 18,
-                          ),
-                          label: Text(isPreview ? '停止' : '试听'),
-                          onPressed: () async {
-                            if (isPreview) {
-                              await tts.stop();
-                              return;
-                            }
-                            final ok = await tts.speak(
-                              // 英文音色读不出中文（服务端返回空音频），
-                              // 试听文本按音色语言选择。
-                              settings.edgeTtsVoice.startsWith('en-')
-                                  ? 'Hello, this is the TongYi-Lite voice '
-                                      'preview. Rate ${_signedPct(settings.edgeTtsRate)}.'
-                                  : '你好，这是 TongYi-Lite 的语音播报效果。'
-                                      '当前语速${_signedPct(settings.edgeTtsRate)}，'
-                                      '音色${settings.edgeTtsVoice}。',
-                              key: 'preview',
-                              voice: settings.edgeTtsVoice,
-                              rate: settings.edgeTtsRate,
-                              pitch: settings.edgeTtsPitch,
-                              volume: settings.edgeTtsVolume,
-                            );
-                            if (ok || !mounted) return;
-                            final err = tts.lastError;
-                            if (err == null) return;
-                            ScaffoldMessenger.of(context)
-                              ..hideCurrentSnackBar()
-                              ..showSnackBar(SnackBar(
-                                content: Text('🔊 试听失败：$err'),
-                                duration: const Duration(seconds: 4),
-                              ));
-                          },
-                        );
-                      },
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  /// 音色列表里不存在当前设置值（拉取失败/下架）→ 返回 null 让下拉显示空，
-  /// 但保存值不动，列表恢复后自动回显。
-  String? _ttsVoiceInList(List<TtsVoiceInfo>? voices, String current) {
-    if (voices == null) return current;
-    for (final v in voices) {
-      if (v.shortName == current) return current;
-    }
-    return null;
-  }
-
-  Future<void> _editAsrHotwords(SettingsNotifier notifier) async {
-    final ctrl = TextEditingController(text: settings0HotwordCustom(notifier));
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('自定义热词'),
-        content: TextField(
-          controller: ctrl,
-          maxLines: 8,
-          minLines: 4,
-          decoration: const InputDecoration(
-            hintText: '每行一个词，例如：\n彤 Yi\nTongYi-Lite\nsherpa',
-            border: OutlineInputBorder(),
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('保存')),
-        ],
-      ),
-    );
-    if (ok == true) {
-      await notifier.setAsrHotwordCustom(ctrl.text);
-      if (mounted) setState(() {});
-    }
-  }
-
-  String settings0HotwordCustom(SettingsNotifier notifier) =>
-      notifier.state.asrHotwordCustom;
-
-  /// 编辑某个热词分类的词表：预填生效词（默认 + 增 − 删），保存时算差量
-  /// （增词 = 新表 − 默认表；删词 = 默认表 − 新表）持久化；「恢复默认」
-  /// 清空该分类差量。
-  Future<void> _editAsrCategoryWords(
-      HotwordCategory cat, SettingsNotifier notifier) async {
-    final defaults = defaultCategoryWords(cat.id);
-    final effective = effectiveCategoryWords(cat.id,
-        notifier.state.asrHotwordAdded, notifier.state.asrHotwordRemoved);
-    final ctrl = TextEditingController(text: effective.join('\n'));
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text('热词：${cat.name}'),
-        content: SizedBox(
-          width: double.maxFinite,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                  '内置 ${defaults.length} 个词，当前生效 '
-                  '${effective.length} 个。一行一个词：新增行 = 加词，'
-                  '删掉行 = 从该分类移除。',
-                  style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              const SizedBox(height: 8),
-              TextField(
-                controller: ctrl,
-                maxLines: 12,
-                minLines: 8,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => ctrl.text = defaults.join('\n'),
-            child: const Text('恢复默认'),
-          ),
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('保存')),
-        ],
-      ),
-    );
-    if (ok != true) return;
-    final d = diffCategoryWords(cat.id, ctrl.text.split('\n'));
-    await notifier.setAsrHotwordCategoryEdit(cat.id, d.added, d.removed);
-    if (mounted) setState(() {});
-  }
-
+  // ================= 语音（T1.6 合并到单一 VoiceSettingsBody）=================
+  // 语音播报/输入/热词/模型管理全部收口到 VoiceSettingsBody（主页侧栏「语音」
+  // 节唯一挂载），本面板只留一行入口——两份逐行重复的语音卡是 2026-11 事故源
+  // （改一份漏一份），T1.6 拍板删除副本。
 
   Widget _header(String title, String subtitle) {
     return Padding(
@@ -4306,186 +4017,10 @@ class CapabilitySettingsBodyState
             _infoRow('人格（Persona）', '标准 + 自定义', '标准人格开箱即用；增删自定义人格在「智能体」Tab',
                 _gotoAgentTab),
           ]),
-          _header('🔊 语音播报（Edge TTS）',
-              '回答气泡出现 🔊 播报按钮；联网免费接口，失败静默降级'),
-          _buildTtsCard(settings, notifier),
-          const SizedBox(height: 14),
-          _header('🎙️ 语音输入（端侧识别）',
-              'sherpa-onnx 流式 ASR；热词偏置提升术语识别'),
-          Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                              // ---- 端侧语音输入（sherpa-onnx ASR）设置 ----
-                              _buildSectionHeader('🎙️ 语音输入（端侧识别）', context),
-                              _buildToggleTitle(
-                                '增强识别模式',
-                                settings.asrEnhancedMode,
-                                notifier.setAsrEnhancedMode,
-                                subtitle: 'beam search + 热词偏置：识别更准，首字延迟略增'
-                                    '（默认标准档 = greedy 流式）',
-                              ),
-                              const SizedBox(height: 4),
-                              Text('热词分类（未选 = 全部启用；提升术语识别准确率）',
-                                  style: TextStyle(
-                                      fontSize: 12, color: Colors.grey.shade600)),
-                              const SizedBox(height: 4),
-                              Wrap(
-                                spacing: 6,
-                                runSpacing: 2,
-                                children: [
-                                  for (final cat in hotwordCategories)
-                                    FilterChip(
-                                      label: Text(cat.name,
-                                          style: const TextStyle(fontSize: 11)),
-                                      selected:
-                                          settings.asrHotwordCategories.isEmpty ||
-                                              settings.asrHotwordCategories
-                                                  .contains(cat.id),
-                                      onSelected: (sel) {
-                                        final current =
-                                            settings.asrHotwordCategories;
-                                        // 空 = 全部启用语义：首次取消某个分类时，
-                                        // 先把其他全部分类写进启用集。
-                                        List<String> next;
-                                        if (current.isEmpty) {
-                                          next = sel
-                                              ? current
-                                              : [
-                                                  for (final c in hotwordCategories)
-                                                    if (c.id != cat.id) c.id
-                                                ];
-                                        } else {
-                                          next = sel
-                                              ? [...current, cat.id]
-                                              : current
-                                                  .where((e) => e != cat.id)
-                                                  .toList();
-                                        }
-                                        notifier.setAsrHotwordCategories(next);
-                                      },
-                                    ),
-                                ],
-                              ),
-                              // 词表查看/编辑：逐分类展开看实际热词内容，
-                              // 点进编辑框可增删词（差量持久化）。
-                              ExpansionTile(
-                                tilePadding: EdgeInsets.zero,
-                                childrenPadding: const EdgeInsets.only(bottom: 4),
-                                title: Text('热词词表（查看 / 编辑）',
-                                    style: const TextStyle(fontSize: 14)),
-                                subtitle: Text(
-                                    '${hotwordCategories.length} 个分类，共 '
-                                    '${hotwordCategories.fold<int>(0, (n, c) => n + effectiveCategoryWords(c.id, settings.asrHotwordAdded, settings.asrHotwordRemoved).length)} 个生效词；点分类可增删词',
-                                    style: const TextStyle(fontSize: 12)),
-                                children: [
-                                  for (final cat in hotwordCategories)
-                                    ListTile(
-                                      dense: true,
-                                      contentPadding: EdgeInsets.zero,
-                                      title: Text(cat.name,
-                                          style: const TextStyle(fontSize: 13)),
-                                      subtitle: Text(
-                                          '${effectiveCategoryWords(cat.id, settings.asrHotwordAdded, settings.asrHotwordRemoved).length} 个词',
-                                          style: const TextStyle(fontSize: 11)),
-                                      trailing:
-                                          const Icon(Icons.edit_outlined, size: 16),
-                                      onTap: () =>
-                                          _editAsrCategoryWords(cat, notifier),
-                                    ),
-                                ],
-                              ),
-                              ListTile(
-                                contentPadding: EdgeInsets.zero,
-                                dense: true,
-                                leading: const Icon(Icons.edit_note, size: 20),
-                                title: const Text('自定义热词',
-                                    style: TextStyle(fontSize: 14)),
-                                subtitle: Text(
-                                    settings.asrHotwordCustom.trim().isEmpty
-                                        ? '每行一个词（人名/产品名等，同音自动校正）'
-                                        : settings.asrHotwordCustom
-                                                .trim()
-                                                .split('\n')
-                                                .length
-                                                .toString() +
-                                            ' 个词',
-                                    style: const TextStyle(fontSize: 12)),
-                                trailing: const Icon(Icons.edit_outlined, size: 18),
-                                onTap: () => _editAsrHotwords(notifier),
-                              ),
-                              // 模型管理：状态 + 下载/删除
-                              FutureBuilder<bool>(
-                                future: _asrModelReady ??=
-                                    AsrModelManager.isReady(),
-                                builder: (ctx, snap) {
-                                  final ready = snap.data ?? false;
-                                  return ListTile(
-                                    contentPadding: EdgeInsets.zero,
-                                    dense: true,
-                                    leading: Icon(
-                                      ready
-                                          ? Icons.check_circle
-                                          : Icons.download_outlined,
-                                      size: 20,
-                                      color: ready ? Colors.green : Colors.orange,
-                                    ),
-                                    title: Text(ready ? '识别模型：已就绪' : '识别模型：未下载',
-                                        style: const TextStyle(fontSize: 14)),
-                                    subtitle: const Text(
-                                        'sherpa-onnx 流式中文模型（约 160MB，'
-                                        '首次语音时自动下载，支持断点续传）',
-                                        style: TextStyle(fontSize: 12)),
-                                    trailing: TextButton(
-                                      onPressed: () async {
-                                        if (ready) {
-                                          final ok = await showDialog<bool>(
-                                            context: context,
-                                            builder: (ctx) => AlertDialog(
-                                              title: const Text('删除识别模型？'),
-                                              content: const Text('删除后语音输入不可用，'
-                                                  '再次长按说话会重新下载。'),
-                                              actions: [
-                                                TextButton(
-                                                    onPressed: () =>
-                                                        Navigator.pop(ctx, false),
-                                                    child: const Text('取消')),
-                                                FilledButton(
-                                                    onPressed: () =>
-                                                        Navigator.pop(ctx, true),
-                                                    child: const Text('删除')),
-                                              ],
-                                            ),
-                                          );
-                                          if (ok == true) {
-                                            await AsrModelManager.deleteModel();
-                                            if (context.mounted) {
-                                              ScaffoldMessenger.of(context)
-                                                  .showSnackBar(const SnackBar(
-                                                      content: Text('识别模型已删除')));
-                                            }
-                                          }
-                                        } else {
-                                          await AsrModelGate.ensureModelReady(
-                                              context);
-                                        }
-                                        if (context.mounted) {
-                                          setState(() => _asrModelReady = null);
-                                        }
-                                      },
-                                      child: Text(ready ? '删除' : '下载',
-                                          style: const TextStyle(fontSize: 12)),
-                                    ),
-                                  );
-                                },
-                              ),
-    
-                ],
-              ),
-            ),
-          ),
+          // T1.6：语音播报/输入/热词/模型管理收口到 VoiceSettingsBody
+          // （主页侧栏「语音」节唯一挂载），本面板留一行入口防迷路。
+          _header('🔊 语音（已合并）',
+              '播报/听写/热词/模型管理在主页左侧栏「语音」节统一设置'),
           const SizedBox(height: 14),
           _header('🧩 插件（能力扩展）', '启用后图标出现在聊天输入框那一行；参数、方案档、诊断都进这个面板'),
           _card(children: const [
@@ -7136,11 +6671,255 @@ class _VoiceSettingsBodyState extends ConsumerState<VoiceSettingsBody> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        // T2.6 失败黄条：任何 TTS 引擎失败留痕（哑火两天无人察觉的事故
+        // 制度化防复发）——黄条出现在这里，用户看得见、可排查。
+        ValueListenableBuilder<String?>(
+          valueListenable: VoiceService.instance.lastSpeakFailure,
+          builder: (_, failure, __) => failure == null
+              ? const SizedBox.shrink()
+              : Material(
+                  color: Colors.amber.shade200,
+                  borderRadius: BorderRadius.circular(8),
+                  child: Padding(
+                    padding: const EdgeInsets.all(10),
+                    child: Row(children: [
+                      const Icon(Icons.warning_amber_rounded,
+                          size: 18, color: Colors.black87),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text('朗读失败：$failure',
+                            style: const TextStyle(
+                                fontSize: 12, color: Colors.black87)),
+                      ),
+                    ]),
+                  ),
+                ),
+        ),
+        const SizedBox(height: 6),
+        _buildMasterCard(settings, notifier),
+        const SizedBox(height: 10),
         _buildTtsCard(settings, notifier),
+        const SizedBox(height: 10),
+        _buildWakeCard(settings, notifier),
         const SizedBox(height: 10),
         _buildAsrCard(settings, notifier),
       ],
     );
+  }
+
+  /// §6 总开关卡：语音交互（关=不占麦不加载零 footprint）+ 引擎选择 +
+  /// 自动朗读 + 快速响应。
+  Widget _buildMasterCard(InferenceSettings settings, SettingsNotifier notifier) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildToggleTitle(
+              '🗣️ 语音交互（总开关）',
+              settings.voiceEnabled,
+              (v) {
+                notifier.setVoiceEnabled(v);
+                // 总开关关 = 连常驻待命麦也停（产品语义：绝不暗中留麦）
+                if (!v) unawaited(VoiceService.instance.stopWakeListening());
+              },
+              subtitle: '关 = 不占麦克风、不加载模型，零内存占用；'
+                  '按住说话 / 唤醒对话 / 自动朗读 / 常驻唤醒全由它门控',
+            ),
+            const SizedBox(height: 4),
+            Opacity(
+              opacity: settings.voiceEnabled ? 1.0 : 0.45,
+              child: IgnorePointer(
+                ignoring: !settings.voiceEnabled,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // T2.5 引擎选择：离线（matcha/vits，默认）vs 在线 Edge。
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Row(children: [
+                        const Text('朗读引擎',
+                            style: TextStyle(fontSize: 13)),
+                        const Spacer(),
+                        SegmentedButton<String>(
+                          segments: const [
+                            ButtonSegment(
+                                value: 'offline', label: Text('离线')),
+                            ButtonSegment(
+                                value: 'edge', label: Text('在线 Edge')),
+                          ],
+                          selected: {settings.voiceTtsEngine},
+                          onSelectionChanged: (sel) =>
+                              notifier.setVoiceTtsEngine(sel.first),
+                        ),
+                      ]),
+                    ),
+                    const SizedBox(height: 2),
+                    _buildToggleTitle(
+                      '回复后自动朗读',
+                      settings.voiceAutoSpeak,
+                      notifier.setVoiceAutoSpeak,
+                      subtitle: '生成完成自动读出（生效 = 总开关 + 本开关）',
+                    ),
+                    _buildToggleTitle(
+                      '快速响应模式',
+                      settings.voiceQuickResponse,
+                      notifier.setVoiceQuickResponse,
+                      subtitle: '识别/TTS 模型常驻内存预热（约 +400MB 换首次不卡）',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// §6 唤醒对话卡（T2.4）：开关 + D2 自动发送 + 超时时长。
+  Widget _buildWakeCard(InferenceSettings settings, SettingsNotifier notifier) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildToggleTitle(
+              '🔔 唤醒对话',
+              settings.voiceWakeEnabled,
+              (v) {
+                notifier.setVoiceWakeEnabled(v);
+                // 关功能 = 绝不留待命麦（KWS 常驻一并停）
+                if (!v) unawaited(VoiceService.instance.stopWakeListening());
+              },
+              subtitle: '说完停顿自动识别上屏（免提对话）；开启下方「语音常驻唤醒」'
+                  '后说「汪柴」即可免触发起会话，输入栏 🎙️ 按钮仍可手动',
+            ),
+            const SizedBox(height: 4),
+            Opacity(
+              opacity: settings.voiceWakeEnabled ? 1.0 : 0.45,
+              child: IgnorePointer(
+                ignoring: !settings.voiceWakeEnabled,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    // D2 拍板：自动发送为用户设置项，默认自动。
+                    _buildToggleTitle(
+                      '定稿后自动发送（3 秒缓冲可取消）',
+                      settings.voiceWakeAutoSend,
+                      notifier.setVoiceWakeAutoSend,
+                      subtitle: '开 = 定稿上屏 3 秒后自动发送；关 = 只上屏，手动发',
+                    ),
+                    _buildSliderRow(
+                      label: '说完停顿多久算说完（毫秒）',
+                      value: settings.voiceVadTailSilenceMs,
+                      min: 600,
+                      max: 1200,
+                      divisions: 12,
+                      display: '${settings.voiceVadTailSilenceMs} ms',
+                      onChanged: notifier.setVoiceVadTailSilenceMs,
+                    ),
+                    _buildSliderRow(
+                      label: '无输入自动结束（秒）',
+                      value: settings.voiceWakeNoInputSec,
+                      min: 3,
+                      max: 30,
+                      divisions: 27,
+                      display: '${settings.voiceWakeNoInputSec} s',
+                      onChanged: notifier.setVoiceWakeNoInputSec,
+                    ),
+                    _buildSliderRow(
+                      label: '单次输入最长（秒）',
+                      value: settings.voiceWakeMaxInputSec,
+                      min: 5,
+                      max: 600,
+                      divisions: 119,
+                      display: '${settings.voiceWakeMaxInputSec} s',
+                      onChanged: notifier.setVoiceWakeMaxInputSec,
+                    ),
+                    const Divider(height: 20),
+                    // M3 常驻唤醒（voice-wakeup-min-spec §4.5 首启向导：
+                    // 勾选 → 引导下载 KWS+SenseVoice+VAD → 起待命麦）
+                    _buildToggleTitle(
+                      '语音常驻唤醒（说「汪柴」免触发起会话）',
+                      settings.voiceWakeKws,
+                      (v) => _onWakeKwsChanged(notifier, v),
+                      subtitle: '开 = 待命麦常驻（实测 CPU ≤5% 单核）；播报/会话期'
+                          '自动让麦（防自念自醒）；首次需下载唤醒模型约 12MB',
+                    ),
+                    Opacity(
+                      opacity: settings.voiceWakeKws ? 1.0 : 0.45,
+                      child: IgnorePointer(
+                        ignoring: !settings.voiceWakeKws,
+                        child: _buildSliderRow(
+                          label: '唤醒灵敏度',
+                          value: (settings.voiceWakeSensitivity * 100).round(),
+                          min: 30,
+                          max: 90,
+                          divisions: 6,
+                          display:
+                              (settings.voiceWakeSensitivity * 100).round().toString(),
+                          hint: '叫不醒调高、误醒调低（松手后自动重载唤醒引擎）',
+                          onChanged: (p) {
+                            notifier.setVoiceWakeSensitivity(p / 100.0);
+                            _restartKwsSoon();
+                          },
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Timer? _kwsRestartDebounce;
+
+  /// 灵敏度拖动防抖：松手 600ms 后一次性重启待命 KWS（阈值变了才重建 spotter，
+  /// 避免拖动过程反复加载模型）。startWakeListening 幂等（内部先停再起）。
+  void _restartKwsSoon() {
+    _kwsRestartDebounce?.cancel();
+    _kwsRestartDebounce = Timer(const Duration(milliseconds: 600), () async {
+      final s = ref.read(settingsProvider);
+      if (!s.voiceWakeKws) return;
+      await VoiceService.instance.startWakeListening(
+          threshold: kwsThresholdFromSensitivity(s.voiceWakeSensitivity));
+    });
+  }
+
+  /// 常驻唤醒开关副作用：开 = 三模型首启向导 + 起待命麦；关 = 停麦。
+  Future<void> _onWakeKwsChanged(SettingsNotifier notifier, bool value) async {
+    if (!value) {
+      await notifier.setVoiceWakeKws(false);
+      await VoiceService.instance.stopWakeListening();
+      return;
+    }
+    const _gateIntro = '启用语音常驻唤醒';
+    final gates = const [
+      (VoiceModels.kws, '首次使用需下载唤醒词检测模型（约 12MB，一次即可）：'),
+      (VoiceModels.sensevoice, '唤醒对话还需识别模型（约 240MB，一次即可）：'),
+      (VoiceModels.vad, '最后下载语音分段模型（约 1MB）：'),
+    ];
+    for (final (id, intro) in gates) {
+      if (!await AsrModelGate.ensureModelReady(context,
+          id: id, title: _gateIntro, intro: intro)) {
+        return; // 用户取消/下载失败：不翻开关（幂等，重试无副作用）
+      }
+    }
+    await notifier.setVoiceWakeKws(true);
+    final s = ref.read(settingsProvider);
+    final ok = await VoiceService.instance.startWakeListening(
+        threshold: kwsThresholdFromSensitivity(s.voiceWakeSensitivity));
+    if (!ok && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('常驻唤醒未能启动（麦克风被占或引擎加载失败，详见日志）')));
+    }
   }
 
   Widget _buildTtsCard(InferenceSettings settings, SettingsNotifier notifier) {
@@ -7419,7 +7198,7 @@ class _VoiceSettingsBodyState extends ConsumerState<VoiceSettingsBody> {
             ),
             // 模型管理：状态 + 下载/删除
             FutureBuilder<bool>(
-              future: _asrModelReady ??= AsrModelManager.isReady(),
+              future: _asrModelReady ??= VoiceModelManager.isReady(VoiceModels.streaming),
               builder: (ctx, snap) {
                 final ready = snap.data ?? false;
                 return ListTile(
@@ -7456,7 +7235,7 @@ class _VoiceSettingsBodyState extends ConsumerState<VoiceSettingsBody> {
                           ),
                         );
                         if (ok == true) {
-                          await AsrModelManager.deleteModel();
+                          await VoiceModelManager.deleteModel(VoiceModels.streaming);
                           if (context.mounted) {
                             ScaffoldMessenger.of(context).showSnackBar(
                                 const SnackBar(content: Text('识别模型已删除')));

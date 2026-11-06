@@ -7,6 +7,7 @@ import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import '../services/inference_service.dart';
+import '../voice/voice_service.dart';
 import 'inference_backend.dart';
 import 'local_server_inference.dart';
 import 'tray_service.dart';
@@ -29,10 +30,25 @@ Future<void> initInferenceEngine() async {
     // 失败（如测试环境无插件）不阻断主流程。
     try {
       await TrayService.instance.init();
+      _bindTrayVoice();
     } catch (e) {
       debugPrint('[TrayService] init skipped: $e');
     }
   } else {
     await InferenceService().initialize();
   }
+}
+
+/// 托盘语音状态灯（M3 spec 四色）：门面状态/待命麦 → 托盘图标。
+/// 订阅挂进程级单例上（本函数只被 init 调一次；测试环境 TrayService 未
+/// init 时 setVoiceStatus 自守 no-op）。
+void _bindTrayVoice() {
+  final vs = VoiceService.instance;
+  void push() => TrayService.instance.setVoiceStatus(
+      speaking: vs.speaking,
+      capturing: vs.capturing,
+      wakeListening: vs.wakeMicOn.value);
+  vs.states.listen((_) => push());
+  vs.wakeMicOn.addListener(push);
+  push();
 }

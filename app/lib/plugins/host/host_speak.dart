@@ -16,6 +16,7 @@ import 'dart:io';
 import 'package:plugin_kernel/plugin_kernel.dart';
 
 import '../../tts/edge_tts_service.dart';
+import '../../voice/voice_service.dart';
 
 /// 一条已合成好的音频（[handle] 对能力层不透明，端口自己认得）。
 final class TtsClip {
@@ -54,7 +55,8 @@ abstract interface class TtsPlaybackPort {
   String? get notReadyReason => null;
 }
 
-/// 真机端口：直连 `EdgeTtsService` 的通用播放原语。
+/// 真机端口：播控原语走 [VoiceService] 门面（T1.8 收口——播报位代次与半双工
+/// 由门面统一管），合成/播放仍直连 `EdgeTtsService`（播放器实现只有一份）。
 final class EdgeTtsPort implements TtsPlaybackPort {
   EdgeTtsPort([EdgeTtsService? service]) : _injected = service;
 
@@ -66,16 +68,16 @@ final class EdgeTtsPort implements TtsPlaybackPort {
   late final EdgeTtsService _tts = _injected ?? EdgeTtsService.instance;
 
   @override
-  Future<int> begin(String key) => _tts.beginPlayback(key);
+  Future<int> begin(String key) => VoiceService.instance.beginSpeak(key);
 
   @override
-  bool isCurrent(int seq) => _tts.isCurrentPlayback(seq);
+  bool isCurrent(int seq) => VoiceService.instance.isSpeakCurrent(seq);
 
   @override
-  void end(int seq) => _tts.endPlayback(seq);
+  void end(int seq) => VoiceService.instance.endSpeak(seq);
 
   @override
-  Future<void> stop() => _tts.stop();
+  Future<void> stop() => VoiceService.instance.stopSpeak();
 
   @override
   Future<TtsClip?> synthesize(String text,
@@ -106,11 +108,16 @@ final class HostSpeak with CapabilityBase implements Speak {
     required String Function(String sample) resolveVoice,
     TtsLevels Function()? levels,
   })  : _resolveVoice = resolveVoice,
-        _levels = levels ?? (() => const TtsLevels(rate: 0, pitch: 0, volume: 100));
+        // 兜底口径与设置默认一致（settings_service edgeTtsRate/Pitch/Volume = 0/0/0；
+        // 2026-11-05 专项 §2 裁决：旧值 volume:100 与设置双口径，修，单测锁）。
+        _levels = levels ?? (() => const TtsLevels(rate: 0, pitch: 0, volume: 0));
 
   final TtsPlaybackPort _port;
   final String Function(String sample) _resolveVoice;
   final TtsLevels Function() _levels;
+
+  /// 单测锁口径用（tts_levels_default_test 钉死兜底 = 设置默认）。
+  TtsLevels levelsForTest() => _levels();
 
   @override
   final ServiceKey<Speak> key = ServiceKeys.speak;

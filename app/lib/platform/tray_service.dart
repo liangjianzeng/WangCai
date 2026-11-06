@@ -3,6 +3,7 @@
 // spike 的实测结论（preventClose 必须显式 set；退出走 destroy 不走 exit）。
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
@@ -14,11 +15,54 @@ class TrayService with TrayListener, WindowListener {
 
   bool _quitting = false;
   bool _initialized = false;
+  String _baseTooltip = '汪柴 · 本地 AI 助手';
+
+  // M3 托盘四色（voice-wakeup-min-spec §2）：IDLE=原版灰 / ARMED=黄 /
+  // CAPTURE=绿 / SPEAK=蓝（资源 tool/gen_voice_assets.dart 生成，随仓固定）。
+  static const _voiceIcons = {
+    'idle': 'assets/tray_icon.ico',
+    'armed': 'assets/tray/voice_armed.ico',
+    'capture': 'assets/tray/voice_capture.ico',
+    'speak': 'assets/tray/voice_speak.ico',
+  };
+  static const _voiceLabels = {
+    'idle': '待命',
+    'armed': '待唤醒',
+    'capture': '聆听中',
+    'speak': '播报中',
+  };
+  String _voiceKey = 'idle';
+
+  /// 语音状态灯（VoiceService → 托盘；inference_gateway 订阅驱动）。
+  /// 优先级：播报 > 识别 > 待唤醒 > 待命。幂等：状态未变不重设图标。
+  Future<void> setVoiceStatus({
+    required bool speaking,
+    required bool capturing,
+    required bool wakeListening,
+  }) async {
+    if (!Platform.isWindows || !_initialized) return;
+    final key = speaking
+        ? 'speak'
+        : capturing
+            ? 'capture'
+            : wakeListening
+                ? 'armed'
+                : 'idle';
+    if (key == _voiceKey) return;
+    _voiceKey = key;
+    try {
+      await trayManager.setIcon(_voiceIcons[key]!);
+      await trayManager.setToolTip('$_baseTooltip · ${_voiceLabels[key]}');
+    } catch (e) {
+      debugPrint('[TrayService] setVoiceStatus failed: $e');
+    }
+  }
 
   /// main.dart 的 initInferenceEngine 里调用（runApp 前，fork #10）。
   Future<void> init({String tooltip = '汪柴 · 本地 AI 助手'}) async {
     if (!Platform.isWindows || _initialized) return;
     _initialized = true;
+    _baseTooltip = tooltip;
     await windowManager.ensureInitialized();
     await trayManager.setIcon('assets/tray_icon.ico');
     await trayManager.setToolTip(tooltip);

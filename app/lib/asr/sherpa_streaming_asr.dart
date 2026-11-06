@@ -9,7 +9,7 @@ import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import 'asr_settings.dart';
 import 'asr_engine.dart';
-import 'asr_model_manager.dart';
+import '../voice/voice_model_manager.dart';
 import 'hotword_corrector.dart';
 
 /// 端侧流式识别引擎：sherpa-onnx 流式 Zipformer（zh int8，chunk-16）。
@@ -45,6 +45,11 @@ class SherpaStreamingAsr implements StreamingAsrEngine {
   /// 常驻 worker（进程级单例；识别器跨会话复用）。
   static _AsrWorker? _worker;
 
+  /// PCM 单点分发钩（T1.2 mic 单点）：录音机只在这里一处（record 平台通道
+  /// 只能在主 isolate 消费），VoiceService 挂上后每帧 PCM 转发给它统一分发
+  /// （M3 的 KWS/VAD 常驻共用这一路）。null = 无人监听，行为与从前一致。
+  static void Function(Uint8List frame)? pcmTap;
+
   static Future<_AsrWorker> _requireWorker() async {
     var w = _worker;
     if (w == null) {
@@ -76,12 +81,13 @@ class SherpaStreamingAsr implements StreamingAsrEngine {
   ///    引导。失败不阻塞启动。
   static Future<void> warmup() async {
     try {
-      if (!await AsrModelManager.isReady()) return;
-      final dir = await AsrModelManager.modelDir();
+      if (!await VoiceModelManager.isReady(VoiceModels.streaming)) return;
+      final dir = await VoiceModelManager.modelDir(VoiceModels.streaming);
       await Isolate.run(() => _preloadFiles(dir));
       debugPrint('[DSH][asr] warmup: model files preloaded to page cache');
       final mode = await AsrSettings.loadAsrMode();
-      final hotwords = _normalizeHotwords(await AsrSettings.loadHotwords());
+      final hotwords =
+          AsrSettings.normalizeHotwords(await AsrSettings.loadHotwords());
       final w = await _requireWorker();
       await w.load(
           modelDir: dir,
@@ -95,8 +101,8 @@ class SherpaStreamingAsr implements StreamingAsrEngine {
 
   /// 后台 isolate：分块读取模型文件并丢弃，把文件页拉进 OS 页缓存。
   static void _preloadFiles(String dir) {
-    for (final f in AsrModelManager.files) {
-      final file = File(p.join(dir, f));
+    for (final f in VoiceModels.entry(VoiceModels.streaming).files) {
+      final file = File(p.join(dir, f.path));
       if (!file.existsSync()) continue;
       try {
         final raf = file.openSync();
@@ -121,7 +127,8 @@ class SherpaStreamingAsr implements StreamingAsrEngine {
   Future<void> start() async {
     // 热词在主 isolate 读取（shared_preferences 平台通道不进后台 isolate），
     // 词表本身交给 worker 配置。
-    final hotwordList = _normalizeHotwords(await AsrSettings.loadHotwords());
+    final hotwordList =
+        AsrSettings.normalizeHotwords(await AsrSettings.loadHotwords());
     final worker = await _requireWorker();
     // 1) 对齐识别器形态（预 warmed 时这里幂等秒回）。
     await worker.load(
@@ -139,7 +146,10 @@ class SherpaStreamingAsr implements StreamingAsrEngine {
     ));
     _sessionActive = true;
     _pcmSub = pcmStream.listen(
-      (bytes) => worker.feedAudio(bytes),
+      (bytes) {
+        pcmTap?.call(bytes); // VoiceService 的 PCM 分发（null 时零开销）
+        worker.feedAudio(bytes);
+      },
       onError: (Object e) {
         debugPrint('[DSH][asr] pcm stream error: $e');
       },
@@ -186,19 +196,6 @@ class SherpaStreamingAsr implements StreamingAsrEngine {
       _sessionActive = false;
     }
     await _recorder.dispose();
-  }
-
-  /// 把热词表归一化为逐词列表：兼容用户以逗号/斜杠/换行/全角逗号混填的词表，
-  /// 去掉空串与重复项——sherpa 按换行（含 '/'，CreateStream 会把斜杠转义成
-  /// 换行）切分每个热词，逗号连写会被当成一个整体热词导致不生效。
-  static List<String> _normalizeHotwords(String raw) {
-    final seen = <String>{};
-    final out = <String>[];
-    for (final w in raw.split(RegExp(r'[,，/\n\r]'))) {
-      final t = w.trim();
-      if (t.isNotEmpty && seen.add(t)) out.add(t);
-    }
-    return out;
   }
 }
 

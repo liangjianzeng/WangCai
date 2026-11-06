@@ -61,4 +61,18 @@ class AsrSettings {
       return [for (final cat in hotwordCategories) ...cat.words].join('\n');
     }
   }
+
+  /// 归一化热词表为逐词列表：兼容逗号/斜杠/换行/全角逗号混填，去空串与
+  /// 重复项——sherpa 按换行切分每个热词，逗号连写会被当成一个整体热词导致
+  /// 不生效。（原本是 sherpa_streaming_asr 的私有实现，T2.1 唤醒对话引擎
+  /// 共用后上收到这里。）
+  static List<String> normalizeHotwords(String raw) {
+    final seen = <String>{};
+    final out = <String>[];
+    for (final w in raw.split(RegExp(r'[,，/\n\r]'))) {
+      final t = w.trim();
+      if (t.isNotEmpty && seen.add(t)) out.add(t);
+    }
+    return out;
+  }
 }

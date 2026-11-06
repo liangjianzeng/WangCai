@@ -86,8 +86,7 @@ Future<bool> registerHostSpeakOffline(CapabilityRegistry capabilities, Ref ref) 
   final service = OfflineTtsService(
     modelDir: dir,
     // 懒加载：这里只记账，真原生调用推迟到第一次合成 / prewarm（别在 boot 路径上卡 1–2 秒）。
-    engineFactory: (layout) =>
-        SherpaOfflineTtsEngine(layout.model!, layout.tokens!, dataDir: layout.dataDir),
+    engineFactory: (layout) => SherpaOfflineTtsEngine(layout),
   );
   final r = capabilities.register(
     HostSpeak(

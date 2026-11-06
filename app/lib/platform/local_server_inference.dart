@@ -790,13 +790,7 @@ class LocalServerInference implements InferenceBackend {
     }
   }
 
-  // ── 语音（M3）──────────────────────────────────────────────────────────
-  @override
-  Future<bool> supportsAudio() async => false;
-  @override
-  Future<bool> startRecording() async => false;
-  @override
-  Future<String?> stopRecording() async => null;
+  // 语音三件套已随 D4 裁决删除（见 inference_backend.dart 同名注释）。
 
   @override
   Future<Map<String, double>> benchmark({

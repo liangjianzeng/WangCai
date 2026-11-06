@@ -79,10 +79,8 @@ abstract class InferenceBackend {
   Future<void> setEnableThinking(bool enable);
   Future<void> resetContext();
 
-  // ── 语音（Windows 侧 M3 接入；Android 原生实现）────────────────────────
-  Future<bool> supportsAudio();
-  Future<bool> startRecording();
-  Future<String?> stopRecording();
+  // 语音三件套（supportsAudio/startRecording/stopRecording）已随 D4 裁决删除：
+  // 语音走 VoiceService（sherpa 引擎族），不再挂推理后端的槽位。
 
   Future<Map<String, double>> benchmark({
     String prompt,

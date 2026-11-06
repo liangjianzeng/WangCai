@@ -252,6 +252,47 @@ class InferenceSettings {
   /// 音量（-50 ~ +50 → SSML "+N%"）。
   final int edgeTtsVolume;
 
+  // ---- 语音交互总控（ASR&TTS 重构专项，docs/asr-tts-refactor-plan.md §6）----
+
+  /// 语音交互总开关（默认**关**）：关 = 不占麦、不加载模型，零 footprint。
+  /// 按住说话 / 唤醒对话 / 插件听写 / 自动朗读四方统一受此门控（VoiceService）。
+  final bool voiceEnabled;
+
+  /// 唤醒对话开关（默认关；依赖 KWS 模型就位，规格见唤醒篇）。
+  final bool voiceWakeEnabled;
+
+  /// 唤醒对话「定稿后自动发送」（D2 拍板：用户可设置，**默认自动**）。
+  /// 开 = 定稿上屏可编辑 3s 缓冲后自动发、期间可随时打断取消；关 = 手动确认发。
+  final bool voiceWakeAutoSend;
+
+  /// 唤醒后无输入结束会话秒数（3–30，默认 10）。
+  final int voiceWakeNoInputSec;
+
+  /// 唤醒对话单次输入最长秒数（5–600，默认 60）。
+  final int voiceWakeMaxInputSec;
+
+  /// VAD 段尾静音定稿毫秒（600–1200，默认 800）。
+  final int voiceVadTailSilenceMs;
+
+  /// TTS 引擎（'offline' = matcha 离线默认 / 'edge' = 在线高品质音色可选）。
+  /// edge 需 [edgeTtsEnabled] 单独勾选；'edge' 仅表示**优先**在线，失败仍回落离线。
+  final String voiceTtsEngine;
+
+  /// 自动朗读总开关（默认关；生效条件 = voiceEnabled && voiceAutoSpeak，
+  /// 语义自旧 edgeTtsAutoSpeak 并入）。
+  final bool voiceAutoSpeak;
+
+  /// 快速响应模式（默认开）：SenseVoice/TTS 常驻内存预热（+~400MB 换首唤不卡）。
+  final bool voiceQuickResponse;
+
+  /// 语音常驻唤醒（KWS「汪柴」，默认**关**）：开 = 待命麦常驻（KWS worker
+  /// CPU ≤5% 单核实测），说「汪柴」自动起唤醒对话；依赖 KWS 模型（设置引导下载）。
+  final bool voiceWakeKws;
+
+  /// 唤醒灵敏度（0.3–0.9，默认 0.75）：UI 口径；
+  /// 底层阈值 = clamp(1 − v, 0.1, 0.45)（≥0.3 实测合成音必漏，上限封死）。
+  final double voiceWakeSensitivity;
+
   /// 回合轨迹自动落盘（P0 轨迹导出，默认关）：每回合结束把 SessionLog
   /// 整份事件流写 `ApplicationSupport/traces/*.jsonl`（回放/评估/排障用）。
   final bool agentTraceExportEnabled;
@@ -503,6 +544,17 @@ class InferenceSettings {
     this.edgeTtsRate = 0,
     this.edgeTtsPitch = 0,
     this.edgeTtsVolume = 0,
+    this.voiceEnabled = false,
+    this.voiceWakeEnabled = false,
+    this.voiceWakeAutoSend = true,
+    this.voiceWakeNoInputSec = 10,
+    this.voiceWakeMaxInputSec = 60,
+    this.voiceVadTailSilenceMs = 800,
+    this.voiceTtsEngine = 'offline',
+    this.voiceAutoSpeak = false,
+    this.voiceQuickResponse = true,
+    this.voiceWakeKws = false,
+    this.voiceWakeSensitivity = 0.75,
     this.agentTraceExportEnabled = false,
     this.webSearchEnabled = false,
     this.webSearchSearXngBaseUrl = kDefaultSearXngBaseUrl,
@@ -677,6 +729,17 @@ class InferenceSettings {
     int? edgeTtsRate,
     int? edgeTtsPitch,
     int? edgeTtsVolume,
+    bool? voiceEnabled,
+    bool? voiceWakeEnabled,
+    bool? voiceWakeAutoSend,
+    int? voiceWakeNoInputSec,
+    int? voiceWakeMaxInputSec,
+    int? voiceVadTailSilenceMs,
+    String? voiceTtsEngine,
+    bool? voiceAutoSpeak,
+    bool? voiceQuickResponse,
+    bool? voiceWakeKws,
+    double? voiceWakeSensitivity,
     bool? agentTraceExportEnabled,
     bool? webSearchEnabled,
     String? webSearchSearXngBaseUrl,
@@ -787,6 +850,18 @@ class InferenceSettings {
       edgeTtsRate: edgeTtsRate ?? this.edgeTtsRate,
       edgeTtsPitch: edgeTtsPitch ?? this.edgeTtsPitch,
       edgeTtsVolume: edgeTtsVolume ?? this.edgeTtsVolume,
+      voiceEnabled: voiceEnabled ?? this.voiceEnabled,
+      voiceWakeEnabled: voiceWakeEnabled ?? this.voiceWakeEnabled,
+      voiceWakeAutoSend: voiceWakeAutoSend ?? this.voiceWakeAutoSend,
+      voiceWakeNoInputSec: voiceWakeNoInputSec ?? this.voiceWakeNoInputSec,
+      voiceWakeMaxInputSec: voiceWakeMaxInputSec ?? this.voiceWakeMaxInputSec,
+      voiceVadTailSilenceMs:
+          voiceVadTailSilenceMs ?? this.voiceVadTailSilenceMs,
+      voiceTtsEngine: voiceTtsEngine ?? this.voiceTtsEngine,
+      voiceAutoSpeak: voiceAutoSpeak ?? this.voiceAutoSpeak,
+      voiceQuickResponse: voiceQuickResponse ?? this.voiceQuickResponse,
+      voiceWakeKws: voiceWakeKws ?? this.voiceWakeKws,
+      voiceWakeSensitivity: voiceWakeSensitivity ?? this.voiceWakeSensitivity,
       agentTraceExportEnabled:
           agentTraceExportEnabled ?? this.agentTraceExportEnabled,
       webSearchEnabled: webSearchEnabled ?? this.webSearchEnabled,
@@ -897,6 +972,17 @@ class InferenceSettings {
         'edgeTtsRate': edgeTtsRate,
         'edgeTtsPitch': edgeTtsPitch,
         'edgeTtsVolume': edgeTtsVolume,
+        'voiceEnabled': voiceEnabled,
+        'voiceWakeEnabled': voiceWakeEnabled,
+        'voiceWakeAutoSend': voiceWakeAutoSend,
+        'voiceWakeNoInputSec': voiceWakeNoInputSec,
+        'voiceWakeMaxInputSec': voiceWakeMaxInputSec,
+        'voiceVadTailSilenceMs': voiceVadTailSilenceMs,
+        'voiceTtsEngine': voiceTtsEngine,
+        'voiceAutoSpeak': voiceAutoSpeak,
+        'voiceQuickResponse': voiceQuickResponse,
+      'voiceWakeKws': voiceWakeKws,
+      'voiceWakeSensitivity': voiceWakeSensitivity,
         'agentTraceExportEnabled': agentTraceExportEnabled,
         'webSearchEnabled': webSearchEnabled,
         'webSearchSearXngBaseUrl': webSearchSearXngBaseUrl,
@@ -1055,6 +1141,25 @@ class InferenceSettings {
           ((json['edgeTtsPitch'] as num?) ?? 0).clamp(-50, 50).toInt(),
       edgeTtsVolume:
           ((json['edgeTtsVolume'] as num?) ?? 0).clamp(-50, 50).toInt(),
+      voiceEnabled: json['voiceEnabled'] as bool? ?? false,
+      voiceWakeEnabled: json['voiceWakeEnabled'] as bool? ?? false,
+      voiceWakeAutoSend: json['voiceWakeAutoSend'] as bool? ?? true,
+      voiceWakeNoInputSec:
+          ((json['voiceWakeNoInputSec'] as num?) ?? 10).clamp(3, 30).toInt(),
+      voiceWakeMaxInputSec:
+          ((json['voiceWakeMaxInputSec'] as num?) ?? 60).clamp(5, 600).toInt(),
+      voiceVadTailSilenceMs: ((json['voiceVadTailSilenceMs'] as num?) ?? 800)
+          .clamp(600, 1200)
+          .toInt(),
+      voiceTtsEngine:
+          (json['voiceTtsEngine'] as String?) == 'edge' ? 'edge' : 'offline',
+      // 旧「自动朗读」语义迁移（专项 §5.2）：新键缺失时承接旧 edgeTtsAutoSpeak。
+      voiceAutoSpeak: json['voiceAutoSpeak'] as bool? ??
+          (json['edgeTtsAutoSpeak'] as bool? ?? false),
+      voiceQuickResponse: json['voiceQuickResponse'] as bool? ?? true,
+      voiceWakeKws: json['voiceWakeKws'] as bool? ?? false,
+      voiceWakeSensitivity:
+          (json['voiceWakeSensitivity'] as num?)?.toDouble() ?? 0.75,
       agentTraceExportEnabled:
           json['agentTraceExportEnabled'] as bool? ?? false,
       webSearchEnabled: json['webSearchEnabled'] as bool? ?? false,
