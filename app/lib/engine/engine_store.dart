@@ -10,6 +10,7 @@ import 'dart:io';
 import 'package:archive/archive_io.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 
 import 'engine_paths.dart';
 
@@ -202,7 +203,10 @@ class EngineStore {
       for (final e in dir.listSync(recursive: true).whereType<File>()) {
         if (e.path.toLowerCase().endsWith('llama-server.exe')) return e.path;
       }
-    } catch (_) {}
+    } catch (e) {
+      // 静默吞会让「包内未找到 llama-server.exe」的报错指错方向（扫描本身挂了）。
+      debugPrint('[EngineStore] findServerExe 递归扫描失败（${dir.path}）: $e');
+    }
     return null;
   }
 
@@ -214,7 +218,11 @@ class EngineStore {
     final tmpZip = File('${dir.path}.zip.tmp');
     try {
       await dir.delete(recursive: true);
-    } catch (_) {}
+    } catch (e) {
+      // 清场失败多半是旧 server 进程占用文件锁 —— 带病解包会把新旧 DLL 混排，
+      // 0xC0000135 一类启动崩溃的根因就藏在这条静默里（打包实案同族）。
+      debugPrint('[EngineStore] install 前清场失败（${dir.path}），继续解包: $e');
+    }
     try {
       await tmpZip.parent.create(recursive: true);
       if (await tmpZip.exists()) await tmpZip.delete();
@@ -240,7 +248,9 @@ class EngineStore {
     } catch (e) {
       try {
         if (await tmpZip.exists()) await tmpZip.delete();
-      } catch (_) {}
+      } catch (cleanupErr) {
+        debugPrint('[EngineStore] install 临时 zip 清场失败（${tmpZip.path}）: $cleanupErr');
+      }
       return InstallResult(serverExe: null, dir: dir.path, error: '$e');
     }
   }
@@ -264,7 +274,9 @@ class EngineStore {
     } finally {
       try {
         if (await tmp.exists()) await tmp.delete();
-      } catch (_) {}
+      } catch (cleanupErr) {
+        debugPrint('[EngineStore] 离线安装临时 zip 清场失败（${tmp.path}）: $cleanupErr');
+      }
     }
   }
 
@@ -303,7 +315,9 @@ class EngineStore {
     } catch (e) {
       try {
         if (await tmpZip.exists()) await tmpZip.delete();
-      } catch (_) {}
+      } catch (cleanupErr) {
+        debugPrint('[EngineStore] 校验/解包失败后 zip 清场失败（${tmpZip.path}）: $cleanupErr');
+      }
       return InstallResult(serverExe: null, dir: dir.path, error: '$e');
     }
   }
@@ -311,7 +325,11 @@ class EngineStore {
   Future<void> uninstall(StoreRelease release) async {
     try {
       await dirFor(release).delete(recursive: true);
-    } catch (_) {}
+    } catch (e) {
+      // 目录不存在（重复卸载）是良性路径；其余失败=引擎残留占盘，必须留痕。
+      debugPrint('[EngineStore] uninstall ${release.version}/${release.variant} '
+          '删除目录未完成: $e');
+    }
   }
 
   /// sha256 流式摘要（避免整包进内存；cuda 包数百 MB）。

@@ -252,13 +252,17 @@ class ConversationsNotifier extends StateNotifier<List<Conversation>> {
       try {
         await GoalStore(baseDir: WangCaiPaths.dataDir('goals').path)
             .deletePlan(id);
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[ChatNotifier] 计划随删失败 id=$id: $e');
+      }
     }());
     // 会话 JSONL 随删（v0.0.3 项目树；旧平铺一并清，绝不留幽灵副本）。
     unawaited(() async {
       try {
         await JsonlSessionStore().delete(id);
-      } catch (_) {}
+      } catch (e) {
+        debugPrint('[ChatNotifier] 会话 JSONL 随删失败 id=$id（幽灵副本风险）: $e');
+      }
     }());
     state = state.where((c) => c.id != id).toList();
   }

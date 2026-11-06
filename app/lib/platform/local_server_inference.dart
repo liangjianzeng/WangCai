@@ -197,7 +197,10 @@ class LocalServerInference implements InferenceBackend {
         final j = jsonDecode(await f.readAsString());
         if (j is Map && j['tier'] is String) return _tierName = j['tier'] as String;
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[LocalServer] routing.json 读取/解析失败，档位静默回 auto'
+          '（用户档位可能丢失，排障看这里）: $e');
+    }
     return _tierName = 'auto';
   }
 
@@ -211,7 +214,9 @@ class LocalServerInference implements InferenceBackend {
       final j = await _readRoutingJson();
       j['tier'] = _tierName;
       await _writeRoutingJson(j);
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[LocalServer] 档位未持久化（仅本次会话生效）: $e');
+    }
   }
 
   /// 空闲卸载分钟（0=关闭）；§7.3 调度护栏的 UI 入口。
@@ -224,7 +229,9 @@ class LocalServerInference implements InferenceBackend {
         _idleTimer?.cancel();
         _idleTimer = null;
       }
-    } catch (_) {}
+    } catch (e) {
+      debugPrint('[LocalServer] 空闲卸载分钟未持久化（仅本次会话生效）: $e');
+    }
   }
 
   /// 当前档位与空闲配置（设置 UI 初始化读）。

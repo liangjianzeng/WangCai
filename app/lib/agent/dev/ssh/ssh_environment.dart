@@ -128,7 +128,11 @@ final class SshEnvironmentService extends ChangeNotifier {
     SshConfig cfg = config;
     try {
       cfg = await resolveSshSecrets(config);
-    } on Exception catch (_) {}
+    } on Exception catch (e) {
+      // 安全存储取密钥失败 → 后面大概率报「配置不完整」，误导性极强：
+      // 必须留痕把真实原因（DPAPI/secret_store 故障）与表象区分开。
+      debugPrint('[SshEnv] 安全存储取密钥失败（将以原配置继续，可能误报配置不完整）: $e');
+    }
     if (!cfg.isComplete) {
       _fail('SSH 配置不完整（host/port/username/认证）');
       return;
