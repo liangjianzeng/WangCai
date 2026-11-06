@@ -47,6 +47,9 @@ const String wangcaiNpuManifestJson = '''
      "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：默认臂 1.7B-like chunk256+decode levels；OOM 回落 spark 臂（chunk128+DISABLE_DECODE_LEVELS）——tools/minicpm5-npu-accept.ps1；thinking 模型 CoT 预算 n≥192"}
   ],
   "admission": [
+    {"ifModelGlob": "Spark-X2.6-4B*.gguf",
+     "message": "Spark-X2.6-4B 在 NPU 引擎上 decode 特性整体失效（decode-level 图撞设备预算自动回退 0.42 t/s 地板，智能体长 prefill 触发即「本轮执行失败」——defect-npu-spark-b12034，2026-11-07 实锤）",
+     "suggestion": "改用 CUDA/Vulkan 引擎跑 Spark（实测 99.2 t/s），或 NPU 档配 LFM3-1.7B / Omni-2B（21.6/21.9 t/s）"},
     {"ifCtxGt": 4096, "ifParamsBAtLeast": 3.5,
      "message": "4B 在 NPU 超 4096 上下文执行期 OUT_OF_HOST_MEMORY（status.md 缺陷5 外推；4096 默认档实测放行）",
      "suggestion": "全局上下文调回 ≤4096，或改用 CUDA/Vulkan 引擎"}

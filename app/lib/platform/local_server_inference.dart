@@ -330,7 +330,8 @@ class LocalServerInference implements InferenceBackend {
             ctx: tentative,
             paramsB: p?.paramsB,
             generation: gen?.name,
-            measuredCtx: measured);
+            measuredCtx: measured,
+            modelFile: _basename(path));
         if (v.isNotEmpty) {
           return RoutingDecision.none('指定引擎拒绝（$engineId）：${v.join('；')}',
               '改用 Auto 路由，或调小上下文后重试');
@@ -369,7 +370,8 @@ class LocalServerInference implements InferenceBackend {
           ctx: tentative,
           paramsB: p?.paramsB,
           generation: gen?.name,
-          measuredCtx: measured);
+          measuredCtx: measured,
+          modelFile: _basename(path));
       if (v.isNotEmpty) blocked[inst.id] = v.join('；');
     }
     return chooseEngine(RoutingRequest(
@@ -501,11 +503,9 @@ class LocalServerInference implements InferenceBackend {
     for (final p in manifest.presets) {
       final glob = p.modelGlob;
       if (glob == null) continue;
-      final pattern = glob
-          .split('')
-          .map((c) => c == '*' ? '.*' : (c == '?' ? '.' : RegExp.escape(c)))
-          .join();
-      if (RegExp('^$pattern\$', caseSensitive: false).hasMatch(base)) return p;
+      // glob→RegExp 实现已收敛到 engine_manifest.modelGlobMatches（与
+      // admission.ifModelGlob 同源，2026-11-07）。
+      if (modelGlobMatches(glob, base)) return p;
     }
     return null;
   }
@@ -627,7 +627,8 @@ class LocalServerInference implements InferenceBackend {
           ctx: cfg.ctx,
           paramsB: cfg.paramsB,
           generation: npuGen?.name,
-          measuredCtx: measured);
+          measuredCtx: measured,
+          modelFile: _basename(path));
       if (violations.isNotEmpty) {
         for (final v in violations) {
           _log('⛔ $v');

@@ -179,11 +179,22 @@ void main() {
   });
 
   test('preset extraEnv 与 defaultConfig.extraEnv 合并（dc 同键覆盖）', () async {
+    // 2026-11-07 改造：Spark/Omni preset 的 extraEnv 已随
+    // defect-npu-spark-b12034 摘除（且 Spark 模型名在 NPU 会被 admission
+    // 禁入拦下，不再是合规载体）——合并链改用 Qwen3 载体验证 dc 侧入场；
+    // preset 侧合并分支保留给用户自定义 manifest（引擎默认链代码不变）。
     reg.instance('wangcai-npu')!.defaultConfig = const EngineDefaults(
         extraEnv: {'GGML_OPENVINO_DISABLE_DECODE_LEVELS': '0'});
-    await loadNpu('Spark-X2.6-4B-Fake.gguf');
-    // preset 带 DISABLE_DECODE_LEVELS=1，dc 同键覆盖成 0；preset 独占键保留
+    await loadNpu('Qwen3-4B-Fake.gguf');
     expect(spawns.envByExe['npu']!['GGML_OPENVINO_DISABLE_DECODE_LEVELS'], '0');
+  });
+
+  test('admission 模型禁入（2026-11-07）：Spark@NPU 前置拦，不拉必歇菜的 server',
+      () async {
+    await loadNpu('Spark-X2.6-4B-Fake.gguf');
+    expect(spawns.byExe['npu'], isNull,
+        reason: 'Spark 4B 在 NPU 引擎 decode 特性失效（缺陷单），'
+            '必须 admission 前置拦截而不是拉起 server 让用户等死');
   });
 
   test('引擎钉选压过路由档位：npu 档下钉 cuda → cuda 拉起、npu 被互斥停',

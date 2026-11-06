@@ -60,6 +60,17 @@ class EngineCapabilities {
       };
 }
 
+/// 模型 glob 匹配（`*`/`?` 通配，大小写不敏感，对**文件名**）。
+/// preset.modelGlob 与 admission.ifModelGlob 共用此实现（2026-11-07 收敛——
+/// 此前逻辑内联在 LocalServerInference._matchPreset，防两处漂移）。
+bool modelGlobMatches(String glob, String fileName) {
+  final pattern = glob
+      .split('')
+      .map((c) => c == '*' ? '.*' : (c == '?' ? '.' : RegExp.escape(c)))
+      .join();
+  return RegExp('^$pattern\$', caseSensitive: false).hasMatch(fileName);
+}
+
 /// 准入规则（设计 §4.1 admission）：违规在 UI 前置拦截并给改道建议，不等崩。
 /// 数据驱动：条件全部满足才触发。世代自适应（2026-11-05）：可选
 /// [appliesGenerations]（NpuGeneration.name 集合）把规则限定到某些 NPU
@@ -70,6 +81,7 @@ class AdmissionRule {
     this.ifCtxGt,
     this.ifParamsBAtLeast,
     this.appliesGenerations,
+    this.ifModelGlob,
     required this.message,
     required this.suggestion,
   });
@@ -79,6 +91,12 @@ class AdmissionRule {
 
   /// 适用世代（'ultra1'/'ultra2'/'ultra3'/'unknown'）；null = 全部。
   final List<String>? appliesGenerations;
+
+  /// 适用模型（对模型**文件名**的 glob，如 'Spark-X2.6-4B*.gguf'）；null = 全部。
+  /// 2026-11-07 新增：Spark 4B 在 NPU 引擎 decode-levels 整体失效
+  /// （defect-npu-spark-b12034）需要「模型级禁入」——现有 ctx/参数量维度
+  /// 表达不了「这个模型在这类引擎上别用」。
+  final String? ifModelGlob;
   final String message;
   final String suggestion;
 
@@ -87,7 +105,16 @@ class AdmissionRule {
     required double? paramsB,
     String? generation,
     int? measuredCtx,
+    String? modelFile,
   }) {
+    // 模型维度：**只在 modelFile 已知且命中 glob 时触发**（null/不命中 → 豁免）。
+    // 方向依据：错放（模型照跑）危害小于错拦（把 glob 外的好模型全拦死）；
+    // 与世代维度（null=保守生效）方向相反是有意的——世代是引擎属性，模型
+    // 文件是请求参数，未知时谈不上「针对这个模型」。
+    if (ifModelGlob != null &&
+        (modelFile == null || !modelGlobMatches(ifModelGlob!, modelFile))) {
+      return false;
+    }
     if (ifCtxGt != null && (ctx == null || ctx <= ifCtxGt!)) return false;
     if (ifParamsBAtLeast != null && (paramsB == null || paramsB < ifParamsBAtLeast!)) {
       return false;
@@ -105,13 +132,14 @@ class AdmissionRule {
     if (ifCtxGt != null && measuredCtx != null && ctx != null && ctx <= measuredCtx) {
       return false;
     }
-    return ifCtxGt != null || ifParamsBAtLeast != null;
+    return ifCtxGt != null || ifParamsBAtLeast != null || ifModelGlob != null;
   }
 
   factory AdmissionRule.fromJson(Map<String, dynamic> j) => AdmissionRule(
         ifCtxGt: (j['ifCtxGt'] as num?)?.toInt(),
         ifParamsBAtLeast: (j['ifParamsBAtLeast'] as num?)?.toDouble(),
         appliesGenerations: (j['appliesGenerations'] as List?)?.cast<String>(),
+        ifModelGlob: j['ifModelGlob'] as String?,
         message: j['message'] as String? ?? '',
         suggestion: j['suggestion'] as String? ?? '',
       );
@@ -243,6 +271,7 @@ class EngineManifest {
     required double? paramsB,
     String? generation,
     int? measuredCtx,
+    String? modelFile,
   }) {
     return [
       for (final r in admission)
@@ -250,7 +279,8 @@ class EngineManifest {
             ctx: ctx,
             paramsB: paramsB,
             generation: generation,
-            measuredCtx: measuredCtx))
+            measuredCtx: measuredCtx,
+            modelFile: modelFile))
           '${r.message}（建议：${r.suggestion}）',
     ];
   }

@@ -70,6 +70,33 @@ void main() {
       expect(npu.checkAdmission(ctx: 16384, paramsB: 1.7), isEmpty);
     });
 
+    test('admission 模型维度（2026-11-07）：Spark 4B 在 NPU 禁入，CUDA/Vulkan 不受影响', () {
+      // defect-npu-spark-b12034：decode-levels 特性在 b12034+NPU 驱动上整体
+      // 失效（撞设备预算自动回退 0.42 t/s 地板；智能体长 prefill 触发即
+      // 「本轮执行失败」）——模型级禁入 + 改道建议。方向语义：modelFile
+      // 未知/不命中 glob → 豁免（错放危害 < 错拦），其余维度不受影响。
+      final npu = bundledManifests()['wangcai-npu']!;
+      const spark = 'spark-x2.6-4b-q4_k_m.gguf';
+      final v = npu.checkAdmission(
+          ctx: 4096, paramsB: 4.0, modelFile: spark, generation: 'ultra1');
+      expect(v, isNotEmpty, reason: 'Spark@NPU@4096 必须前置拦（用户已实测歇菜）');
+      expect(v.join(), contains('CUDA/Vulkan'),
+          reason: '改道建议必须给出可操作的出路');
+      // 非 Spark 模型同条件照常放行（glob 不豁免错拦）。
+      expect(
+          npu.checkAdmission(
+              ctx: 4096, paramsB: 4.0, modelFile: 'Qwen3-4B-Q4_K_M.gguf'),
+          isEmpty);
+      // modelFile 未知（旧调用路径）不触发模型禁令——4B@4096 放行口径不变。
+      expect(npu.checkAdmission(ctx: 4096, paramsB: 4.0), isEmpty);
+      // CUDA manifest 无此规则：Spark 换引擎后同 ctx 照常放行。
+      final cuda = bundledManifests()['llamacpp-cuda'];
+      if (cuda != null) {
+        expect(cuda.checkAdmission(ctx: 4096, paramsB: 4.0, modelFile: spark),
+            isEmpty);
+      }
+    });
+
     test('全局 ctx 口径（2026-11-06）：preset 不再携带 ctx；deep 档位已退役', () {
       // per-model ctx 退役：ctx 只有一个口子（设置页滑杆 → routing.json，
       // 见 local_server_inference.setGlobalCtx）；preset 只剩质量臂数据
