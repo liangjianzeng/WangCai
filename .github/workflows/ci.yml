@@ -67,6 +67,50 @@ jobs:
           if ($hits) { $hits | ForEach-Object { Write-Host ('  ' + $_) }; throw 'assigning to read-only automatic variables' }
           Write-Host 'no read-only automatic variables are assigned'
 
+  # Dart 侧守护（2026-11-06 健康检查 黄⑧）：此前 CI 只建引擎，app/ 的
+  # analyze/test 无人看守——基线三败曾长期无人察觉。自 2026-11-06 全绿
+  # （1412 pass/18 skip/0 fail）起，test 失败即红；真机 E2E 套件经
+  # WANGCAI_NPU_E2E/引擎目录/gguf 三重门控在 runner 上自动跳过。
+  # 注意：flutter analyze 对 info 也返回非零，故 error 级才阻断
+  # （存量 ~300 info + ~20 warning 是已知债，warning 清零后收紧这里）。
+  flutter:
+    name: flutter analyze + test
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      # 与开发机同 major.minor（3.27 stable，SDK floor Dart 3.6 纪律的锚）。
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.27.4'
+          cache: true
+
+      # sqflite_common_ffi 的主机侧测试经 package:sqlite3 找 sqlite3.dll，
+      # Windows runner 无系统副本 —— chocolatey 的 sqlite 包把它摆上 PATH。
+      - name: Provide sqlite3.dll for host-side ffi tests
+        shell: pwsh
+        run: choco install sqlite -y
+
+      - name: pub get
+        run: flutter pub get
+
+      - name: Analyze (only errors block)
+        shell: bash
+        run: |
+          flutter analyze --no-pub lib test tool | tee analyze.log || true
+          errors=$(grep -cE "^[[:space:]]+error -" analyze.log || true)
+          echo "analyze: ${errors} error(s)"
+          if [ "${errors}" != "0" ]; then
+            grep -E "^[[:space:]]+error -" analyze.log
+            exit 1
+          fi
+
+      - name: Test
+        run: flutter test --no-pub
+
   build:
     name: build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

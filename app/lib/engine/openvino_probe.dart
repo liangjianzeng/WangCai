@@ -1,5 +1,5 @@
 // OpenVINO 设备索引探测（v0.0.3 Phase 3，设计 §12 / 计划「OPENVINO 探测」；
-// v0.0.6 世代自适应升级为返回完整 NPU 设备信息，npu_profiles.dart）。
+// 世代自适应〔2026-11-05，Unreleased〕升级为返回完整 NPU 设备信息，npu_profiles.dart）。
 //
 // 背景：wangcai-npu manifest 的 argsTemplate 硬编码 `-dev {devArg=OPENVINO3}`，
 // 那是**开发机**（带 Arc iGPU）的枚举实测；OpenVINO 插件枚举顺序决定索引 ——
@@ -11,7 +11,7 @@
 // **回退 OPENVINO2**（比 OPENVINO3 命中率高：它是无 dGPU 机型的通解，
 // 也是本机验证过的档位），不抛错、不阻塞加载。
 //
-// v0.0.6 追加：命中行的设备名/型号码/MiB 一并保留（NpuDeviceInfo），
+// 世代自适应追加（2026-11-05）：命中行的设备名/型号码/MiB 一并保留（NpuDeviceInfo），
 // 供世代档案（npu_profiles.dart）与引擎管理页取证；MiB 仅诊断，不做预算。
 import 'dart:async';
 import 'dart:convert';

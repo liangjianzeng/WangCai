@@ -1,25 +1,29 @@
 # 补丁
 
-WangCai 对上游代码的全部改动都集中在这里，以一组针对固定（pinned）llama.cpp commit 的补丁集
-形式存在。把它们放在 vendored 目录树之外，这个 fork 才能保持为一份干净的检出（checkout），
-差异（delta）也才保持可评审。
+WangCai 对上游 llama.cpp 的改动以一组针对固定（pinned）commit 的补丁集形式存在于此。
+把它们放在 vendored 目录树之外，差异（delta）保持可评审、可回馈上游。
+
+> **⚠ 状态（2026-11-06 健康检查重估，取代 10-31 的「落后两个修复」说法）：
+> 本目录是 2026-10-31 的历史快照，已不再完整反映引擎现状，也不是可复现构建路径。**
+>
+> - `src/ggml-openvino/` 自 11-01 起持续演进（多跨度 decode 图组、视觉/音频修复、
+>   blob 缓存、世代自适应调优值……全部不在 `0001` 里）；「全部改动都在这里」自那以后
+>   不再成立——**事实源是 [`src/ggml-openvino/`](../src/ggml-openvino/) 整目录**。
+> - 基线同样脱节：`tools/bootstrap.ps1` 缺省 pin 仍是 `abb76ab`，而开发机
+>   `src/llama` 工作目录已前移（`cd37cd9`，引擎线 P15–P20 时代）——构建真相 =
+>   构建机的 `src/llama` 工作目录 + `src/ggml-openvino` overlay，与 `git apply 0001` 无关。
+> - 因此 `bootstrap.ps1 -UsePatch` 与下方手工 apply 流程今天**会丢引擎演进**，仅供
+>   对照 10-31 之前的早期形态时使用。
+>
+> **重新生成（要动本目录时）**：本机直连 github.com/gitee 超时、pristine 克隆不可得
+> （2026-11-06 复核维持）；须在能取到基线克隆的机器上，以**构建机实际所用基线**
+> （而非 `abb76ab`）做 `git diff -- ggml/src/ggml-openvino`（命令见文末「重新生成补丁」），
+> 或干脆以 `src/ggml-openvino` 整目录 + 记录的基线 sha 为准、弃 diff 形式。
 
 | 产物 | 基线 | 规模 |
 |---|---|---|
-| `0001-ggml-openvino-npu-adaptation.patch` | llama.cpp `abb76ab380c7f3f731e365a859fb4cc64e939bb8` | 7 个文件，+213 / −8 |
+| `0001-ggml-openvino-npu-adaptation.patch` | llama.cpp `abb76ab380c7f3f731e365a859fb4cc64e939bb8` | 7 个文件，+213 / −8（10-31 快照口径） |
 | `ov_opencl_shim.hpp` | 新文件 → `ggml/src/ggml-openvino/ov_opencl_shim.hpp` | 约 150 行 |
-
-> **状态（2026-10-31）：补丁文件落后于 [`src/ggml-openvino/`](../src/ggml-openvino/) 两个修复**——
-> KV 写索引的 SWA 同名冲突修复（`ggml-decoder.cpp`）与 `GGML_OPENVINO_DEBUG_NODE` 的 NPU 显式拒绝
-> （`openvino/translate_session.cpp`），见 [CHANGELOG](../CHANGELOG.md)。本机直连 github.com 与
-> gitee 镜像均超时，无法拉取 pristine `abb76ab` 来重新生成 diff。重新生成的命令：
->
-> ```powershell
-> git clone https://github.com/ggml-org/llama.cpp src\llama-pristine
-> cd src\llama-pristine ; git checkout abb76ab380c7f3f731e365a859fb4cc64e939bb8 ; cd ..\..
-> git diff --no-index --src-prefix=a/ --dst-prefix=b/ src\llama-pristine\ggml\src\ggml-openvino src\ggml-openvino
-> # （diff 输出需按 patches/0001 现有格式整理路径前缀后整体替换）
-> ```
 
 所有 hunk 都位于 `ggml/src/ggml-openvino/` 之内。llama.cpp 核心、采样器（sampler）与
 ggml-CPU 的文件一概未动。

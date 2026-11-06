@@ -193,6 +193,24 @@ best-effort，失败静默 null，成功加载后随 `lastNpuInfo` 摘要落 eng
    **教训：闭环设计的每条腿都要追问「今天谁喂它数据」——测试 seed 通过 ≠
    生产路径可达。**
 
+## 2026-11-06：全面健康检查清账（红黄全处理）——基线三败清零 / CHANGELOG+tag 补立 / patches 如实建档 / CI 补 Dart 守护
+
+三代理体检 + 实测基线的红黄项全部落地（明细见 CHANGELOG [Unreleased]「健康检查清账」段）。
+口径与教训：
+
+- **基线三败是"测试过时"不是"代码回归"**：Clover 位置门（10-30 真机实锤）改写了思考流
+  契约，测试还按旧约写；独立化后"修复归上游"失效，测试跟现契约走，位置门本身用例锁死。
+  自此 `flutter test` 全绿为常态（1412/21/0 首破），CI 的 flutter job 按零失败阻断。
+  **教训：跑红的"基线失败"要拿取证时间线判归属（实现变or测试错），别默认测试是圣约。**
+- CI 原只建引擎，Dart 侧裸奔——flutter analyze（error 阻断）+ test（全阻断）job 已补；
+  runner 无 NPU/音频设备，真机套件靠三重门控自动跳过（gate 对齐的价值）。
+- patches/ 与构建事实脱节如实建档：0001 是 10-31 快照、bootstrap pin 落后工作目录
+  （abb76ab vs cd37cd9）；构建真相 = src/llama 工作目录 + src/ggml-openvino overlay。
+- CHANGELOG 自 0.0.1 后三个 release 都没进账（release commit 只更版本串）——
+  **教训：版本发布三件套（版本串/CHANGELOG/tag）要当一次事务，漏一件就是考古题。**
+- 缓办未动（留用户定夺）：依赖 major 升级（riverpod 3/flutter_markdown 停更/file_picker
+  -5 majors）、大文件拆分（settings_screen 3000+ 行等）、debugPrint→结构化日志体系。
+
 ## 2026-11-03：P8 结案——llama-completion fastfail 与 NPU 无关（jinja 模板 unsupported 未捕获异常）；"raw 流独立缺陷"证伪
 
 `llama-completion`（raw）4B 必崩 0xC0000409（1.7B 不崩、chunk/ctx 无关、REQUANT 无关、ASAN 构建同样崩且
