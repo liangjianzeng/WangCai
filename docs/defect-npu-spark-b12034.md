@@ -22,3 +22,26 @@ ddl0「不崩不 OOM」→ **Spark preset 摘除 DDL env**（与 Omni 同锁，m
 引擎（llama.cpp + ggml-openvino）升级或 NPU 驱动大版本更新后，重跑矩阵（`tmp/omni-matrix/run-matrix.sh`，spark 两案）：
 - DDL=1 不再 Compute error 且速度健康 → 可回填（改回 preset + 翻锚）；
 - 无 DDL 地板消失（预期 4B@4096 ≈5+ t/s）→ 缺陷闭案。
+
+## 补充（2026-11-07 凌晨）：智能体场景实锤回退机制 = 歇菜全链路
+
+用户实测「4B 智能体模式直接歇菜」复现取证（`tmp/omni-matrix/logs/spark_agent_repro.server.log`）：
+智能体 full 档系统提示 710 token（约 HANDOFF 口径 860，本次人格段精简）prefill **56 t/s 正常**（12.7s），
+随后 decode：
+
+```
+6.40 W ggml-openvino: decode level 1024 graph hit the device budget
+      (ZE_RESULT_ERROR_UNINITIALIZED); disabling decode levels and ret[rying]
+7.58 W srv stop: cancel task, id_task = 0
+```
+
+机制统一：Spark 4B 的 decode-level 图（1024 深度）运行时撞设备预算 → 引擎**自动回退**
+无-decode-levels 模式 → 即 0.42 t/s 地板（短 prompt 的 q3 案与长 prompt 的智能体案是同一
+回退形态；显式 DDL=1 则连回退都没有，直接 500）。智能体侧观感 = prefill 12.7s + decode
+每字 2.4s → 256 token 上限跑不完 → 轮次取消「本轮执行失败（详见推理日志）」。
+会话库另有轻度中英夹杂输出（「quite 丰富」「都 me 哦」），与回退模式下的数值质量一致，
+同根因不另立单。
+
+**结论强化：Spark 4B 在 b12034 + NPU 3720（驱动 32.0.100.4512）上 decode-levels 特性
+整体失效，无配置可救**；用户侧唯一健康路径 = CUDA/Vulkan（实测 99.2 t/s）。
+智能体模式请在 Spark 上选 CUDA/Vulkan 引擎，或 NPU 档配 1.7B / Omni-2B（21.6 / 21.9 t/s）。
