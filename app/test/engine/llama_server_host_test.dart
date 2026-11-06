@@ -1,5 +1,6 @@
 // 假进程/假 health/假时钟驱动 LlamaServerHost 全路径：
 // ready 流、参数与环境注入正确性（M0-3 校正）、崩溃重启预算、错误日志、停止清理。
+import 'dart:async'; // 2026-11-06 换机合流修：预热回归用例用了 Completer 漏 import
 import 'dart:io';
 
 // flutter_test 自带 EnginePhase（binding 内部用），hide 掉避免撞名。
