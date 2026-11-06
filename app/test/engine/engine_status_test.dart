@@ -14,6 +14,44 @@ void main() {
       expect(m.handle(HealthOkEvent()).phase, EnginePhase.ready);
     });
 
+    test('预热挂档：health 200 先进 prewarming，PrewarmDone 才 ready', () {
+      final m = EngineStateMachine();
+      m.handle(StartRequested());
+      m.handle(PrewarmArmedEvent());
+      m.handle(LogLineEvent('0.19 model loaded'));
+      expect(m.handle(HealthOkEvent()).phase, EnginePhase.prewarming);
+      // 预热期自家 completion 会刷编译行——不得把阶段倒拨回 compiling。
+      expect(
+          m.handle(LogLineEvent('ggml-openvino: compiling decode graph ...'))
+              .phase,
+          EnginePhase.prewarming);
+      expect(m.handle(PrewarmDoneEvent()).phase, EnginePhase.ready);
+    });
+
+    test('未挂档 health 直达 ready（旧口径不回归）；prewarming 期错误词仍把关', () {
+      final m = EngineStateMachine();
+      m.handle(StartRequested());
+      expect(m.handle(HealthOkEvent()).phase, EnginePhase.ready);
+
+      final m2 = EngineStateMachine();
+      m2.handle(StartRequested());
+      m2.handle(PrewarmArmedEvent());
+      m2.handle(HealthOkEvent());
+      expect(
+          m2.handle(LogLineEvent('ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY warm崩'))
+              .phase,
+          EnginePhase.error);
+    });
+
+    test('StartRequested 重置挂档（同机复用时不串档）', () {
+      final m = EngineStateMachine();
+      m.handle(StartRequested());
+      m.handle(PrewarmArmedEvent());
+      m.handle(StartRequested());
+      expect(m.prewarmArmed, isFalse);
+      expect(m.handle(HealthOkEvent()).phase, EnginePhase.ready);
+    });
+
     test('错误词表命中 → error（status.md 实测词）', () {
       for (final line in [
         'ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY at pfnAppendGraphExecute',

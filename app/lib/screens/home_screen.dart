@@ -1728,6 +1728,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return i == -1 ? path : path.substring(i + 1);
   }
 
+  /// 加载进度行瘦身：剥 llama-server 时间戳前缀（`0.03.042.048 W srv ...`），
+  /// 掐尾 56 字——chip 一行放得下，全文进 tooltip。
+  String _trimLoadingDetail(String line) {
+    var s = line.trim();
+    final m = RegExp(r'^[0-9]{1,2}(?:\.[0-9]{1,3}){3}\s+').firstMatch(s);
+    if (m != null) s = s.substring(m.end);
+    return s.length <= 56 ? s : '…${s.substring(s.length - 56)}';
+  }
+
   // Model status chip — compact indicator in AppBar leading area (left of title)
   // Tapping opens a bottom sheet with model name, unload / reload actions
   // =========================================================================
@@ -1745,8 +1754,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     switch (ms.phase) {
       case ModelLifecyclePhase.loading:
         chipIcon = Icons.sync_alt;
-        label = const Text('加载中…',
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500));
+        // 加载期透出最新进度行（含引擎编译/预热里程碑，2026-11-06 用户指令：
+        // 「模型加载不要就一句话，让用户知道等待」）；悬停看全文。
+        final detail = ms.latestLog;
+        final txt =
+            detail == null ? '加载中…' : '加载中… ${_trimLoadingDetail(detail)}';
+        label = Tooltip(
+          message: detail ?? '加载中…（等待引擎日志）',
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 320),
+            child: Text(txt,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w500)),
+          ),
+        );
         break;
       case ModelLifecyclePhase.loaded:
         chipIcon = isGenerating ? Icons.auto_awesome : Icons.check_circle;

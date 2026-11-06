@@ -59,6 +59,7 @@ void main() {
         return p;
       },
       healthProbe: (_, __) async => !oomOnSpawn,
+      prewarmCompletion: (_) async {},
       portAllocator: () async => 8123,
       sleeper: (d) async {},
       parentEnv: const {'PATH': r'C:\Windows', 'SystemRoot': r'C:\Windows'},

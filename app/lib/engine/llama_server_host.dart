@@ -30,7 +30,11 @@ class LlamaServerHost implements EngineHost {
     Map<String, String>? parentEnv,
     Duration healthPollInterval = const Duration(seconds: 1),
     Duration readyTimeoutSlack = const Duration(seconds: 45),
-  })  : _prefixes = pathPrefixes ?? manifest.pathPrefixes,
+    bool prewarmOnLoad = true,
+    PrewarmCompletion? prewarmCompletion,
+  })  : _prewarmOnLoad = prewarmOnLoad,
+        _prewarm = prewarmCompletion ?? defaultPrewarmCompletion,
+        _prefixes = pathPrefixes ?? manifest.pathPrefixes,
         _runner = processRunner ?? defaultProcessRunner,
         _health = healthProbe ?? defaultHealthProbe,
         _portAlloc = portAllocator ?? defaultPortAllocator,
@@ -57,6 +61,8 @@ class LlamaServerHost implements EngineHost {
   final Map<String, String>? _parentEnv;
   final Duration _pollEvery;
   final Duration _readySlack;
+  final bool _prewarmOnLoad;
+  final PrewarmCompletion _prewarm;
 
   final _machine = EngineStateMachine();
   final _statusCtl = StreamController<EngineStatus>.broadcast();
@@ -225,6 +231,11 @@ class LlamaServerHost implements EngineHost {
 
       lastSpawnArgs = args;
       lastSpawnEnv = env;
+      _uiNoiseSuppressed = 0;
+      // 加载期预热（2026-11-06 用户指令）：health 200 先进 prewarming，真
+      // completion 把首张 prefill/decode 懒编译吸收进加载阶段——首条对话
+      // 不再对着「加载中…」干等数分钟。
+      if (_prewarmOnLoad) _machine.handle(PrewarmArmedEvent());
       final proc = await _runner(binaryPath, args, env);
       _proc = proc;
       await _ledger.write(LedgerEntry(
@@ -252,13 +263,22 @@ class LlamaServerHost implements EngineHost {
     if (!_logsCtl.isClosed) _logsCtl.add(EngineLogLine.now(text));
   }
 
+  // 已知噪声（OV NPU 视图维警告，加载期成百条刷屏，docs/npu-internals.md 同源）：
+  // 全量留在 logHistory（日志弹层取证），UI 流折叠为计数——否则进度行被冲没。
+  static final RegExp _uiNoiseRe = RegExp(r'dynamic dim value mismatch');
+  int _uiNoiseSuppressed = 0;
+
   void _onLog(String line, int gen) {
     if (gen != _gen) return;
     _logHistory.add(EngineLogLine.now(line));
     if (_logHistory.length > _logHistoryCap) {
       _logHistory.removeRange(0, _logHistory.length - _logHistoryCap);
     }
-    _logsCtl.add(EngineLogLine.now(line));
+    if (_uiNoiseRe.hasMatch(line)) {
+      _uiNoiseSuppressed++;
+    } else if (!_logsCtl.isClosed) {
+      _logsCtl.add(EngineLogLine.now(line));
+    }
     final next = _machine.handle(LogLineEvent(line));
     if (next != _machine.state) _emit(next);
     if (next.phase == EnginePhase.error) _stderrTail = line;
@@ -278,6 +298,12 @@ class LlamaServerHost implements EngineHost {
       if (await _health('127.0.0.1', _port ?? 0)) {
         if (gen != _gen) return;
         _emit(_machine.handle(HealthOkEvent()));
+        if (_uiNoiseSuppressed > 0) {
+          _ownLogLine('（加载期已折叠 $_uiNoiseSuppressed 条 dynamic-dim 视图警告，完整见日志弹层）');
+        }
+        if (_machine.state.phase == EnginePhase.prewarming) {
+          await _prewarmPhase(gen);
+        }
         return;
       }
       await _sleep(_pollEvery);
@@ -290,6 +316,36 @@ class LlamaServerHost implements EngineHost {
       _emit(_machine.handle(CrashDetectedEvent(
           '启动超时（${manifest.timingHints.coldCompileMs}ms+slack 未就绪）${_stderrTail != null ? '：$_stderrTail' : ''}')));
     }
+  }
+
+  /// 加载期预热：一条真 completion 触发 prefill/decode 懒编译（一次性成本，
+  /// blob 落盘后消失）。成功/超时/失败都推进 ready——预热是体验优化，不是
+  /// 就绪门槛的加严（失败路径原本就存在：首条对话慢）。
+  Future<void> _prewarmPhase(int gen) async {
+    final port = _port;
+    if (port == null) {
+      if (gen == _gen) _emit(_machine.handle(PrewarmDoneEvent()));
+      return;
+    }
+    _ownLogLine('🔥 预热中：编译首张 prefill/decode 图（新编译缓存首见最长数分钟，一次性）');
+    final sw = Stopwatch()..start();
+    String? fail;
+    // 预热预算=冷编 hint+60s：懒编译是 blob 落盘前的一次性成本，最坏情形
+    // 恰是它最该被等完的时候（网关侧 waitReady 预算与此对齐，2026-11-06）。
+    final budget =
+        Duration(milliseconds: manifest.timingHints.coldCompileMs + 60000);
+    try {
+      await _prewarm(port).timeout(budget);
+    } catch (e) {
+      fail = '$e'.length > 160 ? '${'$e'.substring(0, 160)}…' : '$e';
+    }
+    if (gen != _gen) return;
+    sw.stop();
+    _ownLogLine(fail == null
+        ? '🔥 预热完成（${(sw.elapsedMilliseconds / 1000).toStringAsFixed(1)}s），首条对话不再付懒编译税'
+        : '⚠️ 预热未完成（$fail）——不阻塞使用，首条对话可能较慢');
+    if (gen != _gen || _stopping) return;
+    _emit(_machine.handle(PrewarmDoneEvent()));
   }
 
   Future<void> _onExit(int code, int gen) async {

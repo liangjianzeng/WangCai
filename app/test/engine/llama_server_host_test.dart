@@ -24,6 +24,11 @@ class Harness {
   final sleepLog = <Duration>[];
   bool healthOk = false;
 
+  // 加载期预热桩：默认记录 port 后立成（测试不碰真 socket）；单测可换 impl 卡门。
+  final prewarmCalls = <int>[];
+  bool prewarmEnabled = true;
+  Future<void> Function(int port)? prewarmImpl;
+
   late final host = LlamaServerHost(
     instanceId: 'wangcai-npu',
     manifest: bundledManifests()['wangcai-npu']!,
@@ -40,6 +45,11 @@ class Harness {
     maxRestartAttempts: 3,
     healthPollInterval: Duration.zero,
     parentEnv: const {'PATH': r'C:\Windows', 'SystemRoot': r'C:\Windows'},
+    prewarmOnLoad: prewarmEnabled,
+    prewarmCompletion: (port) async {
+      prewarmCalls.add(port);
+      await prewarmImpl?.call(port);
+    },
   );
 
   Future<EngineProcess> _runner(String exe, List<String> args, Map<String, String> env) async {
@@ -156,6 +166,45 @@ Available devices:
     h.healthOk = true;
     await h.waitForStatus(EnginePhase.ready);
     expect(h.host.baseUrl, 'http://127.0.0.1:8123/v1');
+  });
+
+  test('加载期预热：health 后卡 prewarming，completion 返回前 baseUrl 不可用', () async {
+    final gate = Completer<void>();
+    h.prewarmImpl = (_) => gate.future;
+    await h.host.start(testCfg(ctx: 1024));
+    await h.waitSpawns(1);
+    h.spawned[0].emitOut('0.19.2 I srv  server_run_i: model loaded\n');
+    await h.waitForStatus(EnginePhase.warming);
+    h.healthOk = true;
+    await h.waitForStatus(EnginePhase.prewarming);
+    expect(h.prewarmCalls, [8123], reason: '预热必须打真 completion 到服务端口');
+    expect(h.host.baseUrl, isNull, reason: '预热未完 = 尚不可用（懒编译税未付完）');
+
+    gate.complete();
+    await h.waitForStatus(EnginePhase.ready);
+    expect(h.host.baseUrl, 'http://127.0.0.1:8123/v1');
+    expect(h.host.logHistory.map((l) => l.text).join('\n'),
+        allOf(contains('预热中'), contains('预热完成')));
+  });
+
+  test('预热失败不阻塞就绪：completion 抛错 → ready + 日志留痕', () async {
+    h.prewarmImpl = (_) async => throw StateError('prewarm boom');
+    await h.host.start(testCfg(ctx: 1024));
+    await h.waitSpawns(1);
+    h.healthOk = true;
+    await h.waitForStatus(EnginePhase.ready);
+    expect(h.prewarmCalls.length, 1);
+    expect(h.host.logHistory.map((l) => l.text).join('\n'),
+        allOf(contains('预热中'), contains('预热未完成'), contains('prewarm boom')));
+  });
+
+  test('prewarmOnLoad=false 开关保留：health 200 直达 ready，不发预热', () async {
+    h.prewarmEnabled = false;
+    await h.host.start(testCfg(ctx: 1024));
+    await h.waitSpawns(1);
+    h.healthOk = true;
+    await h.waitForStatus(EnginePhase.ready);
+    expect(h.prewarmCalls, isEmpty);
   });
 
   test('参数注入（M0-3 校正）：无 -st；-np 1 -fa 1 -dev OPENVINO3 --jinja；mmproj 成对可选', () async {

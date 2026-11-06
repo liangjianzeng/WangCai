@@ -176,6 +176,7 @@ class EngineRegistry {
     this.portAllocator,
     this.sleeper,
     this.parentEnv,
+    this.prewarmCompletion,
   })  : manifests = manifests ?? bundledManifests(),
         _instances = {for (final i in instances) i.id: i};
 
@@ -213,6 +214,9 @@ class EngineRegistry {
   final PortAllocator? portAllocator;
   final Sleeper? sleeper;
   final Map<String, String>? parentEnv;
+  /// 加载期预热探针（null=host 默认：真 completion；测试注入桩免碰真 socket，
+  /// 2026-11-06 平台套件实锤：不注入会 5s 连接超时×每引擎拖死回归）。
+  final PrewarmCompletion? prewarmCompletion;
 
   List<EngineInstance> get instances => _instances.values.toList()
     ..sort((a, b) => a.id.compareTo(b.id));
@@ -275,6 +279,7 @@ class EngineRegistry {
             portAllocator: portAllocator,
             sleeper: sleeper,
             parentEnv: parentEnv ?? Platform.environment,
+            prewarmCompletion: prewarmCompletion,
           );
     return _hosts[instanceId] = host;
   }

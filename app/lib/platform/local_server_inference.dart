@@ -637,10 +637,15 @@ class LocalServerInference implements InferenceBackend {
 
       await host.start(cfg);
       // mmproj（视觉塔）入场时首编预算远超纯文本（实测 Omni-2B+c4096 ≈310s），
-      // slack 加到 7 分钟；纯文本维持 +120s。
+      // slack 加到 7 分钟；纯文本维持 +120s。2026-11-06 加载期预热并入就绪
+      // 门槛（host health 后 prewarming→真 completion），slack 再垫一份
+      // 与 host 预热预算同构的 coldCompileMs+60s——预热没跑完前 waitReady
+      // 不得提前判死（进度对用户可见：chip 最新行 + 引擎管理页「预热编译…」）。
+      final prewarmBudget = manifest.timingHints.coldCompileMs + 60000;
       final ok = await host.waitReady(Duration(
           milliseconds: manifest.timingHints.coldCompileMs +
-              (cfg.mmprojPath != null ? 420000 : 120000)));
+              (cfg.mmprojPath != null ? 420000 : 120000) +
+              prewarmBudget));
       if (!ok) {
         _loaded = false;
         _log('❌ 引擎未就绪: ${host.status.error ?? host.status.phase.name}');

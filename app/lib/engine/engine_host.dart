@@ -75,6 +75,31 @@ Future<bool> defaultHealthProbe(String host, int port) async {
   }
 }
 
+/// 加载期预热探针：对 llama-server 发一条真 completion，把 prefill/decode
+/// 懒编译吸收进加载阶段（2026-11-06 用户指令：预热要在模型加载时做完）。
+typedef PrewarmCompletion = Future<void> Function(int port);
+
+/// 默认实现：prompt 灌过一个 prefill chunk 满桶（~140 字 ≥ chunk128 满桶）
+/// + 8 token 小尾段逼出首个 decode 级别图；temp 0 贪心，走原生 /completion。
+Future<void> defaultPrewarmCompletion(int port) async {
+  final client = io.HttpClient()
+    ..connectionTimeout = const Duration(seconds: 5);
+  try {
+    final req = await client.postUrl(
+        Uri.parse('http://127.0.0.1:$port/completion'));
+    req.headers.contentType = io.ContentType.json;
+    req.write('{"prompt":"${'预热。' * 60}",'
+        '"n_predict":8,"temp":0.0,"cache_prompt":false}');
+    final res = await req.close();
+    await res.drain<void>();
+    if (res.statusCode != 200) {
+      throw io.HttpException('prewarm http=${res.statusCode}');
+    }
+  } finally {
+    client.close(force: true);
+  }
+}
+
 typedef PortAllocator = Future<int> Function();
 
 Future<int> defaultPortAllocator() async {

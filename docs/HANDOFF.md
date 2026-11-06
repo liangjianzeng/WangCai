@@ -1275,3 +1275,18 @@ CPU 干净 / NPU 全配置复读（逐字节一致=确定性图错）/ **显式 
 钉 `{kvHostWrite=0}`、deep preset 的 1 改 0（其「9.1 t/s」降级为存疑数字待复测）。
 全文：docs/defect-npu-p14e-kvhostwrite.md（复现命令+行动项在彼处，含 src/llama 未入 git
 致无法 bisect 的立案）。
+
+### 加载期预热 + 加载进度可见（2026-11-06，用户指令：「预热要在模型加载时做完，加载不要就一句话」）
+真机验收暴露：health 200 即 ready，但 NPU 懒编译（首张 prefill/decode 图）实际压在
+**首条对话**上——用户对着「加载中…」一句话干等数分钟，误判"无法推理"（活引擎直探
+19.8 t/s 健康，实锤是体验缺陷非推理缺陷）。落地：
+- **状态机**：`prewarming` 新阶段 + `PrewarmArmed/PrewarmDone` 事件——health 200 先进
+  prewarming，真 completion（~140 字灌满 chunk 桶 + 8 token 逼 decode 图）结束才 ready；
+  预热期自家编译行不倒拨阶段、错误词表照常把关；`prewarmOnLoad=false` 留关。
+- **host**：预热预算=coldCompileMs+60s（与网关 waitReady 垫层同构）；预热失败不阻塞
+  ready（留痕「预热未完成」——本就是旧行为：首条对话慢）。
+- **噪声纪律**：dynamic-dim 视图警告（加载期成百条）全量留 logHistory（弹层取证），
+  UI 流折叠为一条计数——否则进度行被冲没。
+- **UI**：聊天顶栏 chip 加载期透出最新进度行（剥时间戳掐尾 56 字，tooltip 全文）；
+  引擎管理页 warming→「装载中」、新增 prewarming「预热编译…」。
+测试：engine 91 全绿（+6 锚：状态机×3、host 预热门/失败不阻塞/开关×3）。

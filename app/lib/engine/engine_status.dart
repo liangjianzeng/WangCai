@@ -5,7 +5,8 @@ enum EnginePhase {
   launching, // 进程已拉起，等 health
   compiling, // 日志出现图编译迹象（NPU 冷编 ~36s）
   warming, // 日志 model loaded，即将 listening
-  ready, // /health 200
+  prewarming, // health 200 后真 completion 预热（懒编译图吸收进加载期，2026-11-06）
+  ready, // 预热完成，可推理
   draining, // 正在停止
   error, // 崩溃/编译失败/预算耗尽，需人工
 }
@@ -21,7 +22,8 @@ class EngineStatus {
   bool get isStarting =>
       phase == EnginePhase.launching ||
       phase == EnginePhase.compiling ||
-      phase == EnginePhase.warming;
+      phase == EnginePhase.warming ||
+      phase == EnginePhase.prewarming;
 
   @override
   String toString() => 'EngineStatus($phase${error != null ? ', error=$error' : ''})';
@@ -55,6 +57,12 @@ class ProcessExitedEvent extends EngineEvent {
 
 class HealthOkEvent extends EngineEvent {}
 
+/// host 声明「本次启动要做加载期预热」：health 200 先进 prewarming 而非 ready。
+class PrewarmArmedEvent extends EngineEvent {}
+
+/// 预热 completion 结束（成功/超时/失败都算，host 侧留痕）→ ready。
+class PrewarmDoneEvent extends EngineEvent {}
+
 class CrashDetectedEvent extends EngineEvent {
   CrashDetectedEvent(this.reason);
   final String reason;
@@ -68,6 +76,11 @@ class EngineStateMachine {
   /// 当前是否处于"我们主动要求它跑"的意图下（决定意外退出算崩溃还是算停止）。
   bool _wantRunning = false;
   bool get wantRunning => _wantRunning;
+
+  /// 本次启动是否要求加载期预热（每次 StartRequested 重置，host 在
+  /// _waitReady 前挂 PrewarmArmedEvent）。true 时 health 200 停 prewarming。
+  bool _prewarmArmed = false;
+  bool get prewarmArmed => _prewarmArmed;
 
   /// 编译期日志标记（大小写不敏感）。NPU 静态图编译、blob 缓存。
   static final RegExp _compileRe =
@@ -88,9 +101,11 @@ class EngineStateMachine {
     switch (event) {
       case StartRequested():
         _wantRunning = true;
+        _prewarmArmed = false;
         _state = const EngineStatus(EnginePhase.launching);
       case StopRequested():
         _wantRunning = false;
+        _prewarmArmed = false;
         _state = const EngineStatus(EnginePhase.draining);
       case LogLineEvent(:final line):
         _state = _onLog(line);
@@ -100,11 +115,18 @@ class EngineStateMachine {
         } else {
           _state = EngineStatus(EnginePhase.error, error: '进程意外退出 code=$code');
         }
+      case PrewarmArmedEvent():
+        _prewarmArmed = true;
+      case PrewarmDoneEvent():
+        if (_state.phase == EnginePhase.prewarming) {
+          _state = const EngineStatus(EnginePhase.ready);
+        }
       case HealthOkEvent():
         if (_state.phase == EnginePhase.launching ||
             _state.phase == EnginePhase.compiling ||
             _state.phase == EnginePhase.warming) {
-          _state = const EngineStatus(EnginePhase.ready);
+          _state = EngineStatus(
+              _prewarmArmed ? EnginePhase.prewarming : EnginePhase.ready);
         }
       case CrashDetectedEvent(:final reason):
         _state = EngineStatus(EnginePhase.error, error: reason);
@@ -113,7 +135,9 @@ class EngineStateMachine {
   }
 
   EngineStatus _onLog(String line) {
-    // ready 之后日志不再回退状态（生成期也有各种 INFO 行）。
+    // ready 之后日志不再回退状态（生成期也有各种 INFO 行）。prewarming 同理：
+    // 预热 completion 自己会刷 compil/blob 行，不得把阶段倒拨回 compiling，
+    // 但错误词表仍然全量把关（预热期编译崩要立刻可见）。
     if (_state.phase == EnginePhase.ready || _state.phase == EnginePhase.stopped) {
       return _state;
     }
@@ -122,6 +146,7 @@ class EngineStateMachine {
         return EngineStatus(EnginePhase.error, error: line.trim());
       }
     }
+    if (_state.phase == EnginePhase.prewarming) return _state;
     if (_compileRe.hasMatch(line)) {
       return const EngineStatus(EnginePhase.compiling);
     }

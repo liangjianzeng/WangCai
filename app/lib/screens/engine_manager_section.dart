@@ -670,7 +670,9 @@ class _PhaseChip extends StatelessWidget {
       EnginePhase.ready => ('运行中', Colors.green),
       EnginePhase.launching => ('启动中', Colors.orange),
       EnginePhase.compiling => ('编译图…', Colors.deepOrange),
-      EnginePhase.warming => ('预热中', Colors.orange),
+      EnginePhase.warming => ('装载中', Colors.orange),
+      // 加载期预热（health 后真 completion 吃懒编译，2026-11-06 用户指令）。
+      EnginePhase.prewarming => ('预热编译…', Colors.deepOrange),
       EnginePhase.draining => ('停止中', Colors.blueGrey),
       EnginePhase.error => ('异常', Colors.red),
       EnginePhase.stopped => ('已停止', Colors.grey),
