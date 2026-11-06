@@ -88,6 +88,7 @@ import '../services/model_manager.dart' show ModelManager;
 import '../services/model_storage_service.dart'
     show ModelStorageService, modelStorageService;
 import 'inference_log_screen.dart';
+import '../widgets/wangcai_logo.dart';
 
 /// 模型管理面板 Body（v0.0.3 桌面独立版 · Phase 2 重写，2026-11-04）。
 ///
@@ -3369,7 +3370,7 @@ class AboutSettingsCard extends StatelessWidget {
         padding: const EdgeInsets.all(12),
         child: Column(
           children: [
-            const Icon(Icons.auto_awesome, size: 64, color: Colors.indigo),
+            const WangCaiLogo(size: 64, radius: 14),
             const SizedBox(height: 10),
             const Text(
               '汪柴 WangCai',

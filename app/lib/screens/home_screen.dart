@@ -71,6 +71,7 @@ import '../plugins/plugin_input_icon.dart';
 import '../plugins/slot_outlet.dart';
 import 'package:plugin_kernel/plugin_kernel.dart' show SlotRegistry;
 import '../platform/wangcai_paths.dart';
+import '../widgets/wangcai_logo.dart';
 
 /// App-lifetime guard: 启动自动加载默认模型只执行一次。
 /// 放在库作用域，避免首页路由重建时重复触发（与设置页 `_appLaunchScanDone` 同风格）。
@@ -2225,7 +2226,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(Icons.auto_awesome, size: 64, color: Colors.grey.shade400),
+                const WangCaiLogo(size: 64, radius: 14),
                 const SizedBox(height: 16),
                 Text(
                   '你好！我是汪柴\n端到端离线的 AI 助手',

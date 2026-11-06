@@ -87,6 +87,9 @@ flutter:
   assets:
     - assets/models_catalog.json
     - assets/tray_icon.ico
+    # 汪柴品牌 Logo（2026-11-06）：空会话占位与关于卡用，唯一出处
+    # widgets/wangcai_logo.dart（源图 repo assets/wangchai_blue_id_square_295.png）。
+    - assets/wangchai_logo.png
     # M3 唤醒：ARMED 提示音 + 托盘状态三色（tool/gen_voice_assets.dart 生成）
     - assets/wake_cue.wav
     - assets/tray/voice_armed.ico
