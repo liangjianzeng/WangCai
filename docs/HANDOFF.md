@@ -1311,3 +1311,17 @@ preset.ctx 上限先验随之退役（npu_generation_adapt 全套锚按新口径
 测试：manifest/chain/generation_adapt/settings_service/download 五套件改写，新增 snap 锚；
 真机门控 app_npu_flow 的「设置页 ctx 生效」锚改 6144/4096 双段。
 教训入规：**新增设置项先搜全库确认没有既有真源**——本次差点造出第二个 ctx 滑杆。
+
+## 2026-11-06 深夜 Omni 深层崩速实锤与配方手术（omni-matrix）
+用户报「普通聊天 lfm3-omni decode 非常慢 + 二次对话复读哈哈」→ 离线 llama-server
+七套矩阵（tmp/omni-matrix/run-matrix.sh v3：端口守卫 + /props 串台守卫 + 单实例锁）
+定罪 **GGML_OPENVINO_DISABLE_DECODE_LEVELS=1**（Omni preset 从 Spark@512 配方抄来的）：
+4096 档 1.7 vs 19.8 t/s、8192 档 0.8 vs 15.2（DDL=0+FOLD=YES）；512 档无恙（18.0），
+所以 512 时代的配方带病入厂。FOLD 与 DDL 是两条独立曲线：**8192 无 FOLD 也塌**
+（ddl0+foldNO 仅 0.3/2.4 t/s）——网关超 4096 自动挂 FOLD 的规则保命，勿动。
+手术 = 仅摘 Omni preset 的 DDL env（Spark 暂留，spark4096 ddl1-vs-ddl0 在跑）；
+回归锁进 manifest_test（Omni 的 extraEnv 不得再有该键）。
+「哈哈哈」复读七套配置全部未复现，疑为深层崩速伴生（decode 塌了模型自嗨），
+待用户装新包复验；若仍在则另立复读缺陷单查 slot/history。
+**教训入规**：env 配方是模型×深度双变量，跨模型抄配方必须在新默认深度下重测；
+512 时代「必需」的 env 到 4096 可能是毒。矩阵脚本可复用（run-queue2.sh 派生法）。

@@ -42,8 +42,7 @@ const String wangcaiNpuManifestJson = '''
      "note": "副靶（讯飞 Spark-X2.6-4B Q4_K_M）：chunk128 + 关 decode level 必需（spark-npu-accept.ps1 3/3、HANDOFF 2026-11-01）"},
     {"name": "lfm3-omni-2b", "modelGlob": "LFM3-Omni-2B*.gguf", "chunk": 128,
      "paramsB": 2.0, "device": "NPU",
-     "extraEnv": {"GGML_OPENVINO_DISABLE_DECODE_LEVELS": "1"},
-     "note": "Omni-2B 文本线（chunk128 实测口径）；视觉塔走 cuda/vulkan —— NPU mtmd 有缺陷，见 defect-npu-mtmd.md"},
+     "note": "Omni-2B 文本线（chunk128 实测口径）；视觉塔走 cuda/vulkan —— NPU mtmd 有缺陷，见 defect-npu-mtmd.md。2026-11-06 矩阵实锤：DISABLE_DECODE_LEVELS=1 是 Omni 深层 decode 崩溃元凶（4096 档 1.7 vs 19.8 t/s、8192 档 0.8 vs 15.2 t/s，512 档无恙故旧配方未暴露），本 preset 已摘除该 env；超 4096 的 FOLD=YES 由网关自动挂（8192 无 FOLD 会塌到 0.3 t/s，勿关）"},
     {"name": "minicpm5-2b", "modelGlob": "MiniCPM5-2B*.gguf", "chunk": 256,
      "paramsB": 2.6, "device": "NPU",
      "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：默认臂 1.7B-like chunk256+decode levels；OOM 回落 spark 臂（chunk128+DISABLE_DECODE_LEVELS）——tools/minicpm5-npu-accept.ps1；thinking 模型 CoT 预算 n≥192"}

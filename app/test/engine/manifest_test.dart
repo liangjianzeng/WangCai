@@ -83,6 +83,13 @@ void main() {
       // 质量臂数据仍在：Spark 关 decode level 是实测必需（spark-npu-accept 3/3）。
       expect(npu.presetByName('spark-x2.6-4b')!.extraEnv['GGML_OPENVINO_DISABLE_DECODE_LEVELS'],
           '1');
+      // 回归锁（2026-11-06 omni-matrix 实锤）：Omni 带上 DDL=1 就深层崩速
+      // （4096 档 1.7 t/s vs 摘除后 19.8），永远不得加回来。
+      expect(
+          npu.presetByName('lfm3-omni-2b')!
+              .extraEnv['GGML_OPENVINO_DISABLE_DECODE_LEVELS'],
+          isNull,
+          reason: 'Omni 深层崩速元凶，2026-11-06 矩阵实锤后已摘除');
     });
 
     test('admission 世代条件（2026-11-05）：appliesGenerations 名单外豁免', () {
