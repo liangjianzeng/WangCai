@@ -87,6 +87,7 @@ class EngineInstance {
     this.enabled = true,
     this.lastConfig,
     this.defaultConfig,
+    this.lastNpuInfo,
   });
 
   final String id;
@@ -98,6 +99,11 @@ class EngineInstance {
 
   /// 用户配置的默认启动参数（null = 未配置 → 走 manifest preset）。
   EngineDefaults? defaultConfig;
+
+  /// 最近一次 NPU 探测摘要（NpuDeviceInfo.toSummary()：devArg/型号/世代/
+  /// 驱动）。诊断与引擎管理页展示用，不参与决策；可选字段不 bump 版本
+  /// （DSH 纪律），老 engines.json 无此键 → null。
+  Map<String, dynamic>? lastNpuInfo;
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -125,6 +131,7 @@ class EngineInstance {
               },
         'defaultConfig':
             defaultConfig == null ? null : defaultConfig!.toJson(),
+        if (lastNpuInfo?.isNotEmpty == true) 'lastNpuInfo': lastNpuInfo,
       };
 
   factory EngineInstance.fromJson(Map<String, dynamic> j) => EngineInstance(
@@ -134,6 +141,9 @@ class EngineInstance {
         pathPrefixes: (j['pathPrefixes'] as List?)?.cast<String>(),
         enabled: j['enabled'] != false,
         defaultConfig: EngineDefaults.fromJson(j['defaultConfig']),
+        lastNpuInfo: j['lastNpuInfo'] is Map
+            ? Map<String, dynamic>.from(j['lastNpuInfo'] as Map)
+            : null,
         lastConfig: j['lastConfig'] == null
             ? null
             : EngineConfig(

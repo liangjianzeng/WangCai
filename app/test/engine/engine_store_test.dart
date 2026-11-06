@@ -174,6 +174,25 @@ Available devices:
       expect(await store.cuda(), isNull);
       expect(await store.vulkanDevices('x'), isEmpty);
     });
+
+    test('npuDriverVersion（世代自适应 2026-11-05）：输出裁决', () async {
+      final ok = EngineStore(paths, runner: (exe, args) async {
+        expect(exe, 'powershell.exe');
+        // CIM 查询命令必须同时覆盖两代枚举名。
+        expect(args.join(' '), contains('AI Boost'));
+        expect(args.join(' '), contains(r'\(R\) NPU'));
+        return const CmdResult(0, ' 32.0.100.3800 \n', '');
+      });
+      expect(await ok.npuDriverVersion(), '32.0.100.3800');
+      final fail = EngineStore(
+          paths, runner: (exe, args) async => const CmdResult(1, '', 'nope'));
+      expect(await fail.npuDriverVersion(), isNull);
+      final nul = EngineStore(
+          paths, runner: (exe, args) async => const CmdResult(0, 'null\n', ''));
+      expect(await nul.npuDriverVersion(), isNull, reason: 'CIM 无设备输出字面 null');
+      final gone = EngineStore(paths, runner: (exe, args) async => null);
+      expect(await gone.npuDriverVersion(), isNull);
+    }, skip: !Platform.isWindows);
   });
 
   test('sha256File 与 crypto 直算一致', () async {

@@ -11,6 +11,7 @@
 | 5 | [benchmarks.md](benchmarks.md) | "有多快，以及这些数字不能证明什么" |
 | 6 | [status.md](status.md) | "今天到底什么能用，附验证命令" |
 | 7 | [npu-internals.md](npu-internals.md) | "NPU 难在哪，我们已经排除了什么" |
+| 7.5 | [npu-adaptation.md](npu-adaptation.md) | "换一台 Core Ultra（一/二/三代），保守值怎么定、实测怎么放开" |
 | 8 | [troubleshooting.md](troubleshooting.md) | "这个报错是什么意思" |
 | 9 | [roadmap.md](roadmap.md) | "有什么值得动手" |
 | 10 | [assistant-v0.0.2-design.md](assistant-v0.0.2-design.md) | "助手 v0.0.2 怎么做：TongYiLite UI 怎么复用、托盘/多模态怎么接、NPU/llama.cpp/OpenAI 三引擎管线与调度" |

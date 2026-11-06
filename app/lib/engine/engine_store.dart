@@ -344,6 +344,27 @@ class EngineStore {
     return parseNvidiaSmi(r.stdout);
   }
 
+  /// Intel NPU 驱动版本（世代自适应 2026-11-05，仿 cuda() 的注入先例）：
+  /// best-effort 查 Win32_PnPSignedDriver，命中 `AI Boost`（一/二代枚举名）
+  /// 或 `(R) NPU`（Panther Lake 可能的新枚举名，未实机核证故两种都收）。
+  /// null = 非 Windows / 查询失败 / 无设备 —— 调用方对驱动提示静默跳过。
+  /// 该值仅诊断与 UI 提示，不参与任何预算决策。
+  Future<String?> npuDriverVersion() async {
+    if (!Platform.isWindows) return null;
+    final r = await _runner('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      "(Get-CimInstance Win32_PnPSignedDriver | "
+          "Where-Object { \$_.DeviceName -match 'AI Boost|\\(R\\) NPU' } | "
+          "Select-Object -First 1 -ExpandProperty DriverVersion)",
+    ]);
+    if (r == null || !r.ok) return null;
+    final v = r.stdout.trim();
+    if (v.isEmpty || v.toLowerCase() == 'null') return null;
+    return v;
+  }
+
   /// `--list-devices` 行解析：官方措辞两种都收（2026-11-03 b12034 实测：
   /// `Vulkan0: Intel(R) Graphics (27651 MiB, ...)`；旧版 `Device 0: "name"`）。
   static List<String> parseListDevices(String out) {

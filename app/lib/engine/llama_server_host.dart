@@ -9,6 +9,7 @@ import 'engine_host.dart';
 import 'engine_manifest.dart';
 import 'engine_paths.dart';
 import 'engine_status.dart';
+import 'npu_profiles.dart';
 import 'openvino_probe.dart';
 import 'process_ledger.dart';
 import 'runtime_env.dart';
@@ -77,6 +78,19 @@ class LlamaServerHost implements EngineHost {
   List<String>? lastSpawnArgs;
   Map<String, String>? lastSpawnEnv;
 
+  /// 最近一次成功的 NPU 探测（世代自适应：clamp 链 + 引擎管理页取证）。
+  NpuDeviceInfo? _lastNpuInfo;
+  NpuDeviceInfo? get lastNpuInfo => _lastNpuInfo ?? cachedNpuInfo(binaryPath);
+
+  /// NPU 设备信息（型号/世代号码）：以与真启动同构的 env 探测（PATH 含
+  /// ovlibs），与 _launch 共享进程级缓存（命中不再起子进程）。null = 探测
+  /// 失败，调用方按 unknown/一代保守兜底。
+  Future<NpuDeviceInfo?> probeNpu() async {
+    final info = await probeNpuDevice(binaryPath, _serverEnv());
+    if (info != null) _lastNpuInfo = info;
+    return info;
+  }
+
   @override
   EngineStatus get status => _machine.state;
   @override
@@ -121,7 +135,7 @@ class LlamaServerHost implements EngineHost {
   @override
   Future<void> stop() async {
     _stopping = true;
-    _gen++; // 作废在飞的 poller/exit 回调
+    final gen = ++_gen; // 作废在飞的 poller/exit 回调
     final proc = _proc;
     _proc = null;
     _emit(_machine.handle(StopRequested()));
@@ -131,7 +145,12 @@ class LlamaServerHost implements EngineHost {
         await proc.exitCode.timeout(const Duration(seconds: 5));
       } catch (_) {}
     }
+    // 代际守卫（2026-11-05 竞态修复）：loadModel 失败路径 unawaited(stop())
+    // 与下一次 start() 并发时，迟到的 clear/ProcessExited 会把**新** launch
+    // 误判成意外退出并抹掉它的 ledger 条目。gen 已推进 = 新启动接管，作废。
+    if (gen != _gen) return;
     await _ledger.clear(instanceId).catchError((_) {});
+    if (gen != _gen) return;
     _emit(_machine.handle(ProcessExitedEvent(0)));
   }
 
@@ -179,14 +198,7 @@ class LlamaServerHost implements EngineHost {
         if (v != null) engineEnv[k] = v;
       });
       engineEnv.addAll(cfg.extraEnv);
-      final env = buildServerEnv(
-        parentEnv: _parentEnv ?? const {},
-        pathPrefixes: [
-          _dirOf(binaryPath),
-          ..._prefixes.map((p) => _isAbsolute(p) ? p : _join(_dirOf(binaryPath), p)),
-        ],
-        engineEnv: engineEnv,
-      );
+      final env = _serverEnv(engineEnv: engineEnv);
       // OPENVINO 设备索引以探测为准（Phase 3）：manifest 硬编码的 OPENVINO3
       // 是开发机枚举实测，NPU 索引随插件枚举漂移（无 dGPU 机型 = OPENVINO2）。
       // 只接管 NPU 目标（device 未设/'NPU'）——显式 CPU/GPU/OPENVINO{n}
@@ -195,8 +207,16 @@ class LlamaServerHost implements EngineHost {
       final targetsNpu = cfg.device == null || cfg.device == 'NPU';
       if (targetsNpu &&
           manifest.argsTemplate.any((t) => t.contains('devArg'))) {
-        final probed = await probeNpuDevArg(binaryPath, env);
-        values['devArg'] = probed ?? kOpenvinoNpuFallbackDevArg;
+        final probed = await probeNpuDevice(binaryPath, env);
+        if (probed != null) {
+          _lastNpuInfo = probed;
+        } else {
+          // 回退不再隐形（世代自适应）：日志留痕，引擎日志弹层可见。
+          _ownLogLine(
+              '⚠️ NPU 探测失败：-dev 回退 $kOpenvinoNpuFallbackDevArg'
+              '（若加载失败请检查 ovlibs 是否在 PATH / NPU 驱动是否正常）');
+        }
+        values['devArg'] = probed?.devArg ?? kOpenvinoNpuFallbackDevArg;
       }
       final args = renderArgsTemplate(manifest.argsTemplate, values);
       // 自定义尾参（Phase 3 参数体系）：追加在模板之后。同名后现参数按
@@ -221,6 +241,15 @@ class LlamaServerHost implements EngineHost {
     } catch (e) {
       _emit(_machine.handle(CrashDetectedEvent('无法启动引擎：$e')));
     }
+  }
+
+  /// host 自产日志行（非子进程输出）：进历史 + 转发流（日志弹层读历史）。
+  void _ownLogLine(String text) {
+    _logHistory.add(EngineLogLine.now(text));
+    if (_logHistory.length > _logHistoryCap) {
+      _logHistory.removeRange(0, _logHistory.length - _logHistoryCap);
+    }
+    if (!_logsCtl.isClosed) _logsCtl.add(EngineLogLine.now(text));
   }
 
   void _onLog(String line, int gen) {
@@ -285,6 +314,21 @@ class LlamaServerHost implements EngineHost {
   void _emit(EngineStatus s) {
     if (!_statusCtl.isClosed) _statusCtl.add(s);
   }
+
+  /// 引擎 env 组装（run-npu.ps1 等价，纪律见 runtime_env.dart）：渲染后的
+  /// envTemplate + extraEnv 合并、父进程 GGML_OPENVINO_*/NPUW_* 剥离、PATH
+  /// 前置。从 _launch 提出，供 probeNpu 复用**同构 env**（PATH 不含 ovlibs
+  /// 会让探测加载不了 OV 链 → 世代识别全军覆没在探测第一步）。
+  Map<String, String> _serverEnv({Map<String, String> engineEnv = const {}}) =>
+      buildServerEnv(
+        parentEnv: _parentEnv ?? const {},
+        pathPrefixes: [
+          _dirOf(binaryPath),
+          ..._prefixes
+              .map((p) => _isAbsolute(p) ? p : _join(_dirOf(binaryPath), p)),
+        ],
+        engineEnv: engineEnv,
+      );
 
   static String _devArgFor(String? device) {
     switch (device) {

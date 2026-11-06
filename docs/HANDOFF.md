@@ -121,6 +121,78 @@
 - [x] **P7 每项独立 commit/push + 清单勾选**：P1–P6 全部完成（8577f20 + 本 commit），push 断网时
   本地积攒、恢复后重推。
 
+## 2026-11-05：NPU 世代自适应（一代/二代/三代 Ultra）——从"一台机器调出来的常量"变成"按世代保守起步 + 该机实测上抬"
+
+**背景（为什么必须做）**：v0.0.5 之前，全仓 NPU 调优常量都是**单机取证**的结果——
+4B ctx512 / chunk128、`GGML_OPENVINO_DISABLE_DECODE_LEVELS=1`、admission 规则
+「4B@ctx>512 → OUT_OF_HOST_MEMORY」、冷编 600s，全部来自这台 275HX + **NPU 3720**（32GB）。
+换到 Lunar Lake（NPU 3820）或 Panther Lake（NPU 4000 系）上，这些数字既不是该机实测、
+也没人敢直接删——装机用户拿到的是"别人家的最坏情况"，且探测只取 `OPENVINO{n}` 下标，
+型号名与 MiB 一律丢弃（`openvino_probe.dart` 旧签名 `probeNpuDevArg`）。
+
+**用户定案的两条口径（2026-11-05，AskUserQuestion 逐条确认，不可自行放宽）**：
+1. **验证范围 = 只有这台 3720**——无二/三代实机。验收口径因此是"本机行为逐位不变 +
+   模拟枚举文本的单测全绿"，不是"三代真跑通"。拿到二/三代机器再补真机取证。
+2. **策略 = 保守起步 + 实测上探**——未知/未识别世代一律落到一代**已验证**的保守基线；
+   二/三代档案**不预填任何乐观数字**（无实测不赌）；该机跑成功过的档位由
+   `BindingsStore.maxStableCtx` 记住后自动放开，执行期驱动报 OOM 由 `demoteCtx` 收回。
+
+**落成的五层（数据驱动，遵守 routing_policy「不写死阈值」）**：
+- 探测：`probeNpuDevice(exe, env)` → `NpuDeviceInfo{devArg, deviceName, npuCode, totalMib, freeMib}`，
+  纯函数 `parseNpuListDevices` 可测；**只缓存成功**（驱动热修后下轮自愈）。
+- 世代：`npu_profiles.dart::npuGenerationFor`——型号码为锚（3700–3799/3800–3899/4000–4999），
+  越界或缺号 → `unknown` → 按一代兜底。**枚举名兜底必须走带 `\b` 的正则**：
+  `contains('3720')` 会把 `(NPU 37200)` 判成一代（错世代比 unknown 危险，unknown 只是保守）。
+- clamp：`local_server_inference._ctxCeilingFor`，优先级固定
+  `maxStableCtx（该机实测） > NpuProfile.ctxOverrides（当前空表） > manifest preset.ctx`。
+- 闭环：成功侧 `recordRun` 单调上写（原有）；失败侧 `BindingsStore.demoteCtx(failedCtx)` 收回
+  被证伪的上抬——**失败不证伪更低档**（`maxStableCtx < failedCtx` 时保留）。
+- admission：`AdmissionRule.appliesGenerations`（缺省全适用）+ `measuredCtx` **豁免**——
+  只有 ctx 门槛类规则让位实测证据，纯参数量规则（如 4B 与 OOM 的硬关系）永不让位。
+  这条豁免是必需的，否则「4B@>512」规则会把实测上探永久堵死（设计期自查发现）。
+
+**顺带修掉一个真竞态（不是测试脚手架问题）**：`loadModel` 失败路径 `unawaited(host.stop())`
+与下一次 `start()` 并发时，`stop()` 迟到的 `_ledger.clear` + `ProcessExitedEvent(0)` 会把
+**新** launch 误判成意外退出（wantRunning 已被新一轮 StartRequested 置真）并抹掉它的账本条目。
+`LlamaServerHost.stop()` 加代际守卫（`final gen = ++_gen; … if (gen != _gen) return;`）。
+另：探测失败回退 `OPENVINO2` 原先只进 `_logsCtl` 不进 `_logHistory`（日志弹层读历史 → 看不见），
+改走 `_ownLogLine` 双写；驱动版本 `EngineStore.npuDriverVersion`（CIM `AI Boost|(R) NPU`）
+best-effort，失败静默 null，成功加载后随 `lastNpuInfo` 摘要落 engines.json（可选字段不 bump 版本）。
+
+**取证与踩坑（下次省一周）**：
+- **MiB 只许当诊断，绝不当预算**：`totalMib/freeMib` 进 UI 与 engines.json，但
+  NPU 的 OUT_OF_HOST_MEMORY 是**驱动 per-process 预算**而非系统内存（本文件 2026-11-02 深夜定案），
+  拿设备上报显存做 ctx 判据会系统性错判。
+- **sqflite_common_ffi 按路径共享底层库**：测试辅助 `BindingsStore.open(paths)` 后**绝不 close**——
+  会把网关缓存的句柄一起关成 `database_closed`（m2_dod 同样只开不关）。这条坑本次又踩了一次。
+- 本机真机核对走**命令行取证**（Computer Use 在本会话不可用，按纪律不换 UI 自动化技术）：
+  直接对部署包二进制 + 真模型跑 `LlamaServerHost`，断言 `-dev OPENVINO3 / -c 512 /`
+  `GGML_OPENVINO_PREFILL_CHUNK_SIZE=128 / lastNpuInfo{code:3720, generation:ultra1}`
+  与 v0.0.5 逐位一致；生产 `cache/` 命中 blob 免 130–420s 冷编。
+- `test/models/` 是 v0.0.5 合流时脱队的遗留测试（包名还是 `package:tongyi_lite/`，一 import
+  就是 60 个 error），本次收编并同步过期 pin：目录 23→25 条；Spark-X2.6-4B 换成 **2.44GB 新量化**
+  （sha256 `30b77e2e…`，旧 pin 的 3.3GB/`91cb2811…` 是 X2.6 首版数据）。
+
+**下一步（谁接谁做）**：二/三代真机到位后，往 `NpuProfile.ctxOverrides` 填实测行、
+按需给规则标 `appliesGenerations`，并补 `minDriverVersion`（现在故意留空——编造版本线会
+误导用户升错驱动）；三代（Panther Lake）枚举名形态仍未实机核证，识别不出就走 unknown。
+
+## 2026-11-06：世代自适应复查三修——驱动查询会话缓存 / NPU 行按指向 gate /「实测上探」口径收真
+
+自查揪出三处，一刀修讫（行为红线不动：3720 仍逐位同 v0.0.5）：
+1. **驱动版本 CIM 查询无缓存**：原先每次成功加载都 spawn powershell 全枚举
+   （数秒级 CPU）。改会话级 memo（查而未得不缓存，下次重试；engines.json 已带
+   driver 直接沿用），网关级用例锁「两次加载只付一次」。
+2. **引擎卡 NPU 行不看设备指向**：`lastNpuInfo` 没有清除时点，切 CPU/GPU 加载后
+   旧行误导排障。`_NpuInfoLine` 按实例最近配置 gate（非 NPU 指向一律隐藏）。
+3. **「实测上探自动放开」表述超前（非 bug，口径收真）**：preset 命中模型上
+   clamp 先压 requested ≤ prior → recordRun 只会记 ≤ prior → `measured > prior`
+   今天不可达——上抬分支/实测豁免/demote 收回对 preset 档都是「管子在、水未通」
+   （单测 seed 验证的是管路）。活化入口 = preset 上调 / 档案 ctxOverrides 填行 /
+   无 preset 模型。已在 docs/npu-adaptation.md §3 落「重要口径」段。
+   **教训：闭环设计的每条腿都要追问「今天谁喂它数据」——测试 seed 通过 ≠
+   生产路径可达。**
+
 ## 2026-11-03：P8 结案——llama-completion fastfail 与 NPU 无关（jinja 模板 unsupported 未捕获异常）；"raw 流独立缺陷"证伪
 
 `llama-completion`（raw）4B 必崩 0xC0000409（1.7B 不崩、chunk/ctx 无关、REQUANT 无关、ASAN 构建同样崩且

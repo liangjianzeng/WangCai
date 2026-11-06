@@ -41,7 +41,9 @@ void main() {
       expect(npu.argsTemplate, isNot(contains('-st')));
       expect(npu.argsTemplate, containsAll(<String>['-np', '1', '-fa', '1', '--jinja']));
       expect(npu.capabilities.nativeToolCall, isTrue);
-      expect(npu.timingHints.coldCompileMs, 36000);
+      // 1fa151d（2026-11-05）：实测冷编 130–420s，预算钉 600s —— 旧值 81s/36s
+      // 会硬杀编译导致 blob 永不落盘。
+      expect(npu.timingHints.coldCompileMs, 600000);
       expect(m['openai-remote']!.kind, 'remote');
     });
 
@@ -50,6 +52,41 @@ void main() {
       expect(npu.checkAdmission(ctx: 1024, paramsB: 4.0), isNotEmpty);
       expect(npu.checkAdmission(ctx: 1024, paramsB: 1.7), isEmpty);
       expect(npu.checkAdmission(ctx: 512, paramsB: 4.0), isEmpty);
+    });
+
+    test('admission 世代条件（2026-11-05）：appliesGenerations 名单外豁免', () {
+      const rule = AdmissionRule(
+          ifCtxGt: 512,
+          appliesGenerations: ['ultra1'],
+          message: 'm',
+          suggestion: 's');
+      expect(rule.triggers(ctx: 1024, paramsB: 4.0, generation: 'ultra1'),
+          isTrue);
+      expect(rule.triggers(ctx: 1024, paramsB: 4.0, generation: 'ultra2'),
+          isFalse);
+      expect(rule.triggers(ctx: 1024, paramsB: 4.0, generation: null), isTrue,
+          reason: '未探测 → 保守全量生效');
+      // 默认（无 appliesGenerations）全世代适用 —— 现有 4B 规则即此形态。
+      const plain = AdmissionRule(ifCtxGt: 512, message: 'm', suggestion: 's');
+      expect(plain.triggers(ctx: 1024, paramsB: 4.0, generation: 'ultra3'),
+          isTrue);
+    });
+
+    test('admission 实测豁免：ctx 门槛规则让位实测档，非 ctx 规则不让位', () {
+      const rule = AdmissionRule(
+          ifCtxGt: 512, ifParamsBAtLeast: 3.5, message: 'm', suggestion: 's');
+      expect(rule.triggers(ctx: 1024, paramsB: 4.0, measuredCtx: 1024), isFalse,
+          reason: '该机已在 1024 跑成功过 → 先验被实测证伪，放行');
+      expect(rule.triggers(ctx: 1024, paramsB: 4.0, measuredCtx: 512), isTrue,
+          reason: '实测只到 512，1024 仍按先验拦');
+      const pureParam =
+          AdmissionRule(ifParamsBAtLeast: 7.0, message: 'm', suggestion: 's');
+      expect(pureParam.triggers(ctx: 1024, paramsB: 8.0, measuredCtx: 4096),
+          isTrue, reason: '纯参数量禁令与实测 ctx 无关，不让位');
+      // 无参数量条件的纯 ctx 规则同样豁免（实测就是 ctx 的证据）。
+      const ctxOnly = AdmissionRule(ifCtxGt: 2048, message: 'm', suggestion: 's');
+      expect(ctxOnly.triggers(ctx: 4096, paramsB: null, measuredCtx: 4096),
+          isFalse);
     });
   });
 

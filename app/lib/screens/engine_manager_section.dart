@@ -14,6 +14,7 @@ import '../engine/engine_registry.dart';
 import '../engine/engine_status.dart';
 import '../engine/engine_store.dart';
 import '../engine/llama_server_host.dart';
+import '../engine/npu_profiles.dart';
 import '../platform/local_server_inference.dart';
 import '../platform/wangcai_paths.dart';
 import '../providers/settings_provider.dart';
@@ -500,6 +501,7 @@ class _InstanceRowState extends State<_InstanceRow> {
           if (host.baseUrl != null)
             Text(host.baseUrl!,
                 style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+          _NpuInfoLine(inst: inst, host: host),
           Row(
             children: [
               TextButton(
@@ -582,6 +584,63 @@ class _InstanceRowState extends State<_InstanceRow> {
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('关闭')),
         ],
+      ),
+    );
+  }
+}
+
+/// NPU 世代行（世代自适应 2026-11-05）：探测到的 NPU 型号/世代/`-dev` 档位/
+/// 驱动版本。数据优先取 engines.json 持久化摘要（重启后仍在），回落 host
+/// 进程内探测缓存；无数据（非 NPU 引擎/从未探测成功）不占位。
+class _NpuInfoLine extends StatelessWidget {
+  const _NpuInfoLine({required this.inst, required this.host});
+  final EngineInstance inst;
+  final EngineHost host;
+
+  static const _shortGen = <NpuGeneration, String>{
+    NpuGeneration.ultra1: '一代',
+    NpuGeneration.ultra2: '二代',
+    NpuGeneration.ultra3: '三代',
+    NpuGeneration.unknown: '未识别 · 按一代保守基线',
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final h = host; // 局部提升：public final 字段不做类型促升
+    // 复查 2026-11-06：只在实例最近配置**指向 NPU** 时展示 —— lastNpuInfo
+    // 没有清除时点，切 CPU/GPU 加载后旧行会误导排障（NPU 意图 = 显式 'NPU'
+    // 或直写 'OPENVINO3'；'OPENVINO0/1/2' 与 CPU/GPU 一律算非 NPU 指向）。
+    final dev = inst.lastConfig?.device?.toUpperCase();
+    final nonNpu = dev == 'CPU' ||
+        dev == 'GPU' ||
+        (dev?.startsWith('GPU.') ?? false) ||
+        dev == 'OPENVINO0' ||
+        dev == 'OPENVINO1' ||
+        dev == 'OPENVINO2';
+    if (nonNpu) return const SizedBox.shrink();
+    final summary = inst.lastNpuInfo ??
+        (h is LlamaServerHost ? h.lastNpuInfo?.toSummary() : null);
+    if (summary == null) return const SizedBox.shrink();
+    final gen = NpuGeneration.values.firstWhere(
+      (g) => g.name == summary['generation'],
+      orElse: () => NpuGeneration.unknown,
+    );
+    final parts = <String>[
+      'NPU: ${summary['name'] ?? '未识别设备'}',
+      _shortGen[gen]!,
+      '-dev ${summary['devArg'] ?? '?'}',
+      if (summary['driver'] != null) '驱动 ${summary['driver']}',
+    ];
+    final note = profileFor(gen).driverNote;
+    return Padding(
+      padding: const EdgeInsets.only(top: 1),
+      child: Text(
+        parts.join(' · ') + (note != null ? '\n$note' : ''),
+        style: TextStyle(
+            fontSize: 11,
+            color: gen == NpuGeneration.ultra3
+                ? Colors.orange.shade700
+                : Colors.grey.shade500),
       ),
     );
   }
