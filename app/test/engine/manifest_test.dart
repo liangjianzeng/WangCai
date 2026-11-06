@@ -80,9 +80,15 @@ void main() {
         expect(p.ctx, isNull, reason: 'preset ${p.name} 又带上 ctx 了');
       }
       expect(npu.presetByName('lfm3-1.7b-deep'), isNull);
-      // 质量臂数据仍在：Spark 关 decode level 是实测必需（spark-npu-accept 3/3）。
-      expect(npu.presetByName('spark-x2.6-4b')!.extraEnv['GGML_OPENVINO_DISABLE_DECODE_LEVELS'],
-          '1');
+      // 2026-11-06 换机矩阵翻转（defect-npu-spark-b12034）：b12034 引擎上
+      // DDL=1 对 Spark 4B 直接 ZE_RESULT_ERROR_UNINITIALIZED（Compute error
+      // 500，两跑复现）；摘掉后 0.42 t/s 引擎地板（不崩不 OOM → 按 HANDOFF
+      // §4 条款拍板摘除）。与 Omni 同锁：永远不得加回。
+      expect(
+          npu.presetByName('spark-x2.6-4b')!
+              .extraEnv['GGML_OPENVINO_DISABLE_DECODE_LEVELS'],
+          isNull,
+          reason: 'DDL=1 在 b12034 上对 Spark 4B 是 Compute error（缺陷单锚）');
       // 回归锁（2026-11-06 omni-matrix 实锤）：Omni 带上 DDL=1 就深层崩速
       // （4096 档 1.7 t/s vs 摘除后 19.8），永远不得加回来。
       expect(
