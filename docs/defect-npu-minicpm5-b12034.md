@@ -33,6 +33,17 @@
 42 次层调度、层数维度堆出 4B 级设备足迹；Omni ~26 层 × 2560 宽层数少宽度大，
 同一 NPU 全天 21.9 t/s。
 
+### DDL=1 臂补充（2026-11-07 傍晚，logs/minicpm5_ddl_test.txt）
+
+preset 定义的回落臂（chunk128+DISABLE_DECODE_LEVELS，spark 同款）实测同样不可用：
+- `512 + chunk256 + DDL=1`：编译挂起 208s → 进程静默死（无错误行）
+- `512 + chunk128 + DDL=1`：加载期编译 >6min 未就绪（health 503 超时），请求期第二段编译仍未完成
+
+DDL=1 在此图上**劣于默认臂**（默认臂至少 512 档 2.0 t/s）——该回落臂配方作废。
+全矩阵终态：6 个配方点仅 1 个功能完整（2.0 t/s），禁入结论充分。
+（用户记忆中的「8-9 t/s」经本人核对为 Spark-X@512 线（warm ≈6 t/s，2026-11-07
+凌晨 0:22 有录屏），与 MiniCPM5 无关。）
+
 ## 处置
 
 - admission 禁入（wangcai-npu manifest `ifModelGlob: MiniCPM5-2B*.gguf`）：
