@@ -73,10 +73,38 @@ spark512 两测（0.41 / 0.84 t/s）均被并行 mtmd 战役的 NPU 编译撞窗
 **闭案：生产水位恢复，4512 + b12034 + OV 2026.4.1 仍为生产栈。** Qwen3.5@NPU 的复验
 条件不变（前端+driver 成对升级后重跑本节全部用例）。
 
-## 与 Spark 线的关系
+## 决定性对照矩阵（2026-11-07 晚）：5540 热装（免重启）× 两棵引擎树——qwen35 decode 死因终审
 
-Spark-X2.6-4B 昨晚（2026-11-06 换机矩阵）在 NPU 上**能加载能出字**（不崩不 OOM，128 token
-完整出完）——但 decode 落 0.42 t/s 引擎地板（defect-npu-spark-b12034），不可用级，故禁入。
-Qwen3.5-4B 则是**编译期即死**（一个字都出不来）——两案病根不同（Spark = decode-level 图撞
-设备预算；Qwen3.5 = driver 编译器不认 GDN opset），同一处置模式（禁入 + 改道建议 + driver
-升级复验条件）。
+为分离「driver 锅 vs 本仓本地机器锅」，以 pnputil 热切（免重启）在同一 5540 上跑两棵引擎树：
+
+| 树（5540 上） | Omni@4096 | Qwen3.5@4096 / @512 |
+| --- | --- | --- |
+| 本仓引擎（全本地机器） | 编译崩 ×3（已证） | decode DEVICE_LOST（已证） |
+| pristine（上游 master 纯净 + shim） | 4512 上即炸 SDPA 双掩码（上游缺修复），未再跑 5540 | decode DEVICE_LOST，两 ctx 同死 |
+| **混合树（master + 本仓掩码修复族 + shim）** | **1.86 t/s / 零异常 / 正确回复** | **decode DEVICE_LOST（1.16s 即挂，两 ctx 同签名）** |
+
+**终审：qwen35 decode DEVICE_LOST 与引擎树无关（两种引擎同一 `device hung` 签名）= driver/硬件级
+死亡，NPU 3720 + 5540 无法执行 qwen35 decode 图，引擎侧无解。** 上游 8-28「Qwen3.5 on NPU」
+（511f9c1）在 3720 这代硬件上不成立。复验条件不变：等 Intel 修复该图执行的 driver 版本。
+
+副产物三条（独立入账）：
+1. **Omni@5540 编译崩 ×3 = 本仓本地机器的锅**（混合树零异常）——本仓 blob-cache/无缓存路径
+   与 5540 NPUW 契约不兼容，可修；但修复动机不足（见 2、3）。
+2. **decode-levels = 10× 性能来源实锤**：同模型同 ctx，混合树（无 decode-levels）1.9 t/s vs
+   本仓引擎 19.8 t/s（warm 20.3）。裸迁上游 = 性能塌方，迁移必须携带 decode-levels。
+3. **上游 master 至今缺 LFM3/Omni 双掩码正确性修复**（get_mask_ctx_size 族，本仓 +104 行），
+   pristine 对 Omni 直接 SDPA 形状炸——本仓掩码修复族是回馈上游的一等候选。
+
+## 回滚 #2（5540 重装 → 4512，全链免重启、全自动）
+
+5540 重装时 Intel 安装器**清掉了 DriverStore 里的 4512 staged 包**（FileRepository 仅剩 5540），
+pnputil 无旧包可落回。处置链（`D:\llm\npu\install4512_v2_log.txt`）：
+1. Intel CDN 官方 4512 安装器：`https://downloadmirror.intel.com/872763/npu_win_32.0.100.4512.exe`
+   （与 release notes 同 ID；95MB）；
+2. 静默降级被版本检查拦（exit 8「older than installed」）→ 安装器自述解法：**`-s --overwrite`**（exit 1000 成功）；
+3. pnputil 动态定位 oem 号：5540=oem6.inf 卸载删除，4512=oem105.inf 已 staged；
+4. `/scan-devices` 热回绑 → **NPU driver = 32.0.100.4512 status=OK**；
+5. 生产健全性：本仓引擎 Omni@4096 warm **20.3 t/s / 零异常**（超历史 19.8 档）。
+
+**终态：生产栈 = 4512 + b12034 本仓引擎 + OV 2026.4.1。5540 对 3720 硬件零收益
+（Omni 1.9 t/s 上限 + qwen35 照死），晋升复验条件只挂「Intel 修复 qwen35 decode」的下一代 driver。**
