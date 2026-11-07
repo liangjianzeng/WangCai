@@ -14,6 +14,11 @@
 // ctx>4096 时自动挂载，不再是一个模型档位。
 import 'engine_manifest.dart';
 
+// vision=true（2026-11-07 第二幕回填）：defect-npu-mtmd 引擎修复后 NPU
+// 带图三线 E2E 全绿（mtmd-cli 128px / 1920×1200 + llama-server OpenAI 格式
+// 带图）。注意：这是**引擎**能力声明——具体模型能不能读图由带图前置门按
+// 「本次启动是否挂 mmproj」per-model 判定（local_server_inference.
+// _visionGateErrorIfAny），没挂视觉塔的模型发图仍明确报错不改道。
 const String wangcaiNpuManifestJson = '''
 {
   "id": "wangcai-npu",
@@ -28,7 +33,7 @@ const String wangcaiNpuManifestJson = '''
     "GGML_OPENVINO_PREFILL_CHUNK_SIZE": "{chunk}",
     "GGML_OPENVINO_KV_HOST_WRITE": "{kvHostWrite=0}"
   },
-  "capabilities": {"nativeToolCall": true, "vision": false, "audio": false,
+  "capabilities": {"nativeToolCall": true, "vision": true, "audio": false,
                    "devices": ["NPU", "CPU(OPENVINO0)"]},
   "presets": [
     {"name": "lfm3-1.7b", "modelGlob": "LFM3-1.7B*.gguf", "chunk": 256,
@@ -44,7 +49,7 @@ const String wangcaiNpuManifestJson = '''
      "note": "副靶（讯飞 Spark-X2.6-4B Q4_K_M）：chunk128。2026-11-06 换机矩阵把 DDL env 摘了（defect-npu-spark-b12034）：b12034 引擎上 DDL=1 对 4B Spark 直接 ZE_RESULT_ERROR_UNINITIALIZED（Compute error 500，两跑复现）；摘掉后 4096 档 0.42 t/s 引擎地板（不崩不 OOM，按 HANDOFF §4 条款拍板摘除，保守可跑）。历史「DDL 必需」口径属旧引擎（spark-npu-accept.ps1 3/3、HANDOFF 2026-11-01），引擎/驱动更新后按缺陷单复验"},
     {"name": "lfm3-omni-2b", "modelGlob": "LFM3-Omni-2B*.gguf", "chunk": 128,
      "paramsB": 2.0, "device": "NPU",
-     "note": "Omni-2B 文本线（chunk128 实测口径）；视觉塔走 cuda/vulkan —— NPU mtmd 有缺陷，见 defect-npu-mtmd.md。2026-11-06 矩阵实锤：DISABLE_DECODE_LEVELS=1 是 Omni 深层 decode 崩溃元凶（4096 档 1.7 vs 19.8 t/s、8192 档 0.8 vs 15.2 t/s，512 档无恙故旧配方未暴露），本 preset 已摘除该 env；超 4096 的 FOLD=YES 由网关自动挂（8192 无 FOLD 会塌到 0.3 t/s，勿关）"},
+     "note": "Omni-2B 主打线（chunk128 实测口径），挂 mmproj 视觉塔后 NPU 直接读图（2026-11-07 引擎修复，defect-npu-mtmd；带图首图/新尺寸有编译成本）。2026-11-06 矩阵实锤：DISABLE_DECODE_LEVELS=1 是 Omni 深层 decode 崩溃元凶（4096 档 1.7 vs 19.8 t/s、8192 档 0.8 vs 15.2 t/s，512 档无恙故旧配方未暴露），本 preset 已摘除该 env；超 4096 的 FOLD=YES 由网关自动挂（8192 无 FOLD 会塌到 0.3 t/s，勿关）"},
     {"name": "minicpm5-2b", "modelGlob": "MiniCPM5-2B*.gguf", "chunk": 256,
      "paramsB": 2.6, "device": "NPU",
      "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：默认臂 1.7B-like chunk256+decode levels；OOM 回落 spark 臂（chunk128+DISABLE_DECODE_LEVELS）——tools/minicpm5-npu-accept.ps1；thinking 模型 CoT 预算 n≥192"}
@@ -56,9 +61,9 @@ const String wangcaiNpuManifestJson = '''
     {"ifModelGlob": "Qwen3.5-4B*.gguf",
      "message": "Qwen3.5-4B 在 NPU 引擎上编译即失败：GatedDeltaNet 融合算子（qwen35 混合 SSM/attention 架构独有）以自定义 opset 序列化，NPU driver VCL 反序列化不支持（「Cannot create GatedDeltaNet layer ... unsupported opset: extension」，driver 32.0.100.4512，2026-11-07 实锤；引擎侧 ref 分解/CPU 分段/naive 分段三路收口均不可行，详见 defect-npu-qwen35-b12034）",
      "suggestion": "改用 CUDA/Vulkan 引擎跑 Qwen3.5-4B（unsloth Q4_K_M 已就位），或 NPU 档配 LFM3-1.7B / Omni-2B；NPU driver 升级后按 defect 文档复验条件重测"},
-    {"ifCtxGt": 4096, "ifParamsBAtLeast": 3.5,
-     "message": "4B 在 NPU 超 4096 上下文执行期 OUT_OF_HOST_MEMORY（status.md 缺陷5 外推；4096 默认档实测放行）",
-     "suggestion": "全局上下文调回 ≤4096，或改用 CUDA/Vulkan 引擎"}
+    {"ifCtxGt": 512, "ifParamsBAtLeast": 3.5,
+     "message": "4B 级模型在 NPU 上超 512 上下文不可用（2026-11-07 本机实锤：Qwen3-4B@4096 首请求即 L0 UNINITIALIZED 500 Compute error；Spark@4096 预算非确定性塌方 0.42 t/s——bindings 旧档已按 stable 语义收回）；ctx≤512 确定可用（Spark warm ≈6 t/s、Qwen3-4B 历史 1.3 t/s）",
+     "suggestion": "模型级 ctx 调到 ≤512，或 NPU 档配 LFM3-1.7B / Omni-2B（全 ctx 健康 21.6/21.9 t/s）"}
   ],
   "timingHints": {"coldCompileMs": 600000, "warmMs": 15000},
   "hardFlagsHint": "-fa 1 -np 1 -dev OPENVINO3 --jinja（server 无 -st，M0-3 实测）"

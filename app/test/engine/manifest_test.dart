@@ -60,12 +60,16 @@ void main() {
       expect(m['openai-remote']!.kind, 'remote');
     });
 
-    test('admission（2026-11-06 全局 ctx 口径）：4B@4096 放行；4B@8192 拦；1.7B@16384 放行', () {
-      // 「4096 是最基本」拍板后准入线从 512 抬到 4096：默认档必须全线放行，
-      // 4B 越 4096 才按驱动预算拦（status.md 缺陷5 外推，实测豁免见下）。
+    test('admission（2026-11-07 收紧）：4B 级 ctx≤512 放行、>512 拦；1.7B@16384 放行', () {
+      // 2026-11-07 本机实锤翻转旧口径（「4096 实测放行」不成立）：
+      // Qwen3-4B@4096 首请求即 L0 UNINITIALIZED 500、Spark@4096 预算非确定性
+      // 塌 0.42（bindings 旧档已按 stable 语义收回）；4B 确定档 = ctx≤512
+      // （Spark warm ≈6 t/s 复测）。1.7B/2B 不受影响（22+ t/s 全 ctx 健康）。
       final npu = bundledManifests()['wangcai-npu']!;
-      expect(npu.checkAdmission(ctx: 4096, paramsB: 4.0), isEmpty,
-          reason: '全局默认档 4096 连 4B 都要放行，否则狗毛都干不了');
+      expect(npu.checkAdmission(ctx: 512, paramsB: 4.0), isEmpty,
+          reason: 'ctx≤512 是 4B 确定可用档');
+      expect(npu.checkAdmission(ctx: 768, paramsB: 4.0), isNotEmpty,
+          reason: '768 即需 level 1024 图——4B 预算墙');
       expect(npu.checkAdmission(ctx: 8192, paramsB: 4.0), isNotEmpty);
       expect(npu.checkAdmission(ctx: 16384, paramsB: 1.7), isEmpty);
     });
@@ -94,13 +98,14 @@ void main() {
           npu.checkAdmission(
               ctx: 768, paramsB: 4.0, modelFile: spark, generation: 'ultra1'),
           isNotEmpty);
-      // 非 Spark 模型同条件照常放行（glob 不豁免错拦）。
+      // 非 Spark 模型同条件照常放行（glob 不豁免错拦；ctx≤512 线内）。
       expect(
           npu.checkAdmission(
-              ctx: 4096, paramsB: 4.0, modelFile: 'Qwen3-4B-Q4_K_M.gguf'),
+              ctx: 512, paramsB: 4.0, modelFile: 'Qwen3-4B-Q4_K_M.gguf'),
           isEmpty);
-      // modelFile 未知（旧调用路径）不触发模型禁令——4B@4096 放行口径不变。
-      expect(npu.checkAdmission(ctx: 4096, paramsB: 4.0), isEmpty);
+      // modelFile 未知（旧调用路径）不触发模型禁令，但通用 4B ctx 线（>512）
+      // 仍然生效——旧口径的「无 modelFile 全放行」随 2026-11-07 实锤翻转。
+      expect(npu.checkAdmission(ctx: 4096, paramsB: 4.0), isNotEmpty);
       // CUDA manifest 无此规则：Spark 换引擎后同 ctx 照常放行。
       final cuda = bundledManifests()['llamacpp-cuda'];
       if (cuda != null) {
@@ -126,10 +131,11 @@ void main() {
           npu.checkAdmission(
               ctx: 4096, paramsB: 4.0, modelFile: 'qwen3.5-4b-q4_k_m.gguf'),
           isNotEmpty);
-      // Qwen3（非 3.5）不受牵连：glob 只匹配 Qwen3.5 前缀。
+      // Qwen3（非 3.5）不受 qwen35 规则牵连：glob 只匹配 Qwen3.5 前缀
+      // （ctx 用 512 避开通用 4B ctx 线，隔离 glob 语义本身）。
       expect(
           npu.checkAdmission(
-              ctx: 4096, paramsB: 4.0, modelFile: 'Qwen3-4B-Q4_K_M.gguf'),
+              ctx: 512, paramsB: 4.0, modelFile: 'Qwen3-4B-Q4_K_M.gguf'),
           isEmpty);
       // Vulkan manifest 无此规则；GPU preset 已在 vulkan/cuda 各留一档。
       final vulkan = bundledManifests()['llamacpp-vulkan'];
@@ -142,14 +148,17 @@ void main() {
           isNotNull);
     });
 
-    test('视觉能力声明如实（2026-11-07）：NPU vision=false，CUDA/Vulkan=true', () {
-      // defect-npu-mtmd：NPU/OV 后端 mtmd 计算失败（clip_encode graph -1，
-      // 带图必挂）。发图前置门按 manifest.capabilities.vision 拦——声明必须
-      // 与引擎真能力一致：NPU 不许再写 true（否则用户发图撞 500/卡死），
-      // 官方 llama.cpp 引擎（mtmd 官方支持）保持 true。引擎侧修复后回填。
+    test('视觉能力声明（2026-11-07 第二幕）：NPU vision=true 回填，门改 per-model mmproj 判定', () {
+      // defect-npu-mtmd 引擎修复（sched 切段尾段无 inp_pos → naive 分流；
+      // NPU 带图三线 E2E 全绿：mtmd-cli 128px、mtmd-cli 1920×1200、
+      // llama-server OpenAI 格式带图）。引擎能力声明翻回 true；带图前置门
+      // 不再只看引擎声明，而是按「本次启动是否挂 mmproj」per-model 判定
+      // （local_server_inference._visionGateErrorIfAny）——没挂视觉塔的
+      // 模型发图仍明确报错不放行。
       final npu = bundledManifests()['wangcai-npu']!;
-      expect(npu.capabilities.vision, isFalse,
-          reason: 'NPU mtmd 引擎缺陷（defect-npu-mtmd），视觉声明必须如实为 false');
+      expect(npu.capabilities.vision, isTrue,
+          reason: 'NPU mtmd 引擎修复（defect-npu-mtmd 第二幕），声明回填 true；'
+              'per-model 判定在带图前置门');
       expect(bundledManifests()['llamacpp-cuda']!.capabilities.vision, isTrue);
       expect(bundledManifests()['llamacpp-vulkan']!.capabilities.vision, isTrue);
     });

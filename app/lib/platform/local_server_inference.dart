@@ -856,11 +856,9 @@ class LocalServerInference implements InferenceBackend {
     if (!_isReady()) {
       return Stream.error(StateError('模型未加载，请先在模型管理页加载模型'));
     }
-    // 视觉能力前置门（2026-11-07）：带图请求打到「声明无视觉」的引擎 =
-    // 明确报错并给改道指引，而不是让 server 报 500（"you may need to
-    // provide the mmproj"）或 NPU 侧 mtmd 卡死（defect-npu-mtmd——
-    // wangcai-npu manifest 已如实声明 vision=false）。检查走 async registry，
-    // 以 Future<Stream<String>> flatten 回主签名。
+    // 视觉能力前置门（2026-11-07）：带图请求在壳层先做能力判定并明确
+    // 报错，而不是让 server 报 500（"you may need to provide the mmproj"）。
+    // 检查走 async registry，以 Future<Stream<String>> flatten 回主签名。
     final hasImage = (imagePath != null && imagePath.isNotEmpty) ||
         (imagePaths?.isNotEmpty ?? false);
     if (hasImage) {
@@ -893,20 +891,33 @@ class LocalServerInference implements InferenceBackend {
     );
   }
 
-  /// 带图请求的能力检查：当前引擎 manifest 声明无视觉 → 返回 StateError
-  /// （含改道指引）；声明有视觉或无从判定 → null 放行。
+  /// 带图请求的能力检查（2026-11-07 第二幕）：引擎修复后（defect-npu-mtmd：
+  /// sched 切段尾段无 inp_pos → naive 分流；NPU 带图 mtmd-cli 128px /
+  /// 1920×1200 + llama-server OpenAI 格式三线 E2E 全绿）wangcai-npu 的
+  /// vision 声明翻回 true。视觉可用性按「本次启动是否挂 mmproj（视觉塔）」
+  /// per-model 判定——引擎能视觉 ≠ 该模型带视觉塔，没挂 mmproj 的模型
+  /// 发图仍会在 server 端 500，必须在壳层拦截。
   Future<Object?> _visionGateErrorIfAny() async {
     try {
       final reg = await _ensureRegistry();
       final host = debugHost();
       final manifest = host == null ? null : reg.manifestOf(host.instanceId);
-      final visionOk = manifest?.capabilities.vision ?? false;
-      if (!visionOk) {
-        final display = manifest?.display ?? host?.instanceId ?? '当前引擎';
+      if (manifest != null && !manifest.capabilities.vision) {
+        final display = manifest.display;
         return StateError(
             '当前引擎（$display）不支持图像理解。视觉请用官方 llama.cpp 的 '
             'CUDA/Vulkan 引擎（设置→引擎管理 切「GPU 外挂」或钉选引擎后重新'
             '加载模型），或改用支持视觉的远端模型。');
+      }
+      final mmproj = host?.lastConfig?.mmprojPath;
+      if (mmproj == null || mmproj.isEmpty) {
+        final model = (host?.lastConfig?.modelPath != null)
+            ? _basename(host!.lastConfig!.modelPath)
+            : '当前模型';
+        return StateError(
+            '当前模型（$model）没有配套的视觉塔（mmproj），不支持图像理解。'
+            '请加载带 mmproj 的视觉模型（如 LFM3-Omni-2B），或改用官方 '
+            'CUDA/Vulkan 引擎的视觉模型。');
       }
     } on Object catch (e) {
       return e; // 检查自身失败也如实上抛，不静默放行

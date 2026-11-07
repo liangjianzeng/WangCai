@@ -45,3 +45,34 @@ ddl0「不崩不 OOM」→ **Spark preset 摘除 DDL env**（与 Omni 同锁，m
 **结论强化：Spark 4B 在 b12034 + NPU 3720（驱动 32.0.100.4512）上 decode-levels 特性
 整体失效，无配置可救**；用户侧唯一健康路径 = CUDA/Vulkan（实测 99.2 t/s）。
 智能体模式请在 Spark 上选 CUDA/Vulkan 引擎，或 NPU 档配 1.7B / Omni-2B（21.6 / 21.9 t/s）。
+
+## 补充（2026-11-07 上午）：非确定性实锤 + ctx≤512 确定可用档
+
+bindings.db 复盘推翻「4096 全面塌方」的单值结论——**预算共居失败是非确定性的**
+（引擎注释原话 "nondeterministic with device fragmentation"，utils.cpp BUDGET-FAIL 处）：
+
+| 证据 | 结果 |
+| --- | --- |
+| `wangcai-npu × spark binding`（昨晚 00:26 写入） | **8.4 t/s @ ctx4096 usable**——用户记忆「昨晚 Spark 能走 NPU」实锤，level-1024 图那次 fits 预算 |
+| 本会话下午矩阵 + 智能体复现 | level-1024 撞预算 → 全局回退 0.42 t/s——同一张图换了个时间就塌 |
+| 本会话 ctx=512 复测（engine pristine） | warm **≈6 t/s，零预算异常**——level 256/512 图确定装得下 |
+
+处置：**Spark@NPU 禁入改为 ctx 分档**（admission ifModelGlob + ifCtxGt 512）：
+- ctx≤512 = 确定可用档（聊天可用 ~6 t/s，智能体不建议），放行；
+- ctx>512 = 非确定性预算彩票（8.4 或 0.42），拦。
+bindings 旧档 maxStableCtx 4096→512 收回（stable 语义要求确定性，4096 那次是中奖不是档位）。
+CUDA/Vulkan 仍是智能体/长上下文的正解（99.2 t/s）；引擎/驱动升级复验条件不变。
+
+## 补充（2026-11-07 下午）：driver 回滚后 ctx≤512 档复验通过 + 跨会话并行污染教训
+
+5540 实验回滚（详见 defect-npu-qwen35-b12034「driver 升级实验」节）后复验：
+
+| 证据 | 结果 |
+| --- | --- |
+| Omni@4096（冷编，全新 cache） | **19.78 t/s / 零异常**——历史 19.8 档位对上，生产主力恢复 |
+| Spark@512 warm（干净窗口） | **4.7 t/s / 零预算异常**——ctx≤512 可用档维持，admission ctx 分档不变，bindings maxStableCtx=512 成立 |
+| 回滚后首轮 spark512 两测 | 0.41 / 0.84 t/s，**均作废**——并行 mtmd 战役（ctx=2560 发图线）的 NPU 编译撞窗（mtmdcli_fix9ir 14:23 / r2 14:36 各压测量段） |
+
+取证教训：**NPU 单租户**，测速作废判据 = 测量窗口内出现其它 NPU 进程的新写日志
+（本机 4–7 分钟一发的节奏极易撞窗）；矩阵脚本「单实例锁」只防本矩阵自身，防不了
+其它会话/战役的 NPU 负载。正式测速前先 `tasklist` 清场 + 事后日志 mtime 取证。

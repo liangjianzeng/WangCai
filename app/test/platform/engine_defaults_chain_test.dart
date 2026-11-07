@@ -173,22 +173,25 @@ void main() {
   test('preset 只剩质量臂：chunk 出厂实测值仍压场，ctx 不再被 preset 压回',
       () async {
     // 旧口径「preset.ctx 当上限把 4096 收敛回 512」已随全局 ctx 拍板退役；
-    // preset 的价值 = chunk128（qwen3-4b 实测配置）这类质量臂数据。
+    // preset 的价值 = chunk256（lfm3-1.7b 实测配置）这类质量臂数据。
+    // 载体改用 1.7B（2026-11-07 admission 收紧：4B 级 NPU 上 ctx>512 禁入，
+    // Qwen3-4B-Fake@4096 会被前置拒——用例语义本就不是测 admission）。
     reg.instance('wangcai-npu')!.defaultConfig = const EngineDefaults(ctx: 4096);
-    await loadNpu('Qwen3-4B-Fake.gguf', nCtx: 4096);
+    await loadNpu('LFM3-1.7B-Fake.gguf', nCtx: 4096);
     expect(spawns.byExe['npu'], containsAllInOrder(['-c', '4096']),
         reason: '4096 是最基本档：任何 preset 都不得再压小 ctx');
-    expect(spawns.envByExe['npu']!['GGML_OPENVINO_PREFILL_CHUNK_SIZE'], '128');
+    expect(spawns.envByExe['npu']!['GGML_OPENVINO_PREFILL_CHUNK_SIZE'], '256');
   });
 
   test('preset extraEnv 与 defaultConfig.extraEnv 合并（dc 同键覆盖）', () async {
     // 2026-11-07 改造：Spark/Omni preset 的 extraEnv 已随
     // defect-npu-spark-b12034 摘除（且 Spark 模型名在 NPU 会被 admission
-    // 禁入拦下，不再是合规载体）——合并链改用 Qwen3 载体验证 dc 侧入场；
+    // 禁入拦下，不再是合规载体）——合并链改用 1.7B 载体验证 dc 侧入场
+    //（4B 载体在 admission 收紧后 ctx>512 被前置拒）；
     // preset 侧合并分支保留给用户自定义 manifest（引擎默认链代码不变）。
     reg.instance('wangcai-npu')!.defaultConfig = const EngineDefaults(
         extraEnv: {'GGML_OPENVINO_DISABLE_DECODE_LEVELS': '0'});
-    await loadNpu('Qwen3-4B-Fake.gguf');
+    await loadNpu('LFM3-1.7B-Fake.gguf');
     expect(spawns.envByExe['npu']!['GGML_OPENVINO_DISABLE_DECODE_LEVELS'], '0');
   });
 
@@ -204,20 +207,31 @@ void main() {
         reason: '核心档拒绝 = 拒绝，绝不自动改道旁路（换引擎是用户的决定）');
   });
 
-  test('视觉前置门（2026-11-07）：带图请求打 NPU → 明确报错不改道，纯文本照常',
+  test('视觉前置门（2026-11-07 第二幕）：没挂 mmproj 的模型带图 → 明确报错；挂了 → 放行',
       () async {
-    // defect-npu-mtmd（NPU mtmd 计算失败）+ wangcai-npu vision=false：
-    // 带图请求必须在壳层给用户明确改道指引，而不是 server 侧一个看不懂
-    // 的 500（"you may need to provide the mmproj"）或编译卡死。
+    // defect-npu-mtmd 引擎修复后（NPU 带图三线 E2E 全绿），wangcai-npu
+    // vision 声明翻回 true，门改 per-model 判定：带图请求打「没挂视觉塔
+    // （mmproj）」的模型 → 壳层明确报错，而不是 server 侧一个看不懂的
+    // 500（"you may need to provide the mmproj"）；挂了 mmproj → 放行
+    // 走 server（视觉真正可用）。
     await loadNpu('Generic-Fake.gguf');
     expect(
         inf.completionWithMessages(prompt: '', messagesJson: '[]',
             imagePaths: ['C:/x/img.png']),
         emitsError(isA<StateError>().having((e) => e.message, 'msg',
             contains('不支持图像理解'))),
-        reason: 'NPU manifest 已如实声明 vision=false，带图请求必须前置报错');
-    // 纯文本请求不被误伤（门放行 → 走到 server 请求层；fake 进程无真
-    // HTTP 端点，请求层 connectionError 即为「门已放行」的证据）。
+        reason: '没挂 mmproj 的模型带图必须前置报错（per-model 门）');
+    // 挂上 mmproj 重载 → 门放行（走到请求层；fake 进程无真 HTTP 端点，
+    // 请求层 connectionError 即为「门已放行」的证据）。
+    await inf.loadModel('${tmp.path}${Platform.pathSeparator}Generic-Fake.gguf',
+        mmprojPath: 'C:/fake/mmproj-generic.gguf');
+    expect(
+        inf.completionWithMessages(prompt: '', messagesJson: '[]',
+            imagePaths: ['C:/x/img.png']),
+        emitsError(isNot(isA<StateError>()
+            .having((e) => e.message, 'msg', contains('不支持图像理解')))),
+        reason: '挂了 mmproj 的模型带图必须被门放行（报错应来自请求层）');
+    // 纯文本请求不被误伤（门放行 → 走到 server 请求层）。
     Object? caught;
     try {
       await inf.completionWithMessages(prompt: '你好', messagesJson: '[]')

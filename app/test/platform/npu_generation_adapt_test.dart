@@ -1,9 +1,10 @@
-// 世代自适应网关级单测（2026-11-05；2026-11-06 随「全局 ctx」拍板改口径）：
+// 世代自适应网关级单测（2026-11-05；2026-11-06 随「全局 ctx」拍板改口径；
+// 2026-11-07 随 admission 收紧再改：4B 级 NPU ctx>512 前置禁入——
+// Qwen3-4B@4096 首请求 L0 UNINITIALIZED、Spark@4096 预算塌方 0.42 t/s）：
 // 探测→世代→档案上限→实测豁免→OOM 回退全链离线验证。fake 进程/health/
 // 端口（同 engine_defaults_chain 纪律），绑定表走 sqlite ffi（同 m2_dod）。
-// 旧「preset.ctx 先验 clamp（4B 收敛 512）」已退役——ctx 只有一个口子：
-// 模型级 > 引擎默认 > 全局值（默认 4096）。红线：**4096 最基本档全线放行**，
-// 越 4096 才有 admission 先验拦（4B 驱动预算）与实测豁免两半。
+// ctx 口子不变：模型级 > 引擎默认 > 全局值（默认 4096）；红线更新：
+// **≤512 全线放行**，4B 级 >512 走 admission 先验拦（实测豁免可越过）。
 import 'dart:convert';
 import 'dart:io';
 
@@ -103,16 +104,17 @@ void main() {
         engineId: 'wangcai-npu', modelId: modelId, device: 'NPU', ctx: ctx);
   }
 
-  test('回归锚·3720 无实测：4B nCtx4096 放行 + chunk128 质量臂保留', () async {
-    // 「4096 是最基本」——旧 512 收敛先验不得复活；chunk128 属质量臂不受影响。
+  test('回归锚·3720 无实测：4B nCtx512 放行 + chunk128 质量臂保留', () async {
+    // admission 收紧（2026-11-07）：4B 级 >512 前置禁入，512 是 4B 合法基本
+    // 档；chunk128 属质量臂不受影响，FOLD 只属于超 4096 档。
     probeRunnerForTest = (_, __) async => enum3720;
-    expect(await load('Qwen3-4B-anchor.gguf', nCtx: 4096), isTrue);
+    expect(await load('Qwen3-4B-anchor.gguf', nCtx: 512), isTrue);
     final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
     expect(h.lastSpawnArgs, containsAllInOrder(['-dev', 'OPENVINO3']));
-    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '4096']));
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']));
     expect(h.lastSpawnEnv?['GGML_OPENVINO_PREFILL_CHUNK_SIZE'], '128');
     expect(h.lastSpawnEnv?['GGML_OPENVINO_NPU_COMPILE_OVERRIDES'], isNull,
-        reason: '4096 档不挂深上下文臂（FOLD 只属于超档）');
+        reason: '512 档不挂深上下文臂（FOLD 只属于超档）');
     // 探测摘要 + 驱动注入随成功加载落实例。
     expect(h.lastNpuInfo?.generation, NpuGeneration.ultra1);
     final inst = reg.instance('wangcai-npu')!;
@@ -132,7 +134,7 @@ void main() {
       return '32.0.100.3800';
     };
     probeRunnerForTest = (_, __) async => enum3720;
-    expect(await load('Qwen3-4B-dv1.gguf', nCtx: 4096), isTrue);
+    expect(await load('Qwen3-4B-dv1.gguf', nCtx: 512), isTrue);
     // 追补是 unawaited：等 driver 落 lastNpuInfo（网关侧先写记忆再写摘要，
     // 摘要落位 = 记忆已就位）再二载，避免竞态假绿。
     for (var i = 0;
@@ -141,20 +143,20 @@ void main() {
         i++) {
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
-    expect(await load('Qwen3-4B-dv2.gguf', nCtx: 4096), isTrue);
+    expect(await load('Qwen3-4B-dv2.gguf', nCtx: 512), isTrue);
     expect(queries, 1, reason: '同一会话第二载必须命中驱动记忆，不再起 CIM 查询');
     expect(reg.instance('wangcai-npu')!.lastNpuInfo?['driver'],
         '32.0.100.3800');
   });
 
-  test('世代不再充当 ctx 预算：二代 3820 4B@4096 原样放行', () async {
-    // 旧「无实测不赌、按一代先验收敛 512」随 per-model ctx 一起退役；
-    // 4096 最基本档对任何世代都放行。
+  test('世代不再充当 ctx 预算：二代 3820 4B@512 原样放行', () async {
+    // 旧「按世代先验收敛 ctx」已退役；4B 合法基本档（512）对任何世代都
+    // 放行，世代只进档案/摘要不做预算。
     probeRunnerForTest = (_, __) async => enum3820;
-    expect(await load('Qwen3-4B-gen2.gguf', nCtx: 4096), isTrue);
+    expect(await load('Qwen3-4B-gen2.gguf', nCtx: 512), isTrue);
     final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
     expect(h.lastNpuInfo?.generation, NpuGeneration.ultra2);
-    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '4096']));
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']));
   });
 
   test('实测豁免：该机跑成功过 8192 → admission 让位实测 + 超档自动挂深臂',
@@ -209,10 +211,10 @@ void main() {
     // 第二载：无实测背书 → 先验准入回位，越档拒载。
     oomOnSpawn = false;
     expect(await load('Qwen3-4B-demote.gguf', nCtx: 8192), isFalse);
-    // 最基本档不受回退牵连：4096 永远放行。
-    expect(await load('Qwen3-4B-demote.gguf', nCtx: 4096), isTrue);
+    // 4B 合法基本档（512）不受回退牵连：永远放行。
+    expect(await load('Qwen3-4B-demote.gguf', nCtx: 512), isTrue);
     final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
-    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '4096']));
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']));
   });
 
   test('demoteCtx store 语义：低于失败值保留 / 无行空转（失败不证伪更低档）',

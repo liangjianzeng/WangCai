@@ -55,3 +55,68 @@
   （错误被吞）。
 - 验收：2560/4096 ctx + mmproj + 壁纸图出非空正确读图回答，速度与 NPU
   文本线同量级。
+
+## 2026-11-07 深夜战役第二幕：破案（磁盘伪象 + 真病根）与修复落地
+
+### 取证转折（tmp/omni-matrix/logs/mtmdcli_fix5..r4.log，全程串行独占）
+
+1. **fix5-8 的「WeightlessCacheAttribute 丢失」全是磁盘 100% 满的 I/O 伪象**。
+   战役期间 E: 盘被历次矩阵 cache 吃到 100%（剩 6.3MB，tmp/omni-matrix/cache
+   独占 88GB）；清理 85GB 后净盘复验 R2（fix5 完全同款条件、无任何新 env）：
+   **7 次编译（LLM 主图 + 6 段 ViT）全部通过**，WS 报错消失。NPUW 的
+   weights separation 流要落盘权重文件，满盘下报出误导性的属性检查错。
+   （旁证：R1 的 `ios_base::badbit` 即序列化写盘失败；fix9ir 抢到最后
+   1.3GB 空间写 dump 后磁盘见底。）
+2. **「绕开 NPUW」是死路（fix8 实证，结论保留）**：erase NPU_USE_NPUW +
+   清 NPUW_* 后编译 3 分钟通过，但 L0 `pfnAppendGraphExecute` 拒绝执行
+   （`ZE_RESULT_ERROR_INVALID_NATIVE_BINARY — BufferInfo already exists`）。
+   NPU 设备必须要 NPUW 管线——修复方向必须是让图过 NPUW，不是绕开。
+3. **真病根 = sched 切段产物无 inp_pos**：净盘后失败点稳定为
+   `get_inp_pos_tensor: inp_pos not found in cgraph`（46 节点尾段）→
+   `clip_encode failed -1`。链条：CLIP 图的 FLASH_ATTN_EXT 不被 OV 后端
+   支持（warmup 实证）→ sched 把 clip 图切成 OV/CPU 交替段（OV 段
+   87/52×5/46 节点）→ 不含 ROPE 的尾段没有 inp_pos 输入 →
+   `ov_graph_compute_static` 无条件 `get_inp_pos_tensor` 抛异常。
+   **11-03 原发缺陷 `clip_encode failed -1` 的真身即此**（当时无 trace
+   不可见）。fix9ir/R2 中 5 个含 vision ROPE 的段全部编译通过，佐证
+   「有无 inp_pos」是唯一分界。
+4. **代码核对勘误**：translate_session.cpp `translate()` 的
+   WeightlessCacheAttribute 打标循环在公共路径（naive 分支只跳过
+   preprocess）——战役期间「naive 产物不带标」的注释是磁盘时代误诊。
+
+### 修复（utils.cpp / utils.h，未提交）
+
+- 新增 `find_inp_pos_tensor`（找不到返回 nullptr 不抛）；
+  `get_inp_pos_tensor` 改为薄壳（找不到才抛）。
+- `ov_graph_compute_static`：无 inp_pos 的静态图早退分流
+  `naive_compute`（一次性 translate+compile+infer，无 KV/位置语义可依；
+  擦 `NPUW_FUNCALL_FOR_ALL` 视觉片段同款保护）。代价：naive 无编译缓存，
+  server 每张图多一次尾段编译（秒级）。
+- 拆除 naive_compute 两处 `NPUW_WEIGHTS_SEPARATION=false` 地雷（该键在
+  NPU 插件配置表不存在，fix6 实证 NOT_FOUND assert）。
+
+### 验证（验收线：ctx≥2300 + 图出正确读图回答）
+
+- **R3（2560 ctx + 128px 纯红图）PASS**：46 节点尾段走 naive 编译执行成功，
+  `mtmd batch encoding done in 24163 ms`（首图冷编译总成本），embd 注入后
+  LLM 图 3 个变体编译通过，回答「**这张图是红色的**」——正确。
+- **R4（2560 ctx + 1920×1200 纯红壁纸 ≈2017 vision tokens）PASS**：
+  `encoding done in 433775 ms`（大图全冷编译），回答「这张图的整体颜色是
+  **红棕色**（色调偏红…颜色比较均匀）」——纯红图经 ViT 采样偏暗红，
+  判定本质正确。
+- **server E2E（llama-server，app 同款参数/env：-c 2560 -fa 1 -dev
+  OPENVINO3 --jinja --no-warmup + 四件套 env）PASS**：OpenAI 格式带图请求
+  （image_url base64），`loaded multimodal model` 后 health 155s，回答
+  「这张图主要是**红色**…几乎没有其他颜色」（prompt 82 tok、生成 63 tok
+  @ 10.15 t/s）——无 500、无 clip_encode -1。decode 10.1 t/s 较纯文本线
+  （21.9）偏低，为带图变体图首次编译后的首请口径，后续优化项记录在案。
+
+### 遗留与后续
+
+- 尾段 naive 无编译缓存：每张图一次尾段编译（秒级）；不同尺寸图的 ViT
+  段形状各异，各自冷编译（大图首编 ≈7 分钟）——后续可做 per-shape 缓存
+  与预编译预热。
+- 4096+mmproj 编译管线卡死（第一幕现场 1）未单独复验——净盘后疑似同源
+  （磁盘压力/编译队列），下次带图 4096 场景实证后闭环。
+- conv_spatial RESHAPE 动态维度警告（第一幕现场 2 的伴生信号）实测非致命
+  （翻译继续走完、结果正确），降级为噪声日志观察项。
