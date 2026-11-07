@@ -856,6 +856,74 @@ class LocalServerInference implements InferenceBackend {
     if (!_isReady()) {
       return Stream.error(StateError('模型未加载，请先在模型管理页加载模型'));
     }
+    // 视觉能力前置门（2026-11-07）：带图请求打到「声明无视觉」的引擎 =
+    // 明确报错并给改道指引，而不是让 server 报 500（"you may need to
+    // provide the mmproj"）或 NPU 侧 mtmd 卡死（defect-npu-mtmd——
+    // wangcai-npu manifest 已如实声明 vision=false）。检查走 async registry，
+    // 以 Future<Stream<String>> flatten 回主签名。
+    final hasImage = (imagePath != null && imagePath.isNotEmpty) ||
+        (imagePaths?.isNotEmpty ?? false);
+    if (hasImage) {
+      // 门检查（Future<Object?>）先发，asyncExpand<String> 分支：有错 →
+      // Stream.error；无错 → 真正的推理流（类型显式定为 String）。
+      return Stream.fromFuture(_visionGateErrorIfAny())
+          .asyncExpand<String>((err) {
+        if (err != null) return Stream<String>.error(err);
+        return _completionWithMessagesImpl(
+          prompt: prompt,
+          messagesJson: messagesJson,
+          imagePath: imagePath,
+          imagePaths: imagePaths,
+          audioPath: audioPath,
+          maxTokens: maxTokens,
+          temperature: temperature,
+          topP: topP,
+        );
+      });
+    }
+    return _completionWithMessagesImpl(
+      prompt: prompt,
+      messagesJson: messagesJson,
+      imagePath: imagePath,
+      imagePaths: imagePaths,
+      audioPath: audioPath,
+      maxTokens: maxTokens,
+      temperature: temperature,
+      topP: topP,
+    );
+  }
+
+  /// 带图请求的能力检查：当前引擎 manifest 声明无视觉 → 返回 StateError
+  /// （含改道指引）；声明有视觉或无从判定 → null 放行。
+  Future<Object?> _visionGateErrorIfAny() async {
+    try {
+      final reg = await _ensureRegistry();
+      final host = debugHost();
+      final manifest = host == null ? null : reg.manifestOf(host.instanceId);
+      final visionOk = manifest?.capabilities.vision ?? false;
+      if (!visionOk) {
+        final display = manifest?.display ?? host?.instanceId ?? '当前引擎';
+        return StateError(
+            '当前引擎（$display）不支持图像理解。视觉请用官方 llama.cpp 的 '
+            'CUDA/Vulkan 引擎（设置→引擎管理 切「GPU 外挂」或钉选引擎后重新'
+            '加载模型），或改用支持视觉的远端模型。');
+      }
+    } on Object catch (e) {
+      return e; // 检查自身失败也如实上抛，不静默放行
+    }
+    return null;
+  }
+
+  Stream<String> _completionWithMessagesImpl({
+    required String prompt,
+    required String messagesJson,
+    String? imagePath,
+    List<String>? imagePaths,
+    String? audioPath,
+    required int maxTokens,
+    required double temperature,
+    required double topP,
+  }) {
     final List<Map<String, dynamic>> msgs;
     try {
       msgs = _decodeMessages(messagesJson);

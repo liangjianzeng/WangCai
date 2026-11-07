@@ -204,6 +204,32 @@ void main() {
         reason: '核心档拒绝 = 拒绝，绝不自动改道旁路（换引擎是用户的决定）');
   });
 
+  test('视觉前置门（2026-11-07）：带图请求打 NPU → 明确报错不改道，纯文本照常',
+      () async {
+    // defect-npu-mtmd（NPU mtmd 计算失败）+ wangcai-npu vision=false：
+    // 带图请求必须在壳层给用户明确改道指引，而不是 server 侧一个看不懂
+    // 的 500（"you may need to provide the mmproj"）或编译卡死。
+    await loadNpu('Generic-Fake.gguf');
+    expect(
+        inf.completionWithMessages(prompt: '', messagesJson: '[]',
+            imagePaths: ['C:/x/img.png']),
+        emitsError(isA<StateError>().having((e) => e.message, 'msg',
+            contains('不支持图像理解'))),
+        reason: 'NPU manifest 已如实声明 vision=false，带图请求必须前置报错');
+    // 纯文本请求不被误伤（门放行 → 走到 server 请求层；fake 进程无真
+    // HTTP 端点，请求层 connectionError 即为「门已放行」的证据）。
+    Object? caught;
+    try {
+      await inf.completionWithMessages(prompt: '你好', messagesJson: '[]')
+          .drain<void>();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught, isNotNull, reason: 'fake 无真端点，应走到请求层报错');
+    expect('$caught', isNot(contains('不支持图像理解')),
+        reason: '纯文本请求必须被视觉门放行（报错来自请求层而非门）');
+  });
+
   test('引擎钉选压过路由档位：npu 档下钉 cuda → cuda 拉起、npu 被互斥停',
       () async {
     await loadNpu('Generic-Fake.gguf', engineId: 'llamacpp-cuda');

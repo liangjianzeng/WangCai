@@ -58,12 +58,16 @@ class ModelState {
     required String message,
     String? modelId,
     String? modelName,
+    List<String> loadingLogs = const [],
   }) =>
       ModelState(
         phase: ModelLifecyclePhase.error,
         modelId: modelId,
         modelName: modelName,
         errorMessage: message,
+        // 错误态也带判定日志（2026-11-07 视觉链留痕）：错误弹层给结论、
+        // 日志给证据链，用户不用再来回猜哪一环断了。
+        loadingLogs: loadingLogs,
       );
 
   // ---- derived helpers ----
@@ -255,43 +259,58 @@ class ModelManagerNotifier extends StateNotifier<ModelState> {
       //    按模型「图片理解」开关优先（方案 P4，2026-10-15）；未显式配置的
       //    模型回退全局「默认加载视觉投影器」（autoLoadMmproj）。关闭时
       //    mmproj 传 null：不加载视觉塔，省 ~0.9GB 回给 bank/KV。
+      //    2026-11-07 加固：判定结果全部进 loadingLogs（引擎日志弹层可见）
+      //    ——此前链上任何一环静默断掉都只剩 server 侧 500，用户无从排查。
       final config = _lookupModelConfig(modelId);
       String? mmprojPath;
       final settingsAll = await _ref.read(settingsServiceProvider).load();
       final autoMmproj = settingsAll.visionEnabled(modelId);
-      if (config != null &&
-          config.type == ModelType.vision &&
-          autoMmproj) {
-        if (config.mmproj != null) {
-          final storage = ModelStorageService();
-          mmprojPath = await storage.getMmprojPath(modelId);
-          // 只查 existsSync() 不够：mmproj 若损坏/不完整（例如下载中断残留的
-          // .mmproj.tmp，或体积为 0）仍会 exists → 传给原生 mtmd_init 加载损坏
-          // 文件，视觉推理时崩溃。这里做完整性复核：文件存在、无残留 .tmp、非空。
-          final mmFile = File(mmprojPath);
-          final mmTmp = File('$mmprojPath.tmp');
-          final mmOk = mmFile.existsSync() &&
-              !(await mmTmp.exists()) &&
-              await mmFile.length() > 0;
-          if (!mmOk) {
-            debugPrint('[ModelManager] Missing/broken mmproj for $modelId');
-            state = ModelState.error(
-              message: '缺少或不完整的 mmproj 投影器，请在模型管理页重新下载完整模型',
-              modelId: modelId,
-              modelName: displayName,
-            );
-            return false;
-          }
+      final visionLogs = <String>[];
+      if (config == null) {
+        visionLogs.add('ℹ️ 视觉判定：catalog 未收录 $modelId → 按纯文本加载');
+      } else if (config.type != ModelType.vision) {
+        visionLogs.add('ℹ️ 视觉判定：$modelId 为文本模型（type=${config.type}）');
+      } else if (!autoMmproj) {
+        visionLogs.add('ℹ️ 视觉判定：$modelId 的「图片理解」开关已关闭（设置或模型管理页可开）');
+      } else if (config.mmproj == null) {
+        visionLogs.add('ℹ️ 视觉判定：$modelId 为单文件自包含 VL（无需 mmproj）');
+      } else {
+        final storage = ModelStorageService();
+        mmprojPath = await storage.getMmprojPath(modelId);
+        // 补认开发机命名（mmproj-{id}.gguf，E:\...models 直下登记的形态）：
+        // ModelStorage 只认 {id}.mmproj，另一套下载/手工命名会静默漏配
+        // → server 无 --mmproj → 发图 500。
+        if (mmprojPath == null || !File(mmprojPath).existsSync()) {
+          final dir = File(await storage.getModelPath(modelId) ?? '').parent;
+          final alt =
+              File('${dir.path}${Platform.pathSeparator}mmproj-$modelId.gguf');
+          if (alt.existsSync()) mmprojPath = alt.path;
         }
-        debugPrint('[ModelManager] Vision model $modelId: '
-            '${mmprojPath == null ? '单文件VL' : 'text+mmproj ($mmprojPath)'} — '
-            '原生图像理解已启用。');
-        state = ModelState(
-          phase: ModelLifecyclePhase.loading,
-          modelId: modelId,
-          modelName: displayName,
-          loadingLogs: ['🧠 视觉模型：原生图像理解已启用（mmproj）'],
-        );
+        // 只查 existsSync() 不够：mmproj 若损坏/不完整（例如下载中断残留的
+        // .mmproj.tmp，或体积为 0）仍会 exists → 传给原生 mtmd_init 加载损坏
+        // 文件，视觉推理时崩溃。这里做完整性复核：文件存在、无残留 .tmp、非空。
+        final mmFile = File(mmprojPath ?? '');
+        final mmTmp = File('${mmprojPath ?? ''}.tmp');
+        final mmOk = mmprojPath != null &&
+            mmFile.existsSync() &&
+            !(await mmTmp.exists()) &&
+            await mmFile.length() > 0;
+        if (!mmOk) {
+          debugPrint('[ModelManager] Missing/broken mmproj for $modelId');
+          visionLogs.add('⛔ 视觉判定：mmproj 投影器缺失或不完整（路径判定见下）——'
+              '图片理解不可用，请重新下载完整模型');
+          state = ModelState.error(
+            message: '缺少或不完整的 mmproj 投影器，请在模型管理页重新下载完整模型',
+            modelId: modelId,
+            modelName: displayName,
+            loadingLogs: visionLogs,
+          );
+          return false;
+        }
+        visionLogs.add('🧠 视觉判定：text+mmproj（$mmprojPath）——图像理解已启用');
+      }
+      if (visionLogs.isNotEmpty) {
+        debugPrint('[ModelManager] Vision chain $modelId: $visionLogs');
       }
 
       // 5. Call inference engine to load the model.
@@ -309,6 +328,11 @@ class ModelManagerNotifier extends StateNotifier<ModelState> {
       logs.insert(0, '模型加载地址: $path');
       if (mmprojPath != null) {
         logs.insert(1, '投影器地址: $mmprojPath');
+      }
+      // 视觉判定链全程留痕（引擎日志弹层可见）——链上哪环断了用户直接看到，
+      // 不再只剩 server 侧一个看不懂的 500。
+      if (visionLogs.isNotEmpty) {
+        logs.insertAll(1, visionLogs);
       }
       state = ModelState(
         phase: ModelLifecyclePhase.loading,

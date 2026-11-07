@@ -70,18 +70,30 @@ void main() {
       expect(npu.checkAdmission(ctx: 16384, paramsB: 1.7), isEmpty);
     });
 
-    test('admission 模型维度（2026-11-07）：Spark 4B 在 NPU 禁入，CUDA/Vulkan 不受影响', () {
-      // defect-npu-spark-b12034：decode-levels 特性在 b12034+NPU 驱动上整体
-      // 失效（撞设备预算自动回退 0.42 t/s 地板；智能体长 prefill 触发即
-      // 「本轮执行失败」）——模型级禁入 + 改道建议。方向语义：modelFile
-      // 未知/不命中 glob → 豁免（错放危害 < 错拦），其余维度不受影响。
+    test('admission 模型维度（2026-11-07）：Spark 4B 在 NPU 深上下文拦、ctx≤512 放行，CUDA/Vulkan 不受影响', () {
+      // defect-npu-spark-b12034：decode-levels 在对话深度到 level 1024 档时撞
+      // 设备预算，全局回退 0.42 t/s 地板（智能体场景实锤）——ctx>512 拦。
+      // 2026-11-07 复测修正：ctx≤512 档 level 图健康（warm ≈6 t/s，零预算
+      // 异常），不再是全 ctx 禁入——方向语义：modelFile 未知/不命中 glob →
+      // 豁免（错放危害 < 错拦）。
       final npu = bundledManifests()['wangcai-npu']!;
       const spark = 'spark-x2.6-4b-q4_k_m.gguf';
       final v = npu.checkAdmission(
           ctx: 4096, paramsB: 4.0, modelFile: spark, generation: 'ultra1');
-      expect(v, isNotEmpty, reason: 'Spark@NPU@4096 必须前置拦（用户已实测歇菜）');
-      expect(v.join(), contains('CUDA/Vulkan'),
-          reason: '改道建议必须给出可操作的出路');
+      expect(v, isNotEmpty, reason: 'Spark@NPU@4096 必须前置拦（智能体已实测歇菜）');
+      expect(v.join(), contains('512'),
+          reason: '改道建议必须给出可操作的出路（模型级 ctx≤512）');
+      // ctx≤512 放行：level 256/512 图实测健康。
+      expect(
+          npu.checkAdmission(
+              ctx: 512, paramsB: 4.0, modelFile: spark, generation: 'ultra1'),
+          isEmpty,
+          reason: 'Spark@NPU@512 是保守可用档，不拦');
+      // 768 会需要 level 1024 图（256×2^k 上取整）——同在拦内。
+      expect(
+          npu.checkAdmission(
+              ctx: 768, paramsB: 4.0, modelFile: spark, generation: 'ultra1'),
+          isNotEmpty);
       // 非 Spark 模型同条件照常放行（glob 不豁免错拦）。
       expect(
           npu.checkAdmission(
@@ -95,6 +107,51 @@ void main() {
         expect(cuda.checkAdmission(ctx: 4096, paramsB: 4.0, modelFile: spark),
             isEmpty);
       }
+    });
+
+    test('admission 模型维度（2026-11-07b）：Qwen3.5-4B 在 NPU 禁入（driver opset 未支持），GPU 放行', () {
+      // defect-npu-qwen35-b12034：GatedDeltaNet 融合算子以自定义 opset 序列化，
+      // NPU driver VCL 反序列化失败（graph 编译期死；ref 分解/CPU 分段/naive
+      // 分段三路收口均不可行后引擎回滚 pristine）——模型级禁入 + 改道建议，
+      // 与 Spark 锚同形态。
+      final npu = bundledManifests()['wangcai-npu']!;
+      const qwen35 = 'Qwen3.5-4B-Q4_K_M.gguf';
+      final v = npu.checkAdmission(
+          ctx: 4096, paramsB: 4.0, modelFile: qwen35, generation: 'ultra1');
+      expect(v, isNotEmpty, reason: 'Qwen3.5@NPU 必须前置拦（编译期死，不放进推理）');
+      expect(v.join(), contains('CUDA/Vulkan'),
+          reason: '改道建议必须给出可操作的出路');
+      // glob 大小写不敏感：用户盘内小写文件名同样命中。
+      expect(
+          npu.checkAdmission(
+              ctx: 4096, paramsB: 4.0, modelFile: 'qwen3.5-4b-q4_k_m.gguf'),
+          isNotEmpty);
+      // Qwen3（非 3.5）不受牵连：glob 只匹配 Qwen3.5 前缀。
+      expect(
+          npu.checkAdmission(
+              ctx: 4096, paramsB: 4.0, modelFile: 'Qwen3-4B-Q4_K_M.gguf'),
+          isEmpty);
+      // Vulkan manifest 无此规则；GPU preset 已在 vulkan/cuda 各留一档。
+      final vulkan = bundledManifests()['llamacpp-vulkan'];
+      if (vulkan != null) {
+        expect(vulkan.checkAdmission(ctx: 4096, paramsB: 4.0, modelFile: qwen35),
+            isEmpty);
+        expect(vulkan.presetByName('qwen3.5-4b-gpu'), isNotNull);
+      }
+      expect(bundledManifests()['llamacpp-cuda']!.presetByName('qwen3.5-4b-gpu'),
+          isNotNull);
+    });
+
+    test('视觉能力声明如实（2026-11-07）：NPU vision=false，CUDA/Vulkan=true', () {
+      // defect-npu-mtmd：NPU/OV 后端 mtmd 计算失败（clip_encode graph -1，
+      // 带图必挂）。发图前置门按 manifest.capabilities.vision 拦——声明必须
+      // 与引擎真能力一致：NPU 不许再写 true（否则用户发图撞 500/卡死），
+      // 官方 llama.cpp 引擎（mtmd 官方支持）保持 true。引擎侧修复后回填。
+      final npu = bundledManifests()['wangcai-npu']!;
+      expect(npu.capabilities.vision, isFalse,
+          reason: 'NPU mtmd 引擎缺陷（defect-npu-mtmd），视觉声明必须如实为 false');
+      expect(bundledManifests()['llamacpp-cuda']!.capabilities.vision, isTrue);
+      expect(bundledManifests()['llamacpp-vulkan']!.capabilities.vision, isTrue);
     });
 
     test('全局 ctx 口径（2026-11-06）：preset 不再携带 ctx；deep 档位已退役', () {

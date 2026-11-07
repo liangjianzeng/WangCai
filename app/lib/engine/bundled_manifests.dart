@@ -28,7 +28,7 @@ const String wangcaiNpuManifestJson = '''
     "GGML_OPENVINO_PREFILL_CHUNK_SIZE": "{chunk}",
     "GGML_OPENVINO_KV_HOST_WRITE": "{kvHostWrite=0}"
   },
-  "capabilities": {"nativeToolCall": true, "vision": true, "audio": false,
+  "capabilities": {"nativeToolCall": true, "vision": false, "audio": false,
                    "devices": ["NPU", "CPU(OPENVINO0)"]},
   "presets": [
     {"name": "lfm3-1.7b", "modelGlob": "LFM3-1.7B*.gguf", "chunk": 256,
@@ -36,6 +36,9 @@ const String wangcaiNpuManifestJson = '''
     {"name": "qwen3-4b", "modelGlob": "Qwen3-4B*.gguf", "chunk": 128,
      "paramsB": 4.0, "device": "NPU",
      "note": "副靶配置 chunk128（status.md 3/3）；compile overrides 串在 M2 对齐 spark-npu-accept.ps1"},
+    {"name": "qwen3.5-4b", "modelGlob": "Qwen3.5-4B*.gguf", "chunk": 128,
+     "paramsB": 4.0, "device": "NPU",
+     "note": "副靶（Qwen3.5-4B，unsloth Q4_K_M，qwen35 混合 SSM/attention 架构、248k 填充词表）：preset 留位但当前准入被 admission 拦截——GatedDeltaNet 融合算子以自定义 opset 序列化，NPU driver VCL（32.0.100.4512）反序列化即失败，graph 编译期死（2026-11-07 三路收口实锤：ref 分解死于 phase-padded 图形状、CPU 分段死于打包边界 reshape、naive 分段死于 NPUW 断言；引擎代码已回滚 pristine，driver 升级支持该 opset 后零改动复验）。chunk128 对齐 4B 级先例；embed 表 248k×2560 比 Qwen3-4B 大 64%，host 预算风险更高，ctx>4096 的 OUT_OF_HOST_MEMORY 禁入规则照常生效"},
     {"name": "spark-x2.6-4b", "modelGlob": "Spark-X2.6-4B*.gguf", "chunk": 128,
      "paramsB": 4.0, "device": "NPU",
      "note": "副靶（讯飞 Spark-X2.6-4B Q4_K_M）：chunk128。2026-11-06 换机矩阵把 DDL env 摘了（defect-npu-spark-b12034）：b12034 引擎上 DDL=1 对 4B Spark 直接 ZE_RESULT_ERROR_UNINITIALIZED（Compute error 500，两跑复现）；摘掉后 4096 档 0.42 t/s 引擎地板（不崩不 OOM，按 HANDOFF §4 条款拍板摘除，保守可跑）。历史「DDL 必需」口径属旧引擎（spark-npu-accept.ps1 3/3、HANDOFF 2026-11-01），引擎/驱动更新后按缺陷单复验"},
@@ -47,9 +50,12 @@ const String wangcaiNpuManifestJson = '''
      "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：默认臂 1.7B-like chunk256+decode levels；OOM 回落 spark 臂（chunk128+DISABLE_DECODE_LEVELS）——tools/minicpm5-npu-accept.ps1；thinking 模型 CoT 预算 n≥192"}
   ],
   "admission": [
-    {"ifModelGlob": "Spark-X2.6-4B*.gguf",
-     "message": "Spark-X2.6-4B 在 NPU 引擎上 decode 特性整体失效（decode-level 图撞设备预算自动回退 0.42 t/s 地板，智能体长 prefill 触发即「本轮执行失败」——defect-npu-spark-b12034，2026-11-07 实锤）",
-     "suggestion": "改用 CUDA/Vulkan 引擎跑 Spark（实测 99.2 t/s），或 NPU 档配 LFM3-1.7B / Omni-2B（21.6/21.9 t/s）"},
+    {"ifModelGlob": "Spark-X2.6-4B*.gguf", "ifCtxGt": 512,
+     "message": "Spark-X2.6-4B 在 NPU 上深上下文必塌：对话深度到 level 1024 档图即撞设备预算，全局回退后 0.42 t/s 地板（defect-npu-spark-b12034，2026-11-07 智能体场景实锤）；ctx≤512 档 level 图实测健康（2026-11-07 复测 warm ≈6 t/s，零预算异常）",
+     "suggestion": "模型级 ctx 调到 ≤512 即可在 NPU 保守使用（聊天可用，智能体不建议）；长上下文/智能体改用 LFM3-1.7B / Omni-2B（21.6/21.9 t/s）"},
+    {"ifModelGlob": "Qwen3.5-4B*.gguf",
+     "message": "Qwen3.5-4B 在 NPU 引擎上编译即失败：GatedDeltaNet 融合算子（qwen35 混合 SSM/attention 架构独有）以自定义 opset 序列化，NPU driver VCL 反序列化不支持（「Cannot create GatedDeltaNet layer ... unsupported opset: extension」，driver 32.0.100.4512，2026-11-07 实锤；引擎侧 ref 分解/CPU 分段/naive 分段三路收口均不可行，详见 defect-npu-qwen35-b12034）",
+     "suggestion": "改用 CUDA/Vulkan 引擎跑 Qwen3.5-4B（unsloth Q4_K_M 已就位），或 NPU 档配 LFM3-1.7B / Omni-2B；NPU driver 升级后按 defect 文档复验条件重测"},
     {"ifCtxGt": 4096, "ifParamsBAtLeast": 3.5,
      "message": "4B 在 NPU 超 4096 上下文执行期 OUT_OF_HOST_MEMORY（status.md 缺陷5 外推；4096 默认档实测放行）",
      "suggestion": "全局上下文调回 ≤4096，或改用 CUDA/Vulkan 引擎"}
@@ -72,7 +78,10 @@ const String llamacppVulkanManifestJson = '''
                    "devices": ["Vulkan"]},
   "presets": [
     {"name": "4b-gpu", "modelGlob": "Qwen3-4B*.gguf", "ctx": 4096,
-     "paramsB": 4.0, "gpuLayers": 99}
+     "paramsB": 4.0, "gpuLayers": 99},
+    {"name": "qwen3.5-4b-gpu", "modelGlob": "Qwen3.5-4B*.gguf", "ctx": 4096,
+     "paramsB": 4.0, "gpuLayers": 99,
+     "note": "Qwen3.5-4B（qwen35 混合架构）：GATED_DELTA_NET/SSM_CONV 无 CUDA kernel 时 llama.cpp 调度器自动 CPU 回退该算子，其余层全量 -ngl 99；2026-11-07 真机首验通过"}
   ],
   "admission": [],
   "timingHints": {"coldCompileMs": 15000, "warmMs": 3000},
@@ -93,7 +102,10 @@ const String llamacppCudaManifestJson = '''
                    "devices": ["CUDA"]},
   "presets": [
     {"name": "4b-gpu", "modelGlob": "Qwen3-4B*.gguf", "ctx": 4096,
-     "paramsB": 4.0, "gpuLayers": 99}
+     "paramsB": 4.0, "gpuLayers": 99},
+    {"name": "qwen3.5-4b-gpu", "modelGlob": "Qwen3.5-4B*.gguf", "ctx": 4096,
+     "paramsB": 4.0, "gpuLayers": 99,
+     "note": "Qwen3.5-4B（qwen35 混合架构）：GATED_DELTA_NET/SSM_CONV 无 CUDA kernel 时调度器自动 CPU 回退，其余层全量 -ngl 99；2026-11-07 真机首验通过"}
   ],
   "admission": [],
   "timingHints": {"coldCompileMs": 20000, "warmMs": 4000},
