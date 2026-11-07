@@ -10,7 +10,7 @@
 > **v0.0.1 · 2026-10-31 引擎收官** —— NPU 端到端跑通 LFM3，精度主缺陷已定案修复（三问验收 3/3）。
 > **v0.0.2 · 2026-11-02/03 助手落地** —— Windows 桌面壳 M1–M4 完成：NPU / CUDA / Vulkan / 远端
 > 四线路由、托盘驻留、识图 DoD（官方引擎线）、Agent 回归、便携包 + Inno Setup 安装器。
-> 变更全文见 [CHANGELOG.md](CHANGELOG.md)。
+> 变更全文见 [CHANGELOG.md](CHANGELOG.md)。**直接用？→ [下载安装包](#下载安装windows-用户看这里)**
 
 **简体中文** · [English](README_en.md)
 
@@ -107,6 +107,19 @@ LFM3-1.7B `Q4_K_M`（1049 MB）· 24 层（13 门控短卷积 + 5 滑动窗口@2
   [docs/benchmarks.md](docs/benchmarks.md)。
 
 复现方式见 [`tools/`](tools/README.md)。
+
+## 下载安装（Windows 用户看这里）
+
+从 [GitHub Releases](https://github.com/liangjianzeng/WangCai/releases/latest) 获取（当前 **0.0.5**，2026-11-07 重打包）：
+
+| 产物 | 适合 | 说明 |
+|---|---|---|
+| **[Setup.exe 安装包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.5/WangCai-0.0.5-win-x64-Setup.exe)**（68 MB）· 推荐 | 大多数人 | 标准 Windows 安装向导：每用户安装**无需管理员**，可选桌面图标 / 开机自启；壳 + **汪柴 NPU 引擎 + OpenVINO 运行时**一体安装；卸载保留会话库/模型/编译缓存 |
+| **[portable.zip 便携包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.5/WangCai-0.0.5-win-x64-portable.zip)**（108 MB） | 免安装 / U 盘 | 解压即用，跑 `App\WangCai.exe`（布局同安装器） |
+
+装完第一件事：设置页 → 模型 → 下载 **LFM3-1.7B** 起步，引擎管理确认 NPU 就绪。硬件门槛见[硬件要求](#硬件要求)。
+
+> CUDA / Vulkan 外挂引擎不随安装器分发，在 App 内「引擎商店」按需下载；NPU 引擎与 OpenVINO 运行时始终随包。
 
 ## 快速开始
 
@@ -276,6 +289,20 @@ src/llama/            vendored 的 llama.cpp（.gitignore 排除，由 bootstrap
 | 系统 | Windows 11（Linux 路径上游支持，本机未验证） |
 | 内存 | 每 2 GB 模型至少 8 GB 空闲；1–4 B 模型 16 GB 舒适；**NPU 重度冷编译需 ≥25 GB 物理内存空闲**（空闲不足表现为编译无声挂起，P14 教训） |
 | 磁盘 | 图编译缓存按"模型 × ctx 形状"计，4B 实测 ~19 GB/份：打包/部署**每个模型每个 ctx 预留 ≥20 GB** |
+
+## 版本更新历史
+
+逐条明细与取证链接见 [CHANGELOG.md](CHANGELOG.md)（Keep a Changelog 格式；
+Unreleased 段的日期是"该改动在硬件上被验证的日期"）。
+
+| 版本 | 日期 | 要点 |
+|---|---|---|
+| Unreleased | 2026-11-05 → 11-07 | **NPU 世代自适应**（一/二/三代探测 + clamp 链 + 实测上探闭环）；**语音 ASR&TTS 重构 M0–M3**（唤醒 KWS/麦克风仲裁/离线 TTS）；**路由两档制**（NPU 核心档拒绝不改道，GPU/远端降为显式外挂旁路）；**NPU 视觉引擎修复**（mtmd 二幕破案，`vision=true` 回填，带图前置门 per-model 判定）；**4B admission 收紧族**（Spark 深上下文拦 / Qwen3.5 编译禁入 / MiniCPM5 禁入，含模型维度 ifModelGlob）；**桌面细节批**（截屏、关窗托盘可配 + 紧凑窄窗、狗头托盘菜单、会话批量全选/反选）；**模型清单扩容**（neohorse-1-4b / qwen3.5-2b NPU preset + Qwen3-4B 下载条目补齐，下载契约扩到 6 预置） |
+| [0.0.5](CHANGELOG.md) | 2026-11-05（tag 11-06） | 引擎线合流收官：P15–P20 入册（`KV_HOST_WRITE` 翻转修复、chunk 自动升档）、16K 深上下文预设、引擎按需安装改 **zip 流式解包**（修 CUDA 800MB+ 包下载完成即崩）；侧边栏常显收窄 |
+| 0.0.4 | 2026-11-05 | **数据家统一**四家并一家进 `%APPDATA%\WangCai`（搬迁语义 6 用例）；路由定调 **NPU 主打**；JSONL 真相源通电（write-through + fast path）；窗口几何记忆/单实例/快捷键等桌面基本件；交互去手机化 |
+| 0.0.3 | 2026-11-04 | **桌面独立化 Phase 0–4**：脱离上游 TongYi-Lite 独立演进（品牌全线换装汪柴）、项目 × 工作空间层级 + SQLite v7、引擎管理重写（本地登记 + 参数优先级链 + cuda/vulkan 按需下载）、`local_exec` 桌面执行层 |
+| 0.0.2 | 2026-11-03 | **汪柴助手壳 M1–M4**：Flutter 壳 + llama-server 子进程网关、三引擎齐（NPU/CUDA/Vulkan + 远端）+ 绑定表实测 t/s + 路由三档、托盘驻留 + HKCU 自启、识图 DoD（SmolVLM2）；**副靶** Spark-X2.6-4B + Qwen3-4B 端到端 3/3（顺带修 u4 权重与 f16 零点两个横切缺陷） |
+| 0.0.1 | 2026-10-31 | 首个版本：**NPU 精度主缺陷定案收官**——静态 decode 图 RoPE cos/sin 头轴广播在 NPUW 1-token 降级下错误 tile，修复 `rope.cpp` 显式 Concat tile，指令跟随三问 3/3（攻坚全记录见 [docs/defect1-rootcause.md](docs/defect1-rootcause.md)） |
 
 ## 参与贡献
 
