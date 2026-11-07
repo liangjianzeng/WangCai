@@ -22,7 +22,6 @@ import '../engine/npu_profiles.dart';
 import '../engine/process_ledger.dart';
 import '../engine/routing_policy.dart';
 import 'inference_backend.dart';
-import 'power_monitor.dart';
 import 'wangcai_paths.dart';
 
 /// llama-server SSE chunk → UI 可见 token 流的纯逻辑状态机（可单测）。
@@ -205,11 +204,11 @@ class LocalServerInference implements InferenceBackend {
   }
 
   Future<void> setRoutingTier(String tier) async {
-    _tierName = routingTierFromName(tier) == RoutingTier.speedFirst
-        ? 'speed'
-        : routingTierFromName(tier) == RoutingTier.npuFirst
-            ? 'npu'
-            : 'auto';
+    // 两档制（2026-11-07）：'npu'=核心（默认），'gpu'=外挂旁路。旧值
+    // 'auto' 并入 npu、'speed' 延续为 gpu——routingTierFromName 统一归一。
+    _tierName = routingTierFromName(tier) == RoutingTier.gpuSidecar
+        ? 'gpu'
+        : 'npu';
     try {
       final j = await _readRoutingJson();
       j['tier'] = _tierName;
@@ -273,17 +272,6 @@ class LocalServerInference implements InferenceBackend {
   /// 绑定表实测 t/s（诊断 UI 用）。
   Future<List<Binding>> bindingsForModel(String modelPath) =>
       _bindingsFor(_basename(modelPath));
-
-  /// §7.3「电池机型拔电 → NPU 加权」的输入（M3-b 电源感知）。
-  bool _onBattery() {
-    final f = _onBatteryForTest;
-    if (f != null) return f;
-    try {
-      return readPowerState().onBattery;
-    } catch (_) {
-      return false;
-    }
-  }
 
   /// 该实例的探测世代（同步读探测缓存，**不**起子进程）：_route 是快决策
   /// 路径，权威探测在 loadModel（await host.probeNpu()）。未探测过 = null
@@ -379,7 +367,6 @@ class LocalServerInference implements InferenceBackend {
       candidates: cands,
       bindings: bindingsForModel,
       blocked: blocked,
-      onBattery: _onBattery(),
     ));
   }
 
@@ -733,12 +720,6 @@ class LocalServerInference implements InferenceBackend {
   /// 测试注入的空闲时长（非 null 时优先于配置文件）。
   Duration? _idleUnloadForTest;
 
-  /// 测试注入的电源状态（null = 读真实系统）。缺省走真系统的意义在于
-  /// 「拔电 NPU 加权」是真行为；但单测必须注入定值 —— 开发机插没插电
-  /// 会翻转路由档位，让 speed 启发类断言随机翻转（2026-11-04 实案：
-  /// 单 active 互斥测试在拔电状态下选中 NPU 而非 CUDA）。
-  bool? _onBatteryForTest;
-
   void _armIdleTimer(Duration d) {
     _idleTimer?.cancel();
     if (!_loaded || d <= Duration.zero) return;
@@ -810,9 +791,6 @@ class LocalServerInference implements InferenceBackend {
   /// 测试注入空闲卸载时长（非 null 时优先于 routing.json）。
   @visibleForTesting
   set idleUnloadForTest(Duration? d) => _idleUnloadForTest = d;
-
-  @visibleForTesting
-  set onBatteryForTest(bool? v) => _onBatteryForTest = v;
 
   // ── 设置推送（server 侧语义：加载参数在 start 落，请求参数随 body）────
   // OOM 守卫 = manifest admission；KV 精度/FA = 引擎参数链（NPU 硬约束 -fa 1）。

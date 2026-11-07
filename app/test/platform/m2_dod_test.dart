@@ -107,7 +107,7 @@ void main() {
     'CUDA 线：speed 档选 CUDA → 4B 答一问 → 绑定表回写 t/s',
     () async {
       final inf = LocalServerInference.instance;
-      await inf.setRoutingTier('speed');
+      await inf.setRoutingTier('gpu');
       // 自愈历史遗留的 broken（前轮失败 tearDown 未恢复时仍能跑）；
       // vulkan 标 broken：speed 档在 vulkan(实测 166 t/s) 在场时会选它
       // （策略正确行为），此测试专验 CUDA 线可用性 → 暂时屏蔽 vulkan。
@@ -152,7 +152,7 @@ void main() {
     'Vulkan 线：CUDA 与 NPU 都不可用后 speed 档改道 Vulkan → 4B 答一问',
     () async {
       final inf = LocalServerInference.instance;
-      await inf.setRoutingTier('speed');
+      await inf.setRoutingTier('gpu');
       // 注意绑定表是全局共享 sqlite 连接（sqflite_ffi 同路径复用连接），
       // 全测试共享一个 store，tearDownAll 统一关（分测 close 会误伤他人）。
       final b = await BindingsStore.open(WangCaiPaths.enginePaths());
@@ -245,11 +245,11 @@ void main() {
       : false;
 
   test(
-    'Spark NPU 改道（真机锚）：npu 档 + Spark → NPU 被 admission 拦 → 自动改道 GPU 拉起',
+    'Spark NPU 核心档拒绝（真机锚）：npu 档 + Spark → 拒绝 + 指引，绝不改道 GPU',
     () async {
-      // 2026-11-07 真机实锤行为语义：Auto/npu 档下 NPU 被 Spark 禁入规则拦
-      // → 路由自动改道 Vulkan/CUDA（日志留禁入文案+建议）——用户重跑原操作
-      // 直接落健康引擎，不再歇菜；钉选 wangcai-npu 才是硬拒（单测锚）。
+      // 2026-11-07 用户拍板（路由重设计）：NPU 是核心，GPU 是旁路——NPU 被
+      // admission 拦 = 明确报错 + 指引（外挂在哪），绝不静默滑进独显。
+      // 真机锚定：loadModel false、无 server 拉起、日志含缺陷单原因+外挂指引。
       final inf = LocalServerInference.instance;
       await inf.unloadModel(); // 前测残留防御（失败中止不会走各测的尾清场）
       await inf.setRoutingTier('npu');
@@ -265,23 +265,17 @@ void main() {
             if (m != null) print('[engine] $m');
           });
       final ok = await inf.loadModel(spark.path, nCtx: 4096);
-      expect(ok, isTrue, reason: 'NPU 被禁入拦后必须自动改道，而不是加载失败');
-      final landed = inf.debugHost()!.instanceId;
-      expect(landed, isNot('wangcai-npu'),
-          reason: '改道目标绝不能还是 NPU（真机落点：Vulkan/CUDA）');
+      expect(ok, isFalse, reason: 'NPU 核心档对 Spark 必须拒绝（引擎病无配置可救）');
+      // debugHost 是取证语义（失败也保留 host 对象），断言看 baseUrl：
+      // null = 没有任何旁路 server 被拉起（换不换道是用户的决定）。
+      expect(inf.debugHost()?.baseUrl, isNull,
+          reason: '绝不拉起任何旁路 server');
       expect(logs.join(), contains('defect-npu-spark-b12034'),
-          reason: '改道理由必须留痕（禁入文案+建议）');
-      final sb = StringBuffer();
-      await for (final tok in inf.completionWithMessages(
-          prompt: '2+2 等于几？只报数字', messagesJson: '[]', maxTokens: 24)) {
-        sb.write(tok);
-      }
-      // ignore: avoid_print
-      print('Spark@$landed: ${sb.toString().trim()}');
-      expect(sb.toString().trim(), isNotEmpty, reason: '改道后必须真能答');
-      await inf.unloadModel();
+          reason: '拒绝原因必须留痕');
+      expect(logs.join(), contains('GPU 外挂'),
+          reason: '拒绝必须告诉用户旁路在哪（可操作的指引）');
     },
-    timeout: const Timeout(Duration(minutes: 10)),
+    timeout: const Timeout(Duration(minutes: 5)),
     skip: sparkSkip,
   );
 

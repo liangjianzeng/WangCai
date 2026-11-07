@@ -58,15 +58,11 @@ void main() {
     // 是空文本文件，真跑 --list-devices 只会引入无意义的异步与噪声。
     probeRunnerForTest = (_, __) async =>
         'OPENVINO3: GGML_OPENVINO_DEVICE=NPU - fake';
-    // 电源状态定值：本测试的前提是「speed 启发 → CUDA 胜出」，那只在
-    // 插电时成立；拔电会触发 auto 档 NPU 加权，开发机插拔状态会翻转断言。
-    LocalServerInference.instance.onBatteryForTest = false;
   });
 
   tearDown(() async {
     probeRunnerForTest = null;
     clearOpenvinoProbeCache();
-    LocalServerInference.instance.onBatteryForTest = null;
     try {
       await LocalServerInference.instance.unloadModel();
     } catch (_) {}

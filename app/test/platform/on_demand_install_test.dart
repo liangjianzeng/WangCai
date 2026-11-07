@@ -74,15 +74,13 @@ void main() {
     inf.attachRegistryForTest(reg, paths: EnginePaths.root(tmp));
     probeRunnerForTest = (_, __) async =>
         'OPENVINO2: GGML_OPENVINO_DEVICE=NPU - fake';
-    inf.onBatteryForTest = false;
-    await inf.setRoutingTier('speed');
+    await inf.setRoutingTier('gpu');
     inf.engineStoreForTest = null;
     inf.lastInstallSuggestion = null;
   });
 
   tearDown(() async {
     inf.engineStoreForTest = null;
-    inf.onBatteryForTest = null;
     probeRunnerForTest = null;
     clearOpenvinoProbeCache();
     try {

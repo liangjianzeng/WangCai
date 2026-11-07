@@ -68,7 +68,6 @@ void main() {
       parentEnv: const {'PATH': r'C:\Windows', 'SystemRoot': r'C:\Windows'},
     );
     inf.attachRegistryForTest(reg, paths: paths);
-    inf.onBatteryForTest = false;
     inf.npuDriverForTest = () async => '32.0.100.3800';
     await inf.setRoutingTier('npu');
   });
@@ -76,8 +75,6 @@ void main() {
   tearDown(() async {
     probeRunnerForTest = null;
     clearOpenvinoProbeCache();
-    profileOverrideForTest = null;
-    inf.onBatteryForTest = null;
     inf.npuDriverForTest = null;
     try {
       await inf.unloadModel();

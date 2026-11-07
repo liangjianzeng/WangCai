@@ -68,15 +68,13 @@ void main() {
     inf.attachRegistryForTest(reg, paths: EnginePaths.root(tmp));
     probeRunnerForTest = (_, __) async =>
         'OPENVINO2: GGML_OPENVINO_DEVICE=NPU - fake';
-    // 路由/电源定值：这些测试测的是参数链不是选路，显式档位 + 插电。
-    inf.onBatteryForTest = false;
+    // 路由定值：这些测试测的是参数链不是选路，显式档位。
     await inf.setRoutingTier('npu');
   });
 
   tearDown(() async {
     probeRunnerForTest = null;
     clearOpenvinoProbeCache();
-    inf.onBatteryForTest = null;
     try {
       await inf.unloadModel();
     } catch (_) {}
@@ -98,6 +96,7 @@ void main() {
     List<String>? customArgs,
     String? engineId,
     String? draftPath,
+    bool expectOk = true,
   }) async {
     final ok = await inf.loadModel('${tmp.path}${Platform.pathSeparator}$name',
         nCtx: nCtx,
@@ -106,7 +105,11 @@ void main() {
         customArgs: customArgs,
         engineId: engineId,
         draftPath: draftPath);
-    expect(ok, isTrue, reason: 'fake probe/health 恒通，$name 应加载成功');
+    // expectOk=false：admission 拒绝类用例（2026-11-07 模型禁入）——加载被
+    // 前置拒是**预期**，断言交给用例本体（检查不拉 server）。
+    if (expectOk) {
+      expect(ok, isTrue, reason: 'fake probe/health 恒通，$name 应加载成功');
+    }
   }
 
   test('出厂基线：无 dc 无模型级 → ctx=全局默认 4096、无 chunk env、无尾参',
@@ -191,10 +194,14 @@ void main() {
 
   test('admission 模型禁入（2026-11-07）：Spark@NPU 前置拦，不拉必歇菜的 server',
       () async {
-    await loadNpu('Spark-X2.6-4B-Fake.gguf');
+    // 2026-11-07 路由重设计后语义加强：核心档拒绝后**不改道**（旧语义会
+    // 偷跑 Vulkan——用户实测抱怨「一加载就搞进独显去了」）。
+    await loadNpu('Spark-X2.6-4B-Fake.gguf', expectOk: false);
     expect(spawns.byExe['npu'], isNull,
         reason: 'Spark 4B 在 NPU 引擎 decode 特性失效（缺陷单），'
             '必须 admission 前置拦截而不是拉起 server 让用户等死');
+    expect(spawns.byExe['cuda'], isNull,
+        reason: '核心档拒绝 = 拒绝，绝不自动改道旁路（换引擎是用户的决定）');
   });
 
   test('引擎钉选压过路由档位：npu 档下钉 cuda → cuda 拉起、npu 被互斥停',

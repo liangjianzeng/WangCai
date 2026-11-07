@@ -219,10 +219,12 @@ class _EngineManagerSectionState extends ConsumerState<EngineManagerSection> {
                 const SizedBox(width: 12),
                 Expanded(
                   child: SegmentedButton<String>(
+                    // 两档制（2026-11-07 用户拍板）：NPU 是本项目核心本体；
+                    // GPU/iGPU/CPU 只是旁路扩展——显式选择「GPU 外挂」才走，
+                    // 绝不自动改道（旧「自动」档的偷跑独显语义已废除）。
                     segments: const [
-                      ButtonSegment(value: 'auto', label: Text('自动')),
-                      ButtonSegment(value: 'npu', label: Text('NPU 优先')),
-                      ButtonSegment(value: 'speed', label: Text('速度优先')),
+                      ButtonSegment(value: 'npu', label: Text('⭐ NPU（核心）')),
+                      ButtonSegment(value: 'gpu', label: Text('GPU 外挂')),
                     ],
                     selected: {_tier},
                     showSelectedIcon: false,
@@ -409,11 +411,57 @@ class _EngineManagerSectionState extends ConsumerState<EngineManagerSection> {
             ),
 
             const SizedBox(height: 8),
-            for (final inst in reg.instances)
-              if (reg.manifestOf(inst.id).kind != 'remote')
-                _InstanceRow(key: ValueKey(inst.id), registry: reg, instanceId: inst.id)
-              else
-                _RemoteRow(key: ValueKey(inst.id), instanceId: inst.id),
+
+            // ---- 实例卡分组（2026-11-07 用户拍板：NPU 是核心，一眼可见）----
+            // 核心组置顶；GPU/远端归「旁路」组并标注「显式选择才启用」。
+            ...reg.instances
+                .where((i) =>
+                    reg.manifestOf(i.id).kind != 'remote' &&
+                    reg.manifestOf(i.id).capabilities.devices
+                        .any((d) => d.toUpperCase().contains('NPU')))
+                .map((inst) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Row(children: [
+                        Text('⭐ 核心引擎（NPU）',
+                            style: TextStyle(
+                                fontWeight: FontWeight.w600, fontSize: 13)),
+                        SizedBox(width: 6),
+                        Text('本项目主打 · 模型默认在此加载',
+                            style: TextStyle(
+                                fontSize: 11, color: Colors.grey.shade600)),
+                      ]),
+                      _InstanceRow(
+                          key: ValueKey(inst.id),
+                          registry: reg,
+                          instanceId: inst.id),
+                    ])),
+            if (reg.instances.any((i) =>
+                reg.manifestOf(i.id).kind == 'remote' ||
+                !reg.manifestOf(i.id).capabilities.devices
+                    .any((d) => d.toUpperCase().contains('NPU')))) ...[
+              const SizedBox(height: 6),
+              Row(children: [
+                Text('旁路引擎（GPU / 远端）',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w600, fontSize: 13)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    '旁路能力扩展：仅当你在此显式选择「GPU 外挂」档或钉选具体引擎时才启用；'
+                    'NPU 核心档永不自动改道到这里。',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                  ),
+                ),
+              ]),
+              for (final inst in reg.instances)
+                if (reg.manifestOf(inst.id).kind == 'remote')
+                  _RemoteRow(key: ValueKey(inst.id), instanceId: inst.id)
+                else if (!reg.manifestOf(inst.id).capabilities.devices
+                    .any((d) => d.toUpperCase().contains('NPU')))
+                  _InstanceRow(
+                      key: ValueKey(inst.id),
+                      registry: reg,
+                      instanceId: inst.id),
+            ],
           ],
         ),
       ),
