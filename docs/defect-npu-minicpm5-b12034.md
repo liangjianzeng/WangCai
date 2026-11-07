@@ -16,6 +16,23 @@
 - DEVICE_LOST 后设备可自愈（Omni 探针立即可用），无需重启。
 - MiniCPM5 图形态：1308 节点，`first='embd'`（embd 输入命名），thinking 模型。
 
+## 全 ctx 扫描（2026-11-07 下午，logs/minicpm5_ctx_scan.txt、mcpm_scan_*.resp.json）
+
+单轮串行、每档「编译 + health + 真实推理」三关：
+
+| ctx | 功能 | 吞吐（predicted_per_second） |
+|---|---|---|
+| 512 | ✅ 唯一功能完整档（thinking 输出真实连贯：「We need to answer 1+1 with just the number」） | 2.0 t/s（健康线 Omni 21.9 的 1/10） |
+| 1024 | ⚠️ 能跑但已废 | 0.14 t/s（一 token 7 秒） |
+| 2048 | ❌ decode level 256 图撞设备预算（UNINITIALIZED）→ 内置回退（关 decode levels 重试全 ctx 图）**同样 UNINITIALIZED** → 请求死 | — |
+| 4096 | ❌ chunk256 首执行 DEVICE_LOST / chunk128 编译静默崩（见上表） | — |
+
+**结论：无安全档位。** 512 只是「能跑」，2 t/s 对 thinking 模型（CoT n≥192）
+意味着一轮思考 96 秒起，且与健康线差 10 倍——整个 NPU 路线对该模型是性能废，
+不只是 ctx 上限问题。结构解读（推测，标注为解读）：42 层薄层设计使每步
+42 次层调度、层数维度堆出 4B 级设备足迹；Omni ~26 层 × 2560 宽层数少宽度大，
+同一 NPU 全天 21.9 t/s。
+
 ## 处置
 
 - admission 禁入（wangcai-npu manifest `ifModelGlob: MiniCPM5-2B*.gguf`）：
