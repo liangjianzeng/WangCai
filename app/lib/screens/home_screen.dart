@@ -3641,6 +3641,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final conversations = ref.watch(conversationsProvider);
     final settings = ref.watch(settingsProvider);
     final pinned = settings.pinnedConversationIds.toSet();
+    // 批量选择：当前搜索过滤下仍可见的会话 id——全选/反选只作用于看得见的项，
+    // 与下方列表共用同一份分组函数，「看得见 = 可选」口径一致；
+    // 被搜索过滤掉的已选项保持原样（计数仍可见，可反选收敛）。
+    final visibleIds = _conversationSelectionMode
+        ? _visibleConversationIds(conversations, pinned)
+        : const <String>{};
+    final allVisibleSelected = visibleIds.isNotEmpty &&
+        visibleIds.every(_selectedConversations.contains);
     return Column(
       children: [
           _buildProjectHeader(),
@@ -3704,15 +3712,39 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     },
                   ),
           ),
-          // 批量选择底部操作栏
+          // 批量选择底部操作栏：计数+全选/反选一行、删除整宽一行——
+          // 面板最窄 300px，四个元素挤一行会溢出（2026-11-07 用户点单全选/反选）。
           if (_conversationSelectionMode) ...[
             const Divider(height: 1),
             Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 0),
               child: Row(children: [
                 Text('已选 ${_selectedConversations.length} 个'),
                 const Spacer(),
-                OutlinedButton.icon(
+                // 全部可见会话都已在选中集里时置灰（再点无变化）；
+                // 搜出结果后「全选→删除选中」是批量清理的高频路径。
+                TextButton(
+                  onPressed: allVisibleSelected
+                      ? null
+                      : () => _selectAllVisibleConversations(
+                          conversations, pinned),
+                  child: const Text('全选'),
+                ),
+                // 反选兼作「取消全选」：全选后一键反选 = 可见项全部退出选择。
+                TextButton(
+                  onPressed: visibleIds.isEmpty
+                      ? null
+                      : () => _invertConversationSelection(
+                          conversations, pinned),
+                  child: const Text('反选'),
+                ),
+              ]),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
                   onPressed: _selectedConversations.isEmpty
                       ? null
                       : _confirmBulkDelete,
@@ -3720,10 +3752,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   label: Text('删除选中(${_selectedConversations.length})'),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.red.shade700,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
                   ),
                 ),
-              ]),
+              ),
             ),
           ],
         ],
@@ -4205,6 +4236,30 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (confirmed == true) await _deleteConversation(c.id);
   }
 
+  /// 批量选择口径内的「可见会话」：当前搜索过滤 + 分组视图展平出的 id 集
+  /// （与 _buildConversationList 同源同参——列表画什么，全选/反选就作用于什么）。
+  Set<String> _visibleConversationIds(
+      List<Conversation> conversations, Set<String> pinned) {
+    return _groupConversations(conversations, pinned)
+        .expand((e) => e.value)
+        .map((c) => c.id)
+        .toSet();
+  }
+
+  /// 全选：可见会话全部加入选中集（幂等；已选项不受影响）。
+  void _selectAllVisibleConversations(
+      List<Conversation> conversations, Set<String> pinned) {
+    setState(() => _selectedConversations
+        .addAll(_visibleConversationIds(conversations, pinned)));
+  }
+
+  /// 反选：对可见会话逐个取反（选↔未选）；搜索过滤掉的已选项保持原样。
+  void _invertConversationSelection(
+      List<Conversation> conversations, Set<String> pinned) {
+    setState(() => invertConversationSelectionWithin(
+        _selectedConversations, _visibleConversationIds(conversations, pinned)));
+  }
+
   /// 批量删除：先弹确认框，再逐个删除选中的会话。
   Future<void> _confirmBulkDelete() async {
     final n = _selectedConversations.length;
@@ -4283,6 +4338,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     if (diff == 1) return '昨天 $hhmm';
     if (t.year == now.year) return '${t.month}/${t.day} $hhmm';
     return '${t.year}/${t.month}/${t.day} $hhmm';
+  }
+}
+
+/// 会话反选核心（纯逻辑，可测）：对 [selected] 中属于 [visibleIds] 的项逐个取反；
+/// 不在可见集里的已选项保持原样——搜索过滤不该吞掉用户之前勾的选择。
+void invertConversationSelectionWithin(
+    Set<String> selected, Set<String> visibleIds) {
+  for (final id in visibleIds) {
+    if (!selected.remove(id)) {
+      selected.add(id);
+    }
   }
 }
 
