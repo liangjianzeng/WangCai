@@ -66,13 +66,27 @@ void main() {
     expect(omni!.mmproj, isNotNull); // 视觉塔两文件形态
     expectSize(omni.mmproj!.sizeBytes, 270576544, 'omni mmproj');
 
-    // catalog 无条目的预置（qwen3-4b）→ null，UI 保留手动放文件指引。
-    expect(entryOf('qwen3-4b'), isNull);
+    // 2026-11-07 用户点单补齐：qwen3-4b 从「无条目 → 手动放文件指引」翻为
+    // 真下载条目（NPU 4B 副靶历史验证线，sha=本机已验证文件实测）。
+    final qwen3 = entryOf('qwen3-4b');
+    expect(qwen3?.id, 'Qwen3-4B-Q4_K_M');
+    expectSize(qwen3!.sizeBytes, 2497280256, 'qwen3-4b');
+
+    // qwen3.5-2b preset（同日新增留位）→ 目录 MTP UD-Q4_K_XL 条目。
+    final qwen352b = entryOf('qwen3.5-2b');
+    expect(qwen352b?.id, 'qwen3.5-2b-mtp-ud-q4_k_xl');
+    expectSize(qwen352b!.sizeBytes, 1384902048, 'qwen3.5-2b');
   });
 
   test('映射条目满足下载契约：落盘名命中 glob + 三镜像 + 真 sha256', () {
-    for (final name in ['lfm3-1.7b', 'minicpm5-2b',
-        'spark-x2.6-4b', 'lfm3-omni-2b']) {
+    for (final name in [
+      'lfm3-1.7b',
+      'minicpm5-2b',
+      'spark-x2.6-4b',
+      'lfm3-omni-2b',
+      'qwen3-4b',
+      'qwen3.5-2b',
+    ]) {
       final preset = npu.presetByName(name)!;
       final e = entryOf(name)!;
       // 落盘名 = DownloadService 命名规则 `{id}.gguf`，必须能被预置扫到。

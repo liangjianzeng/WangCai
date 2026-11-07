@@ -182,6 +182,48 @@
       }
     },
     {
+      "id": "Qwen3-4B-Q4_K_M",
+      "name": "Qwen3 4B (Q4_K_M 智能体)",
+      "type": "text",
+      "mirrors": [
+        {
+          "url": "https://modelscope.cn/api/v1/models/Qwen/Qwen3-4B-GGUF/resolve/master/Qwen3-4B-Q4_K_M.gguf",
+          "source": "modelscope"
+        },
+        {
+          "url": "https://hf-mirror.com/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+          "source": "hf-mirror"
+        },
+        {
+          "url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/main/Qwen3-4B-Q4_K_M.gguf",
+          "source": "huggingface"
+        }
+      ],
+      "sizeGB": 2.33,
+      "sizeMBDisplay": "2.3 GB",
+      "recommended": true,
+      "minRamMB": 3072,
+      "sha256Hash": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+      "tags": [
+        "推荐",
+        "智能体"
+      ],
+      "agentCapabilities": {
+        "nativeToolCall": true,
+        "maxContextTokens": 40960,
+        "recommendedNctx": 32768,
+        "mtpSupported": false
+      },
+      "agentDefaults": {
+        "maxRounds": 4,
+        "tokensPerRound": 384,
+        "enabledTools": [
+          "get_time",
+          "calculator"
+        ]
+      }
+    },
+    {
       "id": "qwen3.5-0.8b-mtp-ud-q4_k_xl",
       "name": "Qwen3.5-0.8B (MTP UD-Q4_K_XL)",
       "type": "vision",
@@ -248,36 +290,36 @@
       "mtp": true,
       "mirrors": [
         {
-          "url": "https://hf-mirror.com/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/Qwen3.5-2B-UD-Q4_K_XL.gguf",
-          "source": "hf-mirror"
+          "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/master/Qwen3.5-2B-UD-Q4_K_XL.gguf",
+          "source": "modelscope"
         },
         {
-          "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/Qwen3.5-2B-UD-Q4_K_XL.gguf",
-          "source": "modelscope"
+          "url": "https://hf-mirror.com/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/Qwen3.5-2B-UD-Q4_K_XL.gguf",
+          "source": "hf-mirror"
         }
       ],
       "sizeGB": 1.29,
       "sizeMBDisplay": "1.29 GB",
       "recommended": true,
       "minRamMB": 2048,
-      "sha256Hash": null,
+      "sha256Hash": "9f7b15d04cf2d5878c8122a7c181dbc09f050cd66080ce3374576e734ccb0910",
       "tags": [
         "推荐"
       ],
       "mmproj": {
         "mirrors": [
           {
-            "url": "https://hf-mirror.com/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/mmproj-F16.gguf",
-            "source": "hf-mirror"
+            "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/master/mmproj-F16.gguf",
+            "source": "modelscope"
           },
           {
-            "url": "https://modelscope.cn/api/v1/models/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/mmproj-F16.gguf",
-            "source": "modelscope"
+            "url": "https://hf-mirror.com/unsloth/Qwen3.5-2B-MTP-GGUF/resolve/main/mmproj-F16.gguf",
+            "source": "hf-mirror"
           }
         ],
         "sizeMB": 637.3,
         "sizeMBDisplay": "637 MB",
-        "sha256Hash": null
+        "sha256Hash": "6385ece50b2c6898e417170867b5a05fb8a0bb1c205f2e7e4e0698e51c0b65c8"
       }
     },
     {

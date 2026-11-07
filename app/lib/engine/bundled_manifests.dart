@@ -44,6 +44,9 @@ const String wangcaiNpuManifestJson = '''
     {"name": "qwen3.5-4b", "modelGlob": "Qwen3.5-4B*.gguf", "chunk": 128,
      "paramsB": 4.0, "device": "NPU",
      "note": "副靶（Qwen3.5-4B，unsloth Q4_K_M，qwen35 混合 SSM/attention 架构、248k 填充词表）：preset 留位但当前准入被 admission 拦截——GatedDeltaNet 融合算子以自定义 opset 序列化，NPU driver VCL（32.0.100.4512）反序列化即失败，graph 编译期死（2026-11-07 三路收口实锤：ref 分解死于 phase-padded 图形状、CPU 分段死于打包边界 reshape、naive 分段死于 NPUW 断言；引擎代码已回滚 pristine，driver 升级支持该 opset 后零改动复验）。chunk128 对齐 4B 级先例；embed 表 248k×2560 比 Qwen3-4B 大 64%，host 预算风险更高，ctx>4096 的 OUT_OF_HOST_MEMORY 禁入规则照常生效"},
+    {"name": "qwen3.5-2b", "modelGlob": "Qwen3.5-2B*.gguf", "chunk": 128,
+     "paramsB": 2.0, "device": "NPU",
+     "note": "副靶（unsloth Qwen3.5-2B-MTP-GGUF，UD-Q4_K_XL 1.29GB，目录已在架）：preset 留位，2026-11-07 尚未本机实测——同 qwen35 混合 SSM/attention 架构，GatedDeltaNet opset 风险与 4B 同源（defect-npu-qwen35-b12034：4B 编译期死，driver VCL 不支持该 opset），2B 不预设结论、暂不加家族级禁入（错拦方向违背「错放危害<错拦」语义），实测后按结果补注或立规则；chunk128 对齐 2B 先例（Omni 同款）；MTP 头在 llama.cpp/NPU 侧同样未验证"},
     {"name": "spark-x2.6-4b", "modelGlob": "Spark-X2.6-4B*.gguf", "chunk": 128,
      "paramsB": 4.0, "device": "NPU",
      "note": "副靶（讯飞 Spark-X2.6-4B Q4_K_M）：chunk128。2026-11-06 换机矩阵把 DDL env 摘了（defect-npu-spark-b12034）：b12034 引擎上 DDL=1 对 4B Spark 直接 ZE_RESULT_ERROR_UNINITIALIZED（Compute error 500，两跑复现）；摘掉后 4096 档 0.42 t/s 引擎地板（不崩不 OOM，按 HANDOFF §4 条款拍板摘除，保守可跑）。历史「DDL 必需」口径属旧引擎（spark-npu-accept.ps1 3/3、HANDOFF 2026-11-01），引擎/驱动更新后按缺陷单复验"},
@@ -52,7 +55,10 @@ const String wangcaiNpuManifestJson = '''
      "note": "Omni-2B 主打线（chunk128 实测口径），挂 mmproj 视觉塔后 NPU 直接读图（2026-11-07 引擎修复，defect-npu-mtmd；带图首图/新尺寸有编译成本）。2026-11-06 矩阵实锤：DISABLE_DECODE_LEVELS=1 是 Omni 深层 decode 崩溃元凶（4096 档 1.7 vs 19.8 t/s、8192 档 0.8 vs 15.2 t/s，512 档无恙故旧配方未暴露），本 preset 已摘除该 env；超 4096 的 FOLD=YES 由网关自动挂（8192 无 FOLD 会塌到 0.3 t/s，勿关）"},
     {"name": "minicpm5-2b", "modelGlob": "MiniCPM5-2B*.gguf", "chunk": 256,
      "paramsB": 2.6, "device": "NPU",
-     "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：preset 留位但当前 admission 禁入——4096 基本档两种配方双死（chunk256 首执行 DEVICE_LOST 挂设备、chunk128 编译静默崩，2026-11-07 本机实锤；旧机验收仅 ctx 512），详见 defect-npu-minicpm5-b12034；thinking 模型 CoT 预算 n≥192"}
+     "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：preset 留位但当前 admission 禁入——4096 基本档两种配方双死（chunk256 首执行 DEVICE_LOST 挂设备、chunk128 编译静默崩，2026-11-07 本机实锤；旧机验收仅 ctx 512），详见 defect-npu-minicpm5-b12034；thinking 模型 CoT 预算 n≥192"},
+    {"name": "neohorse-1-4b", "modelGlob": "NeoHorse-1-4B*.gguf", "chunk": 128,
+     "paramsB": 4.0, "device": "NPU",
+     "note": "副靶（TokenRhythm NeoHorse-1 4B Q4_K_M，2.5GB，262k ctx，原生工具调用，下载目录已在架）：preset 留位，2026-11-07 尚未本机实测——不预设性能/稳定性结论；chunk128 对齐 4B 家族先例（qwen3-4b/qwen3.5-4b/spark 同款），paramsB 4.0 自动落入通用 4B admission（ctx≤512 放行、>512 前置拦+改道建议），实测后按结果补注"}
   ],
   "admission": [
     {"ifModelGlob": "Spark-X2.6-4B*.gguf", "ifCtxGt": 512,

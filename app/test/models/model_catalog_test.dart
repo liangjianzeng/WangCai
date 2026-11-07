@@ -9,9 +9,19 @@ void main() {
   test('目录可加载且含新增智能体模型', () async {
     final models = await ModelCatalog.load();
 
-    // 目录随发版增删模型（2026-11-05 同步至 25 个：v0.0.5 合流新增两条；
+    // 目录随发版增删模型（2026-11-07 同步至 26 个：补 Qwen3-4B 下载条目；
     // 含本机预置的 Clover 实验条目）；数量变动时同步本断言防误删。
-    expect(models.length, 25);
+    expect(models.length, 26);
+
+    // Qwen3-4B（2026-11-07 用户点单补下载地址）：NPU 4B 副靶的历史验证线
+    // （status.md 3/3）一直只有 preset 没有目录条目，用户在 NPU 预置区看到
+    // 缺文件却无处可下。sha = 本机已验证文件实测（与官方 HF LFS oid 一致）。
+    final qwen3 = models.firstWhere((m) => m.id == 'Qwen3-4B-Q4_K_M');
+    expect(qwen3.bestMirrorUrl, contains('Qwen3-4B-Q4_K_M.gguf'));
+    expect(qwen3.mirrors.first.source, 'modelscope',
+        reason: '首选镜像应是魔搭（网络现实）');
+    expect(qwen3.sha256Hash,
+        '7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5');
 
     // Spark-X2.6-4B（2026-10-30 替换 X2.5）：架构与 X2.5 逐字相同，官方 GGUF
     // general.architecture = spark2_5，本仓 llama.cpp（b11267 ≥ 官方门槛 b10828）

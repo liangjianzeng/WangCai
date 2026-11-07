@@ -163,6 +163,58 @@ void main() {
       expect(bundledManifests()['llamacpp-vulkan']!.capabilities.vision, isTrue);
     });
 
+    test('neohorse-1-4b 留位（2026-11-07 用户点单）：glob 对准目录文件名，通用 4B admission 接管', () {
+      // NeoHorse-1 4B（TokenRhythm，Q4_K_M 2.5GB，262k ctx，原生工具调用）：
+      // 下载目录 models_catalog.json 已在架，本次只补 NPU preset 留位——
+      // 尚未本机实测，性能/稳定性不预设结论；paramsB 4.0 自动落入通用 4B
+      // 规则（ctx≤512 放行、>512 拦+改道建议），实测后按结果补注。
+      final npu = bundledManifests()['wangcai-npu']!;
+      final p = npu.presetByName('neohorse-1-4b');
+      expect(p, isNotNull);
+      expect(p!.modelGlob, 'NeoHorse-1-4B*.gguf');
+      expect(p.paramsB, 4.0);
+      expect(p.chunk, 128, reason: 'chunk128 对齐 4B 家族先例（qwen3-4b 同款）');
+      // glob 大小写不敏感，对准目录下载产物的真实文件名。
+      expect(modelGlobMatches(p.modelGlob!, 'NeoHorse-1-4B-Q4_K_M.gguf'), isTrue);
+      // admission 语义：ctx≤512 放行（保守可用档），>512 被通用 4B 规则拦。
+      expect(
+          npu.checkAdmission(
+              ctx: 512, paramsB: 4.0, modelFile: 'NeoHorse-1-4B-Q4_K_M.gguf'),
+          isEmpty);
+      expect(
+          npu.checkAdmission(
+              ctx: 4096, paramsB: 4.0, modelFile: 'NeoHorse-1-4B-Q4_K_M.gguf'),
+          isNotEmpty,
+          reason: '4B 级 ctx>512 前置拦（通用规则，未实测前照常生效）');
+    });
+
+    test('qwen3.5-2b 留位（2026-11-07 用户点单）：glob 对准目录条目，2B 不落 4B 拦截', () {
+      // unsloth Qwen3.5-2B-MTP UD-Q4_K_XL（目录已在架）：同 qwen35 混合架构，
+      // GatedDeltaNet opset 风险与 4B 同源（defect-npu-qwen35-b12034）——
+      // 2B 未单独实测，不预设结论也不加家族级禁入（错放危害<错拦语义）。
+      final npu = bundledManifests()['wangcai-npu']!;
+      final p = npu.presetByName('qwen3.5-2b');
+      expect(p, isNotNull);
+      expect(p!.modelGlob, 'Qwen3.5-2B*.gguf');
+      expect(p.paramsB, 2.0);
+      expect(p.chunk, 128, reason: 'chunk128 对齐 2B 先例（Omni 同款）');
+      // 目录落盘名 {qwen3.5-2b-mtp-ud-q4_k_xl}.gguf 必须在 glob 射程内。
+      expect(modelGlobMatches(p.modelGlob!, 'qwen3.5-2b-mtp-ud-q4_k_xl.gguf'),
+          isTrue);
+      // paramsB 2.0 < 3.5 → 通用 4B 规则不牵连，全 ctx 放行（未实测前不预设）。
+      expect(
+          npu.checkAdmission(
+              ctx: 4096,
+              paramsB: 2.0,
+              modelFile: 'qwen3.5-2b-mtp-ud-q4_k_xl.gguf'),
+          isEmpty);
+      // 4B 邻档（qwen3.5-4b）在 ctx>512 照常被 qwen35 专属规则拦，不受影响。
+      expect(
+          npu.checkAdmission(
+              ctx: 4096, paramsB: 4.0, modelFile: 'Qwen3.5-4B-Q4_K_M.gguf'),
+          isNotEmpty);
+    });
+
     test('全局 ctx 口径（2026-11-06）：preset 不再携带 ctx；deep 档位已退役', () {
       // per-model ctx 退役：ctx 只有一个口子（设置页滑杆 → routing.json，
       // 见 local_server_inference.setGlobalCtx）；preset 只剩质量臂数据
