@@ -123,6 +123,16 @@ class TrayService with TrayListener, WindowListener {
   }
 
   @override
+  void onTrayIconRightMouseDown() {
+    // 2026-11-07 右键没菜单的真正根因（tray_manager 0.2.4 windows 端）：
+    // WM_RBUTTONUP 只 InvokeMethod("onTrayIconRightMouseDown") 发 Dart 事件，
+    // **native 不自动弹菜单**（TrackPopupMenu 只在 popUpContextMenu 里，
+    // GTK/macOS 端才自动弹——平台差异坑）。菜单设得再好，没人调这句就永远
+    // 「右键毛都没有」。前两次修复栽的正是这一步。
+    trayManager.popUpContextMenu();
+  }
+
+  @override
   void onTrayMenuItemClick(MenuItem item) {
     switch (item.key) {
       case 'show':
