@@ -29,7 +29,7 @@ dependencies:
   uuid: ^4.5.1
   # HTTP (model download)
   dio: ^5.7.0
-  ffi: ^2.1.0 # Windows 电源状态 FFI（power_monitor.dart；原为传递依赖）
+  ffi: ^2.1.0 # FFI 辅助（截屏剪贴板取图 screenshot_capture.dart；原电源感知用）
   # Permissions（Windows 下存储类直接放行、microphone 走系统弹窗；见 platform/ 适配）
   permission_handler: ^11.3.1
   # Image picker
@@ -61,6 +61,8 @@ dependencies:
   tray_manager: ^0.2.0
   # 紧凑窄长窗（消息 APP 形态）：取屏幕尺寸算紧凑窗高度（window_manager 无 getScreen）
   screen_retriever: ^0.2.2
+  # 截屏兜底链 CF_DIB→BMP→PNG 的解码/编码（纯 Dart）
+  image: ^4.3.0
 
 
 dependency_overrides:

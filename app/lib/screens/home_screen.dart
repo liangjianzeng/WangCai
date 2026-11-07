@@ -31,8 +31,10 @@ import '../agent/session/store.dart' show JsonlSessionStore;
 import '../providers/settings_provider.dart' show settingsProvider;
 import '../services/attachment_service.dart'
     show kMaxAttachments, kSupportedExtensions;
+import 'package:window_manager/window_manager.dart';
 import '../platform/inference_gateway.dart';
 import '../platform/tray_service.dart';
+import '../platform/screenshot_capture.dart';
 import '../platform/window_geometry.dart' show WindowCompact;
 import '../providers/shared_providers.dart';
 import '../providers/context_usage_provider.dart' show contextUsageProvider;
@@ -413,9 +415,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     }
   }
 
+  /// 截屏（2026-11-07 用户拍板：桌面「拍照」退役后的正确形态）：
+  /// 隐藏主窗（别挡住要截的目标）→ 系统 Snipping 框选（Win+Shift+S）→
+  /// 剪贴板取回 PNG → 走图片附件链路。失败/取消静默提示。
+  Future<void> _captureScreenshot() async {
+    await windowManager.hide(); // 系统 overlay 覆盖全屏，但本窗可能挡桌面内容
+    String? path;
+    try {
+      path = await captureScreenToImageFile();
+    } catch (e) {
+      debugPrint('[screenshot] capture failed: $e');
+    }
+    await windowManager.show();
+    if (!mounted) return;
+    final shotPath = path;
+    if (shotPath == null || shotPath.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('未截取到内容（按 Esc 取消或超时）')),
+      );
+      return;
+    }
+    setState(() {
+      if (_selectedImagePaths.length < 10) _selectedImagePaths.add(shotPath);
+    });
+    _warnIfImageDropped();
+  }
+
   /// 统一附件入口：图片与文件附件（智能体模式）合并为一个「+」按钮。
   /// v0.0.4 桌面化：bottom sheet → AlertDialog（手机件清退，计划书 §5.1）；
   /// 「拍照」随 Windows 单平台退役（桌面无摄像头），图片走 file_picker 多选。
+  /// 2026-11-07 用户拍板：桌面形态补「截屏」（系统框选 → 挂图附件）。
   Future<void> _showAttachSheet() async {
     final agentOn = ref.read(settingsProvider).agentEnabled;
     final theme = Theme.of(context);
@@ -426,6 +455,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         content: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              leading: const Icon(Icons.content_cut, color: Colors.blue),
+              title: const Text('截屏'),
+              subtitle: const Text('系统框选（Win+Shift+S），可框任意窗口'),
+              onTap: () => Navigator.pop(ctx, _AttachSource.screenshot),
+            ),
             ListTile(
               leading: const Icon(Icons.image_outlined, color: Colors.green),
               title: const Text('选择图片'),
@@ -453,6 +488,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     );
     if (!mounted || source == null) return;
     switch (source) {
+      case _AttachSource.screenshot:
+        await _captureScreenshot();
+        break;
       case _AttachSource.gallery:
         await _pickImage();
         break;
@@ -4249,7 +4287,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 }
 
 /// 统一附件面板的选项（拍照 / 相册 / 文件）。
-enum _AttachSource { none, gallery, file }
+enum _AttachSource { none, screenshot, gallery, file }
 
 /// 附件面板的单行选项：着色圆角图标 + 标题 + 副标题，整行水波纹点按。
 class _AttachOption extends StatelessWidget {
