@@ -233,17 +233,61 @@ class EngineRegistry {
   File get _storeFile =>
       File('${paths.dataDir.path}${Platform.pathSeparator}engines.json');
 
-  Future<void> load() async {
-    if (!await _storeFile.exists()) return;
+  /// 读取 engines.json 覆盖内置实例。返回人类可读摘要（调用方落日志）：
+  /// null = 文件不存在；'loaded N entries …'；'parse-failed: …'（坏文件回退内置）。
+  ///
+  /// 覆盖语义（2026-11-07 装机排障定案）：存储的 binaryPath 是**上次运行时
+  /// 的缓存**，不是命令——内置实例在本次启动已做过新鲜解析（wangcai-npu =
+  /// 装机位探测），新鲜解析有效时存储值不夺权；存储值本身指向不存在文件时
+  /// 丢弃（回退 manifest.binary）。实战实锤：开发机 engines.json 残留
+  /// `E:/DTXY/src/llama/…`（junction 指向 D 盘，existsSync 间歇性假阴），
+  /// 覆盖掉装机位正确路径 → 装机 App「NPU 引擎不可用（未安装或未启用）」。
+  Future<String?> load() async {
+    if (!await _storeFile.exists()) return null;
     try {
       final j = jsonDecode(await _storeFile.readAsString());
       if (j is List) {
+        var kept = 0;
+        final notes = <String>[];
         for (final e in j) {
           final inst = EngineInstance.fromJson((e as Map).cast<String, dynamic>());
+          // PATH 前置：存储条目剔除不存在目录后若为空 → **回退内置新鲜解析**
+          // （装机 ovlibs）。2026-11-07 两连实锤：engines.json 里开发机残留
+          // '/DTXY/…' 垃圾前缀本就该丢，但丢光后置 null 会把内置实例的
+          // ovlibs 一起冲掉——装机位不是自包含布局（tbb/NPU 插件在 ovlibs
+          // 子目录），PATH 一丢 server 即 c0000142 起进程死。
+          final storedPrefixes =
+              inst.pathPrefixes?.where((p) => Directory(p).existsSync()).toList();
+          if (storedPrefixes == null || storedPrefixes.isEmpty) {
+            inst.pathPrefixes = _instances[inst.id]?.pathPrefixes;
+          } else {
+            inst.pathPrefixes = storedPrefixes;
+          }
+          final fresh = _instances[inst.id]?.binaryPath;
+          if (fresh != null && fresh.isNotEmpty && File(fresh).existsSync()) {
+            // 新鲜解析有效 → 存储的 binaryPath 只是缓存，不夺权。
+            if (inst.binaryPath != fresh) {
+              notes.add('${inst.id}: stored-path 让位新鲜解析'
+                  '（stored=${inst.binaryPath}）');
+            }
+            inst.binaryPath = fresh;
+          } else if (inst.binaryPath != null &&
+              inst.binaryPath!.isNotEmpty &&
+              !File(inst.binaryPath!).existsSync()) {
+            // 新鲜解析无效且存储值也指向不存在文件 → 陈旧缓存丢弃。
+            notes.add('${inst.id}: stored-path 指向不存在文件，丢弃'
+                '（${inst.binaryPath}）');
+            inst.binaryPath = null;
+          }
           _instances[inst.id] = inst;
+          kept++;
         }
+        return ['loaded $kept entries', ...notes].join('\n');
       }
-    } catch (_) {/* 坏文件回退内置 */}
+      return 'unexpected shape: ${j.runtimeType}';
+    } catch (e) {
+      return 'parse-failed: $e';
+    }
   }
 
   Future<void> save() async {

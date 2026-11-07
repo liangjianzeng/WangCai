@@ -8,6 +8,7 @@ import 'package:tray_manager/tray_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../services/settings_service.dart' show InferenceSettings;
+import 'app_log.dart';
 import 'window_geometry.dart';
 
 class TrayService with TrayListener, WindowListener {
@@ -108,11 +109,24 @@ class TrayService with TrayListener, WindowListener {
   /// 卸载模型后退出（退出前释放 NPU/显存进程，避免驻留 server）。
   Future<void> quit() async {
     _quitting = true;
+    // 逐步留痕（2026-11-07 用户报「退出整机卡一下」）：时间戳差值直接给出
+    // 哪一步慢——saveFromWindow / setPreventClose / destroy 各自的耗时
+    // 平时都该是毫秒级。
+    AppLog.write('[quit] begin pid=$pid closeToTray=$_closeToTray');
     try {
       await WindowGeometry.saveFromWindow(); // v0.0.4 Phase 3：退出前记忆几何
+      AppLog.write('[quit] geometry saved');
       await windowManager.setPreventClose(false);
+      AppLog.write('[quit] preventClose off');
       await windowManager.destroy(); // 正确退出路径（M0-2 实测）
-    } catch (_) {
+      // destroy 返回后**立即**终止进程（2026-11-07 事件日志实锤：曾经只等
+      // runner 自然退出，13s 后 flutter_windows.dll c000041d 死后用户回调
+      // 崩溃 + WER 全量转储 = 用户感知的「退出整机卡一下」）。此时窗口已灭、
+      // 几何/设置/会话均已落盘，没有需要留给插件回调的活窗口。
+      AppLog.write('[quit] destroy returned → exit(0)（防死后回调 + WER 转储）');
+      exit(0);
+    } catch (e) {
+      AppLog.write('[quit] exception: $e → exit(0)');
       exit(0);
     }
   }
@@ -160,6 +174,7 @@ class TrayService with TrayListener, WindowListener {
     // 直接 hide 不悬挂）。_quitting 时放行 → destroy 真退出。
     // 2026-11-06：设置「关闭时最小化到托盘」关 → 关窗直接退出（quit 内部已
     // saveFromWindow + setPreventClose(false) + destroy）。
+    AppLog.write('[quit] onWindowClose closeToTray=$_closeToTray quitting=$_quitting');
     if (_quitting) return;
     if (!_closeToTray) {
       await quit();

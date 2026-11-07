@@ -22,6 +22,7 @@ import '../engine/npu_profiles.dart';
 import '../engine/process_ledger.dart';
 import '../engine/routing_policy.dart';
 import 'inference_backend.dart';
+import 'app_log.dart';
 import 'wangcai_paths.dart';
 
 /// llama-server SSE chunk → UI 可见 token 流的纯逻辑状态机（可单测）。
@@ -137,6 +138,9 @@ class LocalServerInference implements InferenceBackend {
     try {
       onLoadingLog?.call(m);
     } catch (_) {}
+    // 黑匣子（2026-11-07 装机排障教训：推理日志只进内存弹层，关了就丢，
+    // 现场「NPU 引擎不可用」无从取证）——同一份进 %APPDATA%\WangCai\logs\app.log。
+    if (m != null && m.isNotEmpty) AppLog.write('[infer] $m');
   }
 
   // ── 引擎装配 ──────────────────────────────────────────────────────────
@@ -145,21 +149,29 @@ class LocalServerInference implements InferenceBackend {
     final existing = _registry;
     if (existing != null) return existing;
     final paths = _enginePaths();
+    final serverExe = WangCaiPaths.wangcaiServerExe();
+    final ovLibs = WangCaiPaths.ovLibsDirs();
+    // 装配留痕（2026-11-07 装机排障：解析结果只在这里可见，弹层永远等不到）。
+    AppLog.write('[registry] dataRoot=${paths.dataDir.path} '
+        'serverExe=$serverExe ovLibsDirs=$ovLibs');
     final reg = EngineRegistry.dev(
       paths: paths,
-      wangcaiServerExe: WangCaiPaths.wangcaiServerExe() ?? 'llama-server.exe',
-      ovLibsDirs: WangCaiPaths.ovLibsDirs(),
+      wangcaiServerExe: serverExe ?? 'llama-server.exe',
+      ovLibsDirs: ovLibs,
     );
-    await reg.load();
+    final loadNote = await reg.load();
+    AppLog.write('[registry] engines.json load: ${loadNote ?? 'file-absent'}');
     if (!_swept) {
       _swept = true;
       try {
         // 账本扫孤儿（M0-3 附 实测：杀外壳必留孤儿 llama-server 占端口/内存）。
         for (final o in await ProcessLedger(paths).sweep(killOrphans: true)) {
           debugPrint('[LocalServer] 清理上次崩溃遗留进程 pid=${o.pid} port=${o.port}');
+          AppLog.write('[registry] 清理孤儿 llama-server pid=${o.pid} port=${o.port}');
         }
       } catch (e) {
         debugPrint('[LocalServer] ledger sweep failed: $e');
+        AppLog.write('[registry] ledger sweep failed: $e');
       }
     }
     return _registry = reg;
@@ -362,8 +374,15 @@ class LocalServerInference implements InferenceBackend {
           modelFile: _basename(path));
       if (v.isNotEmpty) blocked[inst.id] = v.join('；');
     }
+    // 路由现场快照（2026-11-07 装机排障：npus.isEmpty 无从取证）——候选、
+    // 档位、拦截集一行打尽，NPU 候选为何缺席/为何被拦这里必有答案。
+    final tier = routingTierFromName(await _tierSetting());
+    AppLog.write('[route] model=${_basename(path)} tier=${tier.name} '
+        'candidates=${cands.map((c) => '${c.instanceId}:${c.enabled ? "on" : "off"}'
+            '/${c.installed ? "in" : "out"}').join(' ')} '
+        'blocked={${blocked.keys.join(',')}}');
     return chooseEngine(RoutingRequest(
-      tier: routingTierFromName(await _tierSetting()),
+      tier: tier,
       candidates: cands,
       bindings: bindingsForModel,
       blocked: blocked,

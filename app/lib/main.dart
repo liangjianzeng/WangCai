@@ -21,6 +21,7 @@ import 'providers/chat_provider.dart' show currentConversationIdProvider;
 import 'providers/settings_provider.dart' show settingsProvider;
 import 'screens/home_screen.dart';
 import 'platform/inference_gateway.dart';
+import 'platform/app_log.dart';
 import 'platform/tray_service.dart';
 import 'platform/wangcai_paths.dart';
 import 'platform/window_geometry.dart';
@@ -75,6 +76,13 @@ Future<void> main() async {
   // 一次性搬进 %APPDATA%\WangCai。幂等、失败静默、旧数据不删（.migrated 备份）。
   // 必须在任何 store/goal/skill 初始化之前跑。
   WangCaiPaths.migrateLegacyHome();
+
+  // 启动标记（黑匣子锚点，2026-11-07 装机排障补）：每次运行一行，日志按此
+  // 分段；顺带把进程视角的引擎解析结果落盘——GUI 进程与测试进程的解析差异
+  // 只有这里看得见。
+  AppLog.write('[startup] WangCai pid=$pid exe=${Platform.resolvedExecutable} '
+      'dataRoot=${WangCaiPaths.dataRoot().path} '
+      'serverExe=${WangCaiPaths.wangcaiServerExe()}');
 
   // v0.0.3 项目层级（设计 §12 Phase 1）：会话→项目解析器接线 +
   // 旧平铺会话一次性幂等迁移。迁移失败绝不阻塞启动——读取侧本来就有
