@@ -207,6 +207,17 @@ void main() {
         reason: '核心档拒绝 = 拒绝，绝不自动改道旁路（换引擎是用户的决定）');
   });
 
+  test('admission 模型禁入（2026-11-07）：MiniCPM5-2B@NPU 前置拦（4096 基本档双配方双死）',
+      () async {
+    // defect-npu-minicpm5-b12034：chunk256 首执行 DEVICE_LOST 挂设备、
+    // chunk128 编译静默崩——4096 基本档无可用配方，壳层拦 + 改道指引。
+    await loadNpu('MiniCPM5-2B-Fake.gguf', expectOk: false);
+    expect(spawns.byExe['npu'], isNull,
+        reason: 'MiniCPM5-2B 过不了 4096 基本档（缺陷单），前置拦截');
+    expect(spawns.byExe['cuda'], isNull,
+        reason: '核心档拒绝不改道');
+  });
+
   test('视觉前置门（2026-11-07 第二幕）：没挂 mmproj 的模型带图 → 明确报错；挂了 → 放行',
       () async {
     // defect-npu-mtmd 引擎修复后（NPU 带图三线 E2E 全绿），wangcai-npu

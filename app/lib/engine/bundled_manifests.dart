@@ -52,7 +52,7 @@ const String wangcaiNpuManifestJson = '''
      "note": "Omni-2B 主打线（chunk128 实测口径），挂 mmproj 视觉塔后 NPU 直接读图（2026-11-07 引擎修复，defect-npu-mtmd；带图首图/新尺寸有编译成本）。2026-11-06 矩阵实锤：DISABLE_DECODE_LEVELS=1 是 Omni 深层 decode 崩溃元凶（4096 档 1.7 vs 19.8 t/s、8192 档 0.8 vs 15.2 t/s，512 档无恙故旧配方未暴露），本 preset 已摘除该 env；超 4096 的 FOLD=YES 由网关自动挂（8192 无 FOLD 会塌到 0.3 t/s，勿关）"},
     {"name": "minicpm5-2b", "modelGlob": "MiniCPM5-2B*.gguf", "chunk": 256,
      "paramsB": 2.6, "device": "NPU",
-     "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：默认臂 1.7B-like chunk256+decode levels；OOM 回落 spark 臂（chunk128+DISABLE_DECODE_LEVELS）——tools/minicpm5-npu-accept.ps1；thinking 模型 CoT 预算 n≥192"}
+     "note": "副靶（OpenBMB MiniCPM5-2B Q4_K_M，llama-arch thinking 模型，ModelScope）：preset 留位但当前 admission 禁入——4096 基本档两种配方双死（chunk256 首执行 DEVICE_LOST 挂设备、chunk128 编译静默崩，2026-11-07 本机实锤；旧机验收仅 ctx 512），详见 defect-npu-minicpm5-b12034；thinking 模型 CoT 预算 n≥192"}
   ],
   "admission": [
     {"ifModelGlob": "Spark-X2.6-4B*.gguf", "ifCtxGt": 512,
@@ -63,7 +63,10 @@ const String wangcaiNpuManifestJson = '''
      "suggestion": "改用 CUDA/Vulkan 引擎跑 Qwen3.5-4B（unsloth Q4_K_M 已就位），或 NPU 档配 LFM3-1.7B / Omni-2B；NPU driver 升级后按 defect 文档复验条件重测"},
     {"ifCtxGt": 512, "ifParamsBAtLeast": 3.5,
      "message": "4B 级模型在 NPU 上超 512 上下文不可用（2026-11-07 本机实锤：Qwen3-4B@4096 首请求即 L0 UNINITIALIZED 500 Compute error；Spark@4096 预算非确定性塌方 0.42 t/s——bindings 旧档已按 stable 语义收回）；ctx≤512 确定可用（Spark warm ≈6 t/s、Qwen3-4B 历史 1.3 t/s）",
-     "suggestion": "模型级 ctx 调到 ≤512，或 NPU 档配 LFM3-1.7B / Omni-2B（全 ctx 健康 21.6/21.9 t/s）"}
+     "suggestion": "模型级 ctx 调到 ≤512，或 NPU 档配 LFM3-1.7B / Omni-2B（全 ctx 健康 21.6/21.9 t/s）"},
+    {"ifModelGlob": "MiniCPM5-2B*.gguf",
+     "message": "MiniCPM5-2B 在 NPU 引擎上过不了 4096 基本档（2026-11-07 本机实锤两种配方双死：preset 现配方 chunk256 编译过但首执行 ZE_RESULT_ERROR_DEVICE_LOST 设备挂死 server 随之崩；4B 家族先例 chunk128 编译管线卡死 >8min 后进程静默崩溃无任何错误行；旧机验收脚本 minicpm5-npu-accept.ps1 只验过 ctx 512——4096 从未被任何配方验证；对照组 Omni 同 ctx 同 DLL 全天健康，MiniCPM5 arch 特异性，详见 defect-npu-minicpm5-b12034）",
+     "suggestion": "改用 CUDA/Vulkan 引擎跑 MiniCPM5-2B，或 NPU 档配 LFM3-1.7B / Omni-2B（Omni 已支持 NPU 读图）；NPU driver/引擎更新后按 defect 文档复验条件重测"}
   ],
   "timingHints": {"coldCompileMs": 600000, "warmMs": 15000},
   "hardFlagsHint": "-fa 1 -np 1 -dev OPENVINO3 --jinja（server 无 -st，M0-3 实测）"
