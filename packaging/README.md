@@ -1,6 +1,6 @@
 # 汪柴 Windows 打包（便携包 + 安装包）
 
-单一入口是 `build-installer.ps1`（版本串以脚本内 `$ver` 为准，当前 0.0.5）；
+单一入口是 `build-installer.ps1`（版本串以脚本内 `$ver` 为准，当前 0.0.6）；
 `wangcai-setup.iss` 只从脚本组装的 `stage\` 取料，不再各走各的源（2026-11-06 对齐）。
 
 ## 构建

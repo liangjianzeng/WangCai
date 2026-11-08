@@ -8,7 +8,24 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 ## [Unreleased]
 
-0.0.5 合流（6c72416）之后已入库、随下一版发布的改动。
+此处累积已入库、随下一版发布的改动。
+
+## [0.0.6] — 2026-11-08 · 装机版引擎根因修复 + 4B 重估（`b7cb158`/`7a7326b`）
+
+### 修复 —— 装机版「NPU 引擎不可用」两层根因 + 退出卡顿（2026-11-07 用户装机实测）
+
+- **engines.json 存储值改「缓存不夺权」语义**：内置实例启动时新鲜解析（wangcai-npu=
+  装机位探测），有效时存储的 binaryPath 不夺权；指向不存在文件时丢弃回退
+  manifest.binary（实锤：开发机缓存经 junction 指 D 盘，existsSync 间歇假阴 →
+  候选 on/out → npus 空 → 全模型拒载「NPU 引擎不可用」）。
+- **PATH 前置重建**：存储前剔除不存在目录后为空则回退内置新鲜解析——装机位非
+  自包含（tbb/NPU 插件在 ovlibs 子目录），前缀被冲 → server c0000142 起进程即死。
+- **退出卡顿修复**：`destroy()` 返回后立即 `exit(0)`——事件日志实锤退出 13s 后
+  flutter_windows.dll c000041d 死后用户回调 + WER 全量转储 = 用户「退出整机卡一下」。
+- **常驻黑匣子日志**：新增 `platform/app_log.dart`（`%APPDATA%\WangCai\logs\app.log`
+  1MB 轮转），启动标记/引擎装配/engines.json 解析裁决/路由候选快照/退出各步全留痕。
+- 验证：装机 App 全链路（路由 on/in → server 存活 → NPU 编译 → 预热完成引擎就绪）；
+  engine 96 绿；全锦 1434/23/0；analyze 零新增。
 
 ### 变更 —— 4B 重估轮：Qwen3-4B NPU 诊断（2026-11-08）
 

@@ -1,6 +1,6 @@
-; 汪柴 v0.0.5 安装包（Inno Setup 6；设计 §8/§9 M4）。
+; 汪柴 v0.0.6 安装包（Inno Setup 6；设计 §8/§9 M4）。
 ; 每用户安装（无管理员权限；卸载清 HKCU\Software\WangCai 由 Uninstall 清理项覆盖）。
-; 产物：WangCai-0.0.5-win-x64-Setup.exe
+; 产物：WangCai-0.0.6-win-x64-Setup.exe
 ;
 ; 构建步骤（packaging/build-installer.ps1 自动化，**唯一入口**）：
 ;   1. cd app && flutter build windows --release
@@ -12,7 +12,7 @@
 
 #define MyAppName "汪柴"
 #define MyAppNameEn "WangCai"
-#define MyAppVersion "0.0.5"
+#define MyAppVersion "0.0.6"
 #define MyAppExe "WangCai.exe"
 
 [Setup]

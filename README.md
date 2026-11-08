@@ -110,12 +110,12 @@ LFM3-1.7B `Q4_K_M`（1049 MB）· 24 层（13 门控短卷积 + 5 滑动窗口@2
 
 ## 下载安装（Windows 用户看这里）
 
-从 [GitHub Releases](https://github.com/liangjianzeng/WangCai/releases/latest) 获取（当前 **0.0.5**，2026-11-07 重打包）：
+从 [GitHub Releases](https://github.com/liangjianzeng/WangCai/releases/latest) 获取（当前 **0.0.6**，2026-11-08）：
 
 | 产物 | 适合 | 说明 |
 |---|---|---|
-| **[Setup.exe 安装包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.5/WangCai-0.0.5-win-x64-Setup.exe)**（68 MB）· 推荐 | 大多数人 | 标准 Windows 安装向导：每用户安装**无需管理员**，可选桌面图标 / 开机自启；壳 + **汪柴 NPU 引擎 + OpenVINO 运行时**一体安装；卸载保留会话库/模型/编译缓存 |
-| **[portable.zip 便携包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.5/WangCai-0.0.5-win-x64-portable.zip)**（108 MB） | 免安装 / U 盘 | 解压即用，跑 `App\WangCai.exe`（布局同安装器） |
+| **[Setup.exe 安装包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-Setup.exe)**（68 MB，sha256 `3bc173f9…`）· 推荐 | 大多数人 | 标准 Windows 安装向导：每用户安装**无需管理员**，可选桌面图标 / 开机自启；壳 + **汪柴 NPU 引擎 + OpenVINO 运行时**一体安装；卸载保留会话库/模型/编译缓存 |
+| **[portable.zip 便携包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-portable.zip)**（108 MB，sha256 `700d5277…`） | 免安装 / U 盘 | 解压即用，跑 `App\WangCai.exe`（布局同安装器） |
 
 装完第一件事：设置页 → 模型 → 下载 **LFM3-1.7B** 起步，引擎管理确认 NPU 就绪。硬件门槛见[硬件要求](#硬件要求)。
 
@@ -297,7 +297,8 @@ Unreleased 段的日期是"该改动在硬件上被验证的日期"）。
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| Unreleased | 2026-11-05 → 11-07 | **NPU 世代自适应**（一/二/三代探测 + clamp 链 + 实测上探闭环）；**语音 ASR&TTS 重构 M0–M3**（唤醒 KWS/麦克风仲裁/离线 TTS）；**路由两档制**（NPU 核心档拒绝不改道，GPU/远端降为显式外挂旁路）；**NPU 视觉引擎修复**（mtmd 二幕破案，`vision=true` 回填，带图前置门 per-model 判定）；**4B admission 收紧族**（Spark 深上下文拦 / Qwen3.5 编译禁入 / MiniCPM5 禁入，含模型维度 ifModelGlob）；**桌面细节批**（截屏、关窗托盘可配 + 紧凑窄窗、狗头托盘菜单、会话批量全选/反选）；**模型清单扩容**（neohorse-1-4b / qwen3.5-2b NPU preset + Qwen3-4B 下载条目补齐，下载契约扩到 6 预置） |
+| Unreleased | — | 此后改动见 [CHANGELOG.md](CHANGELOG.md) Unreleased 段 |
+| [0.0.6](CHANGELOG.md) | 2026-11-07 → 11-08 | **装机版引擎根因修复**（engines.json「缓存不夺权」+ PATH 前置重建修「NPU 引擎不可用」、退出 c000041d/WER 卡顿修复、`app.log` 黑匣子日志）；**4B 重估轮**（Qwen3-4B「1.3 t/s」翻案为 bench 口径 8.15/10.82、ctx>512 包线墙实测钉准、P14e 杠杆跨模型迁移 +33%）；并入 2026-11-05→07 批次：**NPU 世代自适应**（一/二/三代探测 + clamp 链 + 实测上探闭环）、**语音 ASR&TTS 重构 M0–M3**、**路由两档制**、**NPU 视觉引擎修复**、**4B admission 收紧族**（Spark 深上下文拦 / Qwen3.5 编译禁入 / MiniCPM5 禁入）、**模型清单扩容**（neohorse-1-4b / qwen3.5-2b + 下载契约 6 预置） |
 | [0.0.5](CHANGELOG.md) | 2026-11-05（tag 11-06） | 引擎线合流收官：P15–P20 入册（`KV_HOST_WRITE` 翻转修复、chunk 自动升档）、16K 深上下文预设、引擎按需安装改 **zip 流式解包**（修 CUDA 800MB+ 包下载完成即崩）；侧边栏常显收窄 |
 | 0.0.4 | 2026-11-05 | **数据家统一**四家并一家进 `%APPDATA%\WangCai`（搬迁语义 6 用例）；路由定调 **NPU 主打**；JSONL 真相源通电（write-through + fast path）；窗口几何记忆/单实例/快捷键等桌面基本件；交互去手机化 |
 | 0.0.3 | 2026-11-04 | **桌面独立化 Phase 0–4**：脱离上游 TongYi-Lite 独立演进（品牌全线换装汪柴）、项目 × 工作空间层级 + SQLite v7、引擎管理重写（本地登记 + 参数优先级链 + cuda/vulkan 按需下载）、`local_exec` 桌面执行层 |
