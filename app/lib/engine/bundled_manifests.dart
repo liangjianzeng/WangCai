@@ -68,7 +68,7 @@ const String wangcaiNpuManifestJson = '''
      "message": "Qwen3.5-4B 在 NPU 引擎上编译即失败：GatedDeltaNet 融合算子（qwen35 混合 SSM/attention 架构独有）以自定义 opset 序列化，NPU driver VCL 反序列化不支持（「Cannot create GatedDeltaNet layer ... unsupported opset: extension」，driver 32.0.100.4512，2026-11-07 实锤；引擎侧 ref 分解/CPU 分段/naive 分段三路收口均不可行，详见 defect-npu-qwen35-b12034）",
      "suggestion": "改用 CUDA/Vulkan 引擎跑 Qwen3.5-4B（unsloth Q4_K_M 已就位），或 NPU 档配 LFM3-1.7B / Omni-2B；NPU driver 升级后按 defect 文档复验条件重测"},
     {"ifCtxGt": 512, "ifParamsBAtLeast": 3.5,
-     "message": "4B 级模型在 NPU 上超 512 上下文不可用（2026-11-07 本机实锤：Qwen3-4B@4096 首请求即 L0 UNINITIALIZED 500 Compute error；Spark@4096 预算非确定性塌方 0.42 t/s——bindings 旧档已按 stable 语义收回）；ctx≤512 确定可用（Spark warm ≈6 t/s、Qwen3-4B 历史 1.3 t/s）",
+     "message": "4B 级模型在 NPU 上超 512 上下文不可用（2026-11-07 本机实锤：Qwen3-4B@4096 首请求即 L0 UNINITIALIZED 500 Compute error；Spark@4096 预算非确定性塌方 0.42 t/s——bindings 旧档已按 stable 语义收回；2026-11-08 bench 复核：Qwen3-4B@ctx2176 编译 39s 过、首执行同样 UNINITIALIZED——包线墙实测钉在 512 上方）；ctx≤512 确定可用（Spark warm ≈6 t/s、Qwen3-4B bench 口径 tg 8.15 t/s——「历史 1.3 t/s」系旧引擎时代遗留口径，已翻案，详见 docs/HANDOFF.md 2026-11-08 节）",
      "suggestion": "模型级 ctx 调到 ≤512，或 NPU 档配 LFM3-1.7B / Omni-2B（全 ctx 健康 21.6/21.9 t/s）"},
     {"ifModelGlob": "MiniCPM5-2B*.gguf",
      "message": "MiniCPM5-2B 在 NPU 引擎上过不了 4096 基本档（2026-11-07 本机实锤两种配方双死：preset 现配方 chunk256 编译过但首执行 ZE_RESULT_ERROR_DEVICE_LOST 设备挂死 server 随之崩；4B 家族先例 chunk128 编译管线卡死 >8min 后进程静默崩溃无任何错误行；旧机验收脚本 minicpm5-npu-accept.ps1 只验过 ctx 512——4096 从未被任何配方验证；对照组 Omni 同 ctx 同 DLL 全天健康，MiniCPM5 arch 特异性，详见 defect-npu-minicpm5-b12034）",

@@ -10,6 +10,16 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 0.0.5 合流（6c72416）之后已入库、随下一版发布的改动。
 
+### 变更 —— 4B 重估轮：Qwen3-4B NPU 诊断（2026-11-08）
+
+- admission 消息修正：「Qwen3-4B 历史 1.3 t/s」为旧引擎时代遗留口径，本机实测 ctx≤512 档
+  decode 8.15 t/s（生产 KVH=0 口径）；规则结构不动。
+- P14e 杠杆（KV_HOST_WRITE=1）跨模型迁移实锤：Qwen3-4B tg 8.15→10.82（+33%），与 Spark
+  （+38%）同族——P14e 根因修复收益面 +1 模型；文本闸未过前 KVH=1 仍禁入生产。
+- 4B@NPU 包线墙实测：ctx>512（bench ctx2176）编译能过、首执行 UNINITIALIZED，
+  ifCtxGt 512 由保守拦升级为实测拦。
+- 明细与测量纪律教训见 docs/HANDOFF.md 2026-11-08 节。
+
 ### 新增 —— NPU 世代自适应（2026-11-05/06，Core Ultra 一/二/三代）
 
 - 探测从「只取 `OPENVINO{n}` 下标」升级为 `NpuDeviceInfo` 全貌（型号名/npuCode/MiB）；
