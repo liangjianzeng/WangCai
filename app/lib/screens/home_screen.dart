@@ -29,6 +29,8 @@ import '../providers/project_provider.dart'
 import '../project/project.dart' show Project;
 import '../agent/session/store.dart' show JsonlSessionStore;
 import '../providers/settings_provider.dart' show settingsProvider;
+import '../providers/image_gen_provider.dart' show ImageGenJob, imageGenJobsProvider;
+import '../services/image_gen_service.dart' show kImageGenSlashPrefix;
 import '../services/attachment_service.dart'
     show kMaxAttachments, kSupportedExtensions;
 import 'package:window_manager/window_manager.dart';
@@ -138,6 +140,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
 
   // Image picker state
   final List<String> _selectedImagePaths = [];
+
+  /// 入口①：🎨 chip 点亮态（one-shot：本条消息按生图请求发送，发送后自动熄灭）。
+  bool _imageGenMode = false;
+
+  /// 生图入口可用性：设置开关开启即放行（地址空时服务侧会给出「未配置」
+  /// 诊断文案，比 UI 层静默拦截更可诊断；Linux 未填地址同样先放进来）。
+  bool get _imageGenEnabledNow =>
+      ref.read(settingsProvider).imageGenEnabled;
 
   /// 智能体附件（≤5 个，WP-A）。
   final List<String> _selectedFilePaths = [];
@@ -789,6 +799,32 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     final attachmentPaths = List<String>.from(_selectedFilePaths);
     if (text.isEmpty && imagePaths.isEmpty) return;
 
+    // ---- 入口①：图像生成（🎨 chip 点亮 或 「/图 」前缀）----
+    // 确定性直调，不经 LLM（离线可用、零 token、参数不被模型传歪）。
+    // 有生图请求时忽略附件选区（生图只消费文本提示词）。
+    final isImageGen =
+        _imageGenMode || text.startsWith(kImageGenSlashPrefix);
+    if (isImageGen && text.isNotEmpty) {
+      if (!_imageGenEnabledNow) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: const Text('图像生成未启用/未配置（设置 → API 接入 → 图像生成）',
+                style: TextStyle(color: Colors.white))));
+        return;
+      }
+      FocusScope.of(context).unfocus();
+      _textController.clear();
+      _drafts.remove(_currentConversationId);
+      setState(() {
+        _imageGenMode = false;
+        _selectedImagePaths.clear();
+        _selectedFilePaths.clear();
+      });
+      await ref
+          .read(chatNotifierProvider.notifier)
+          .generateImageDirect(_currentConversationId, text);
+      return;
+    }
+
     // 插件接管（chain 槽 `app.composer.takeover`）：先问一圈"这段输入你接不接"。
     // 没有插件填这个槽时 resolveTakeover 返回 null —— 行为与今天逐字一致。
     final takeover = resolveTakeover(
@@ -927,10 +963,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // 且收窄到与图标按钮同宽的量级（见 AppRail）。手动 Logo 收起仍可用，
     // 收起后窄窗给汉堡（直达「会话」面板）、宽窗给恢复 Logo。
     final narrowWindow = MediaQuery.sizeOf(context).width < 700;
-    // 2026-11-06 消息 APP 形态：紧凑窗口模式 → 左栏恒收起（纯单列聊天）；
-    // 非紧凑时仍跟随手动 _railCollapsed（Logo 收起 / 恢复）。
-    final railVisible =
-        !(_railCollapsed || ref.watch(settingsProvider).compactWindow);
+    // 2026-11-10 用户拍板（撤销 2026-11-06「紧凑态左栏恒收起」口径）：
+    // 紧凑窗口模式下左栏**照常显示**（实际使用形态就是紧凑+左栏并存）。
+    // rail 可见性只跟手动折叠走——这是唯一真源，AppBar leading 同源消费。
+    // 双狗头的正解 = leading 只在 rail 真正隐藏（手动折叠）时才出现，
+    // 而不是把 rail 藏掉（第一版修复方向错了，用户实测后否决）。
+    final railVisible = !_railCollapsed;
 
     // harness 布局：左栏（能力/配置入口）+ 主区（AppBar + 消息 + composer）。
     // 面板从左滑入、只盖主区（含 AppBar），rail 恒可见。
@@ -1012,10 +1050,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     color: Theme.of(context).colorScheme.outlineVariant),
               ),
               toolbarHeight: 44,
+              // leading 语义（2026-11-10 收口 + 用户复裁）：rail 可见 → 无
+              // leading（全窗唯一狗头在左栏）；rail 被手动折叠后——窄窗给
+              // 汉堡（开「会话」面板），宽窗给恢复 Logo（点击还原 rail）。
+              // 紧凑窗口模式不再参与判定：左栏在，leading 就不让位。
               leading: railVisible
                   ? null
                   : (narrowWindow
-                      // 窄窗：汉堡 = 开「会话」面板（面板滑入覆盖，任何宽度可用）。
+                      // 汉堡：开「会话」面板（面板滑入覆盖，任何宽度可用）。
                       ? IconButton(
                           tooltip: '会话',
                           onPressed: () => _railPanel.toggle('chats'),
@@ -1145,7 +1187,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     // 别的会话里）时，会话入口挂徽标——这是"转圈看不见审批"的列表级补全。
     final anyWaiting =
         ref.watch(pendingApprovalConversationProvider) != null;
-    // 收起条件：手动折叠（Logo 点击）或窄窗自动收起（聊天工具形态）。
+    // 收起条件（单一真源）：**只**跟手动折叠（Logo 点击）走。
+    // 紧凑窗口模式不再收 rail（2026-11-10 用户拍板：紧凑+左栏并存是实际
+    // 使用形态；第一版修复把 rail 藏掉属于方向错误，已撤销）。
     if (_railCollapsed) {
       return const SizedBox.shrink();
     }
@@ -2374,8 +2418,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
         // 智能体回合的思考已在 AgentTurnBlock 内（不在列表尾重复）。
         final simpleChatThinking =
             generating && !uiState.running && uiState.thinking.isNotEmpty;
-        final extraItem =
-            (pendingQuestion != null ? 1 : 0) + (simpleChatThinking ? 1 : 0);
+        // 入口①生图占位（**临时态不落库**，评审定案）：当前会话有任务才渲染。
+        final imageJob =
+            ref.watch(imageGenJobsProvider)[_currentConversationId];
+        final extraItem = (pendingQuestion != null ? 1 : 0) +
+            (simpleChatThinking ? 1 : 0) +
+            (imageJob != null ? 1 : 0);
         return MediaQuery(
           data: MediaQuery.of(context)
               .copyWith(textScaler: TextScaler.linear(textScale)),
@@ -2388,8 +2436,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             padding: const EdgeInsets.symmetric(vertical: 8),
             itemCount: units.length + extraItem,
             itemBuilder: (context, index) {
-              // 末项区：提问卡 / 简单聊天流式思考卡。
+              // 末项区：提问卡 / 简单聊天流式思考卡 / 生图占位卡（最末）。
               if (index >= units.length) {
+                if (imageJob != null &&
+                    index == units.length + extraItem - 1) {
+                  return _buildImageGenJobCard(imageJob);
+                }
                 if (simpleChatThinking &&
                     pendingQuestion == null &&
                     index == units.length) {
@@ -2596,6 +2648,26 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   _buildContextUsageRing(),
                   _buildQuickActions(),
                   const Spacer(),
+                  // 入口①：图像生成 chip（点亮 = 本条按生图请求发送）。
+                  // 服务不可用时的降级在发送路径处理（SnackBar 指路设置），
+                  // chip 本身保持可点——可点才能发现「没配置」这件事。
+                  IconButton(
+                    visualDensity: PluginInputIcon.kDensity,
+                    icon: Icon(
+                      Icons.palette_outlined,
+                      size: PluginInputIcon.kIconSize,
+                      color: _imageGenMode
+                          ? Theme.of(context).colorScheme.primary
+                          : null,
+                    ),
+                    tooltip: '图像生成（点亮后本条消息按提示词出图；也可用「/图 提示词」）',
+                    constraints: const BoxConstraints(
+                        minWidth: PluginInputIcon.kBoxSize,
+                        minHeight: PluginInputIcon.kBoxSize),
+                    padding: EdgeInsets.zero,
+                    onPressed: () =>
+                        setState(() => _imageGenMode = !_imageGenMode),
+                  ),
                   // 唤醒对话入口（T2.2 模拟态：按钮触发，KWS 常驻 M3）；
                   // 进行中变为高亮 stop 态，再点一次收尾（浮条里也有「结束」）。
                   IconButton(
@@ -2649,6 +2721,45 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   /// 环 = 占用比例（蓝 <60% / 橙 ≥60% / 红 ≥85% 阈值配色），环心 = 百分比数字；
   /// 无数据时灰环显示「—」。点按 → 上下文详情面板（数字/来源/压缩记录/
   /// 手动压缩）。智能体回合执行中禁用点按（防误触打断注意力）。
+  /// 入口①生图占位卡（临时态不落库；messagesProvider 500ms 轮询会带动
+  /// 本卡重建，秒数自然走动）。取消 = 真 CancelToken 掐断 HTTP 请求。
+  Widget _buildImageGenJobCard(ImageGenJob job) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Card(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: [
+              const SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  '🎨 正在生成 ${job.size}…'
+                  '（已 ${job.elapsedSecs(DateTime.now())}s'
+                  '；首次加载模型约 1 分钟）',
+                  style: TextStyle(
+                      fontSize: 13, color: theme.colorScheme.onSurfaceVariant),
+                ),
+              ),
+              TextButton(
+                onPressed: () => ref
+                    .read(chatNotifierProvider.notifier)
+                    .cancelImageGen(),
+                child: const Text('取消'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   // ---- composer 计划执行条（2026-10-25）：默认折叠一行读数
   // （📋 计划 · done/total · 进行中步骤），点开展开步骤清单（最高 6 项，
   // 超出滚动）；点步骤行切换状态。无活跃计划不渲染。

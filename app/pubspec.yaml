@@ -26,6 +26,8 @@ dependencies:
   sqflite_common_ffi: ^2.3.3
   sqlite3_flutter_libs: ^0.5.0
   path_provider: ^2.1.5
+  # 路径拼接（file_tools/export_file/生图落盘等；此前靠 transitive，lint 建议显式声明）
+  path: ^1.9.0
   uuid: ^4.5.1
   # HTTP (model download)
   dio: ^5.7.0

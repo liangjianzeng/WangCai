@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=汪柴 WangCai
+Name[zh_CN]=汪柴
+Comment=端侧大模型聊天客户端（Linux 远端客户壳形态）
+Exec=/opt/wangcai/wangcai %u
+Terminal=false
+Type=Application
+Icon=wangcai
+Categories=Utility;Chat;
+StartupWMClass=org.wangcai.wangcai

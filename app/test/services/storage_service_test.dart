@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -63,5 +64,40 @@ void main() {
     expect(all.length, 200);
     final few = await storage.getMessages('empty-conv', limit: 200);
     expect(few, isEmpty);
+  });
+
+  test('v9 genMeta 列：生图消息带 imagePaths + 溯源元数据落库往返', () async {
+    final storage = StorageService();
+    const conv = 'imggen-conv';
+    const meta =
+        '{"seed":42,"size":"1024x1024","ms":18300,"model":"E:/Unsloth/models","prompt":"柴犬"}';
+    await storage.saveMessage(ChatMessage(
+      id: 'img1',
+      conversationId: conv,
+      role: MessageRole.assistant,
+      content: '🎨 生成 1 张 · 1024x1024 · seed 42 · 18.3s',
+      imagePaths: ['${tmp.path}/imagegen/img-1-42_1.png'],
+      genMeta: meta,
+    ));
+    // 不带 genMeta 的普通消息不受影响（null 默认）。
+    await storage.saveMessage(ChatMessage(
+      id: 'txt1',
+      conversationId: conv,
+      role: MessageRole.user,
+      content: '普通文本',
+    ));
+    final msgs = await storage.getMessages(conv);
+    expect(msgs, hasLength(2));
+    final img = msgs.firstWhere((m) => m.id == 'img1');
+    expect(img.genMeta, meta);
+    expect(img.imagePaths, hasLength(1));
+    // 溯源字段可解析（同 seed 重生成的数据源）。
+    final parsed = jsonDecode(img.genMeta!) as Map<String, dynamic>;
+    expect(parsed['seed'], 42);
+    expect(parsed['prompt'], '柴犬');
+    final plain = msgs.firstWhere((m) => m.id == 'txt1');
+    expect(plain.genMeta, isNull);
+    // toMap 契约同步（fromMap 的镜像面）。
+    expect(img.toMap()['genMeta'], meta);
   });
 }

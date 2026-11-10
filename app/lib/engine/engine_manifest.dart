@@ -82,12 +82,20 @@ class AdmissionRule {
     this.ifParamsBAtLeast,
     this.appliesGenerations,
     this.ifModelGlob,
+    this.fallbackCtx,
     required this.message,
     required this.suggestion,
   });
 
   final int? ifCtxGt;
   final double? ifParamsBAtLeast;
+
+  /// 兜底定制 ctx（2026-11-09 用户拍板「问题模型先兜底定制 ctx，确保先能用」）：
+  /// 本规则触发时网关**不拒载**，而是把请求 ctx 收敛到该档（该模型 NPU 实测
+  /// 确定可用的包线上限，4B 线=512）继续加载，ℹ️ 日志留痕。null = 维持硬拒载
+  /// ——无任何实测安全档的模型（Qwen3.5-4B 编译即死、MiniCPM5 全矩阵仅 1 点
+  /// 可用 2.0 t/s，禁入拍板在案）。声明值必须 ≤ ifCtxGt（兜底档就是门槛本身）。
+  final int? fallbackCtx;
 
   /// 适用世代（'ultra1'/'ultra2'/'ultra3'/'unknown'）；null = 全部。
   final List<String>? appliesGenerations;
@@ -140,6 +148,7 @@ class AdmissionRule {
         ifParamsBAtLeast: (j['ifParamsBAtLeast'] as num?)?.toDouble(),
         appliesGenerations: (j['appliesGenerations'] as List?)?.cast<String>(),
         ifModelGlob: j['ifModelGlob'] as String?,
+        fallbackCtx: (j['fallbackCtx'] as num?)?.toInt(),
         message: j['message'] as String? ?? '',
         suggestion: j['suggestion'] as String? ?? '',
       );
@@ -261,19 +270,24 @@ class EngineManifest {
     return null;
   }
 
-  /// 返回违规说明列表（空 = 放行）。UI 据此弹改道建议（设计 §4.1）。
+  /// 准入评估（2026-11-09 兜底准入扩展）。
+  /// [violations] 语义同 checkAdmission（空 = 放行）。
+  /// [fallbackCtx] = 触发规则的兜底档：**全部**触发规则都声明 fallbackCtx 时
+  /// 取最小值，网关把请求 ctx 收敛到该档重评后放行（先能用，而非拒载）；
+  /// 任一触发规则未声明（无实测安全档，如全禁入模型）或无规则触发 → null。
   /// [generation] = NpuGeneration.name（NPU 引擎的探测世代）；null = 不做
   /// 世代过滤（非 NPU 引擎/未探测，规则全量生效）。
   /// [measuredCtx] = 同 (引擎×模型) 绑定的实测稳定 ctx（ctx 门槛类规则的
-  /// 豁免依据，见 AdmissionRule.triggers）。
-  List<String> checkAdmission({
+  /// 豁免依据，见 AdmissionRule.triggers——该机实测跑通过更高 ctx 时规则
+  /// 自动让位，兜底随之不生效，实测上探闭环不受影响）。
+  ({List<String> violations, int? fallbackCtx}) evaluateAdmission({
     required int? ctx,
     required double? paramsB,
     String? generation,
     int? measuredCtx,
     String? modelFile,
   }) {
-    return [
+    final triggered = [
       for (final r in admission)
         if (r.triggers(
             ctx: ctx,
@@ -281,7 +295,36 @@ class EngineManifest {
             generation: generation,
             measuredCtx: measuredCtx,
             modelFile: modelFile))
-          '${r.message}（建议：${r.suggestion}）',
+          r,
     ];
+    final allDeclared =
+        triggered.isNotEmpty && triggered.every((r) => r.fallbackCtx != null);
+    return (
+      violations: [
+        for (final r in triggered) '${r.message}（建议：${r.suggestion}）'
+      ],
+      fallbackCtx: allDeclared
+          ? triggered
+              .map((r) => r.fallbackCtx!)
+              .reduce((a, b) => a < b ? a : b)
+          : null,
+    );
+  }
+
+  /// 返回违规说明列表（空 = 放行）。UI 据此弹改道建议（设计 §4.1）。
+  List<String> checkAdmission({
+    required int? ctx,
+    required double? paramsB,
+    String? generation,
+    int? measuredCtx,
+    String? modelFile,
+  }) {
+    return evaluateAdmission(
+      ctx: ctx,
+      paramsB: paramsB,
+      generation: generation,
+      measuredCtx: measuredCtx,
+      modelFile: modelFile,
+    ).violations;
   }
 }

@@ -11,7 +11,17 @@
 > root-caused and fixed (3-question acceptance 3/3).
 > **v0.0.2 · 2026-11-02/03 · the assistant lands** — Windows desktop shell, milestones M1–M4 done:
 > NPU / CUDA / Vulkan / remote routing, tray residency, vision DoD (official-engine line), agent
-> regression, portable zip + Inno Setup installer. Full history in [CHANGELOG.md](CHANGELOG.md).
+> regression, portable zip + Inno Setup installer.
+> **2026-11-10 · image generation lands** — a 🎨 chip / `/image` command in the chat area talks
+> straight to Unsloth Studio (Qwen-Image-2.1-Turbo, 1024² in 17–29 s), and agent mode calls the
+> `generate_image` tool for automatic illustrations — one pure-Dart client on Windows (localhost /
+> LAN / Tailscale) and Linux alike.
+> **2026-11-10 · Linux desktop joins** — deb + tar.gz for Ubuntu 22.04-family (x64 / ARM64;
+> WSLg-verified, DGX Spark native build path ready). On Linux WangCai is a **remote client
+> shell**: local NPU/CUDA inference is Windows-only by nature — model engine, image generation
+> and the agent reach your LAN over HTTP. Capability matrix in
+> [README.md](README.md#linux-桌面形态与限制) (Chinese, primary doc).
+> Full history in [CHANGELOG.md](CHANGELOG.md).
 
 [简体中文](README.md) · **English**
 
@@ -156,12 +166,28 @@ passes ≥+50% on all three axes vs baseline while 4B (+24–42%) continues alon
 The assistant's **vision DoD is achieved (2026-11-03, on the official-engine line)**: SmolVLM2-500M
 (downloaded into the model library via the store) + the store's CUDA engine — an accurate semantic
 description of the test image end-to-end through the shell gateway in 20 s
-(`app/test/platform/vision_official_test.dart`). On the NPU side, mtmd vision encoding fails with
-`graph_compute` returning -1 on the OV backends; the defect is archived in
-[docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md) — **the NPU line is text-only today**, and vision
-routes to the official engines. On the engine side, audio input already runs end-to-end on the NPU
-(byte-identical to the native Q8_0 reference; see the status table). The speech in/out pipelines
-(sherpa ASR / TTS) are vendored with the shell but were not part of the M1–M4 acceptance surface.
+(`app/test/platform/vision_official_test.dart`). The NPU vision path initially failed with
+`graph_compute` -1 on the OV backends ([docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md)); after
+the 2026-11-07 engine fix, image-carrying runs pass end-to-end on all three NPU lines. On the
+engine side, audio input already runs end-to-end on the NPU (byte-identical to the native Q8_0
+reference; see the status table). The speech in/out pipelines (sherpa ASR / TTS) are vendored with
+the shell and were reworked in v0.0.6 (dual-engine wakeup arbitration + offline TTS chain).
+
+**Image generation (integrated 2026-11-10)**: two entry points, one implementation
+(`app/lib/services/image_gen_service.dart`, pure Dart HTTP — zero native dependencies). The chat
+area gets a deterministic 🎨 chip / `/image <prompt>` command — no LLM in the loop, works even in
+simple-chat mode — while agent mode may call the `generate_image` tool whenever an answer deserves
+an illustration (registered only when the service is enabled and healthy, so a disconnected backend
+never invites hallucinated calls). The shared service speaks OpenAI-compatible
+`POST /v1/images/generations` to Unsloth Studio on a Windows box (Qwen-Image-2.1-Turbo GGUF Q5_K_M,
+8-step turbo; 1024² in 17–29 s measured, 2048² ≈105 s; n ≤ 4 through a single-flight queue). PNGs
+land in `Documents/imagegen/<date>/` and enter the chat as image messages carrying seed/size/elapsed
+in their attachments — reproducible; copy-to-clipboard / save-as sit on the action row, the context
+menu and the full-screen preview. Configure under Settings → API → Image generation (connection-test
+light; on Windows `127.0.0.1:8888` or LAN or Tailscale `http://<host>.ts.net:8888` — tailnet traffic
+is end-to-end encrypted, so the client uses **http**). Linux clients point the same settings at the
+LAN service and get the identical experience. Full plan:
+[docs/image-gen-integration-plan.md](docs/image-gen-integration-plan.md).
 
 ### Phases
 
@@ -211,6 +237,25 @@ Two things worth stating plainly:
   [docs/benchmarks.md](docs/benchmarks.md).
 
 Reproduce with [`tools/`](tools/README.md).
+
+## Download (Windows / Linux)
+
+Current **0.0.6**, packaged 2026-11-10 — image generation included, Linux artifacts shipping for the
+first time. All six files live on [GitHub Releases](https://github.com/liangjianzeng/WangCai/releases/latest):
+
+| Artifact | For | sha256 (head) |
+|---|---|---|
+| [WangCai-0.0.6-win-x64-Setup.exe](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-Setup.exe) (68 MB) — recommended on Windows | per-user install, no admin; shell + **WangCai NPU engine + OpenVINO runtime** bundled | `282b3511…` |
+| [WangCai-0.0.6-win-x64-portable.zip](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-portable.zip) (108 MB) | no-install / USB — unpack, run `App\WangCai.exe` | `20ce51b2…` |
+| [WangCai-0.0.6-linux-amd64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.deb) (19 MB) — recommended on x64 | Ubuntu 22.04/24.04 x64; `sudo apt install ./WangCai-*.deb` pulls CJK/emoji fonts, xclip etc. | `45b15b78…` |
+| [WangCai-0.0.6-linux-amd64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.tar.gz) (24 MB) | x64 without dpkg — unpack, run `wangcai` | `e5d40620…` |
+| [WangCai-0.0.6-linux-arm64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.deb) (21 MB) — recommended on ARM64 | DGX Spark & friends; `Depends` uses 22.04/24.04-compatible alternates (`libgtk-3-0 \| libgtk-3-0t64`); built natively on DGX Spark (Flutter 3.29.0 arm64 — no official linux-arm64 SDK) | `568416ec…` |
+| [WangCai-0.0.6-linux-arm64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.tar.gz) (26 MB) | ARM64 without dpkg | `8132a447…` |
+
+On Linux WangCai is a **remote client shell**: no local NPU/CUDA inference — point the model engine
+and the image-generation service at your LAN/remote HTTP (capability matrix in
+[README.md](README.md#linux-桌面形态与限制), Chinese primary). CUDA/Vulkan engines are downloaded
+in-app from the engine store; the NPU engine and OpenVINO runtime ship with the Windows packages only.
 
 ## Quick start
 
@@ -295,6 +340,7 @@ src/llama/            vendored llama.cpp (git-ignored, produced by bootstrap)
 | [Troubleshooting](docs/troubleshooting.md) | every error we hit and how it was resolved |
 | [Roadmap](docs/roadmap.md) | accuracy first, then throughput, then omni modalities |
 | [Assistant v0.0.2 design](docs/assistant-v0.0.2-design.md) | shell architecture, engine registry, routing, M1–M4 DoD |
+| [Image-gen integration plan](docs/image-gen-integration-plan.md) | Unsloth Studio client side: dual entry points, remote addressing, acceptance |
 
 ## Hardware requirements
 
@@ -302,7 +348,7 @@ src/llama/            vendored llama.cpp (git-ignored, produced by bootstrap)
 |---|---|
 | SoC | Intel Core Ultra (Series 1/2) with `Intel(R) AI Boost` — `PCI\VEN_8086&DEV_AD1D` class device |
 | Driver | Intel NPU driver matching the installed OpenVINO release |
-| OS | Windows 11 (the Linux path is upstream-supported; untested here) |
+| OS | Windows 10/11 — the constraints in this table are for the **local NPU line**; the Linux desktop shell is a remote client form (Ubuntu 22.04-family x64/ARM64, WSLg-verified — see [README.md](README.md#linux-桌面形态与限制)) |
 | RAM | ≥ 8 GB free per 2 GB of model; 16 GB comfortable for 1–4 B models; **heavy NPU cold compiles need ≥25 GB free physical** (insufficient free memory shows up as a silent compile hang — P14 lesson) |
 | Disk | compile cache is per model × ctx shape — ~19 GB per set measured on 4B: **reserve ≥20 GB per model per ctx** when packaging/deploying |
 

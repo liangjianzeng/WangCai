@@ -89,7 +89,7 @@ class StorageService {
   Future<Database> _init() async {
     return await openDatabase(
       databasePath(),
-      version: 8,
+      version: 9,
       onCreate: _onCreate,
       onUpgrade: _onUpgrade,
     );
@@ -152,6 +152,12 @@ class StorageService {
     if (!names.contains('noticeCode')) {
       await db.execute("ALTER TABLE messages ADD COLUMN noticeCode TEXT");
     }
+    // v9（图像生成交付）：genMeta 列——生图溯源元数据 JSON（seed/size/ms/
+    // model/prompt）。同一套与版本无关的列级幂等检查（缺了才补，绝不撞
+    // duplicate column name）。
+    if (!names.contains('genMeta')) {
+      await db.execute("ALTER TABLE messages ADD COLUMN genMeta TEXT");
+    }
     // v7（v0.0.3 项目层级）：conversations 加 projectId 列（项目归属）。
     // 与 messages 列同一套幂等纪律：列级检查，缺了才补，绝不撞 duplicate。
     final convCols = await db.rawQuery('PRAGMA table_info(conversations)');
@@ -213,6 +219,7 @@ class StorageService {
         kind TEXT,
         toolData TEXT,
         noticeCode TEXT,
+        genMeta TEXT,
         FOREIGN KEY (conversationId) REFERENCES conversations(id) ON DELETE CASCADE
       )
     ''');
@@ -354,6 +361,7 @@ class StorageService {
           : null,
       toolData: _decodeToolData(r['toolData']),
       noticeCode: r['noticeCode'] as String?,
+      genMeta: r['genMeta'] as String?,
       // kind 缺失（旧行）→ 按前缀/工具数据推断后固化到实例。
       kind: ChatMessage.resolveKind(
         stored: _kindFromName(r['kind']),
@@ -431,6 +439,7 @@ class StorageService {
       'toolData':
           msg.toolData == null ? null : jsonEncode(msg.toolData!.toMap()),
       'noticeCode': msg.noticeCode,
+      'genMeta': msg.genMeta,
     }, conflictAlgorithm: ConflictAlgorithm.replace);
   }
 

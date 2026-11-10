@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 
+import 'image_actions.dart';
+
 /// 全屏图片预览：黑色遮罩 + 双指/双击缩放（InteractiveViewer），
 /// 多图可左右滑动翻页；点击空白处或 ✕ 退出。
 ///
@@ -119,6 +121,22 @@ class _ImagePreviewDialogState extends State<_ImagePreviewDialog> {
                         ),
                       ),
                     const Spacer(),
+                    // 预览即拿走（用户 2026-11-10）：对当前页图片直接
+                    // 复制进剪贴板 / 另存为。IconButton 的子级手势在
+                    // arena 里赢过外层「点任意处退出」的 GestureDetector，
+                    // 点按钮不会误关预览。
+                    IconButton(
+                      icon: const Icon(Icons.copy_all, color: Colors.white),
+                      tooltip: '复制图片',
+                      onPressed: () => copyImageToClipboard(
+                          context, widget.imagePaths[_page]),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.save_alt, color: Colors.white),
+                      tooltip: '另存为…',
+                      onPressed: () =>
+                          saveImageAs(context, widget.imagePaths[_page]),
+                    ),
                     IconButton(
                       icon: const Icon(Icons.close, color: Colors.white),
                       tooltip: '关闭',

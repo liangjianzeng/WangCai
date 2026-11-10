@@ -10,6 +10,175 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 此处累积已入库、随下一版发布的改动。
 
+### 新增 —— 兜底准入：问题模型自动回退定制 ctx，先保可用（2026-11-09 用户拍板「先兜底定制 ctx，确保先能用」）
+
+- **机制**：`AdmissionRule` 新增 `fallbackCtx`（4B 线两条 ctx 门槛规则声明 512）——
+  规则触发时网关不再硬拒载，而是把请求 ctx 收敛到 `max(兜底档, 该机实测档)`
+  继续加载（实测只抬不压，与 `_ctxCeilingFor` 同一不变量），ℹ️ 日志留痕
+  （兜底依据逐条透传，缺陷单引用不丢）；收敛后重评放行。无实测安全档的模型
+  （Qwen3.5-4B 编译即死 / MiniCPM5-2B 全矩阵仅 1 点可用）不声明 → 维持硬拒载 +
+  改道建议。路由层同口径：可兜底的违例不作死候选，全禁入照旧 blocked+不改道。
+- **manifest 层**：`EngineManifest.evaluateAdmission` 返回 `{violations, fallbackCtx}`
+  （触发规则全带兜底档取最小、任一缺省即 null）；`checkAdmission` 改为其薄壳，
+  规则级锚不动。
+- **测试**：manifest 兜底锚（规则声明纪律 + evaluateAdmission 全矩阵 + 实测豁免
+  联运）、网关锚（Spark@4096→`-c 512` 加载、实测 1024 抬兜底到 1024、OOM demote
+  后越档兜底 512、MiniCPM5 仍拒载）、真机锚（m2_dod Spark 拒绝锚改兜底锚、
+  app_npu_flow 4B@4096 臂改 `-c 512`——该臂在 11-07 admission 收紧后已失实）。
+  全锦 1437/23/0。
+
+### 文档 —— README「NPU 模型支持现状」坦白版（2026-11-09）
+
+- 新增模型支持矩阵（一行一模型带实测数字与缺陷单出处）：LFM3-1.7B/Omni-2B 主打线
+  ✅、Spark/Qwen3-4B 🟡 仅 ctx≤512、NeoHorse ⬜ 留位、Qwen3.5/MiniCPM5 ❌ 禁入；
+  附 4B 兜底机制说明与世代口径（3720 一台实机，二/三代未实测不外推）。
+- 修正过时表述：副靶行（11-01「端到端跑通」→ 11-07/08 包线墙收窄口径）、4B decode
+  行（12.26 标注 KVH=1 speed-only，生产 KVH=0 = 8.89/8.15）、NPU 视觉行与多模态段
+  （11-07 引擎修复后带图三线全绿，不再「NPU 纯文本」）、硬约束表（1.7B 与 4B ctx
+  口径分开）、版本横幅补 0.0.6。
+
+### 新增 —— 生图整合：Unsloth Studio 文生图进聊天区（2026-11-10，Win/Linux 双端）
+
+- **一个实现双入口**（`services/image_gen_service.dart`，纯 Dart + dio，零原生依赖）：
+  ①聊天区 🎨 chip /「/图 提示词」确定性直调——不经 LLM、简单聊天模式可用、零 token，
+  占位卡带取消/失败重试（同参重发）；②智能体 `generate_image` 工具
+  （`agent/builtin_tools/generate_image_tool.dart`）LLM 自主配图，`enabled && lastHealthOk`
+  才注册（照 weather/web_search 先例，关闭/断连时 LLM 看不到该工具、不幻觉调用）。
+- **服务端口径**：Unsloth Studio（Windows FastAPI :8888）OpenAI 兼容
+  `POST /v1/images/generations`（b64_json），Qwen-Image-2.1-Turbo GGUF Q5_K_M 8 步 Turbo；
+  1024² 稳态实测 17–29 s、2048² ≈105 s；n≤4 客户端单飞队列串行（单卡独占）；错误分型
+  （notConfigured/unreachable/timeout/unauthorized/serverBusy/decode）驱动 chip 置灰与文案。
+- **数据口径**：图片落盘 `文档/imagegen/YYYYMMDD/img-<ts>-<seed>.png`，以 `imagePaths` 入
+  ChatMessage（复用图片气泡渲染），seed/尺寸/耗时/模型随 `attachments.gen` 落库——溯源与
+  同 seed 复现；`chat_message_image_invariant_test` 钉「引用死路径不打红气泡」不变量。
+- **设置页**：「API 接入 → 图像生成」节（启用/服务地址/模型/默认尺寸/密钥 + 测连接绿灯，
+  `screens/image_gen_section.dart`）；Windows 预填 `http://127.0.0.1:8888`，Linux 留空带帮助文案；
+  密钥走 `SecureApiKeyStore`（id=`unsloth-image`，Win=DPAPI / Linux=libsecret）。
+- **平台一致性**：生图路径无任何编译期平台分支——Linux（远端客户壳）连局域网 Windows 侧
+  Unsloth 即得同等体验；图片复制剪贴板 Linux 需 xclip/wl-clipboard（deb 已声明依赖）。
+  母方案与验收清单 `docs/image-gen-integration-plan.md`。
+- **测试**：生图面四文件 36 锚全绿（2026-11-10 复跑）——`image_gen_service_test`（mock dio：
+  成功/b64 解码/超时/401/单飞队列/model 字段口径）、`generate_image_tool_test`（条件注册/
+  参数契约）、`image_actions_test`（动作行图标/选张弹层/右键菜单入口）、
+  `chat_message_image_invariant_test`（图片消息不变量）；`image_gen_live_test` 真机联调臂
+  三重门控（服务不可达/key 缺失自动跳过，CI 不假败）。
+
+### 修复 —— 生图消息的图片复制/另存入口显式化（2026-11-10 用户点单）
+
+- **根因**：生图消息的图片操作（复制进剪贴板/另存为）此前只藏在长按/右键
+  **图片本身**才弹的弹层里——动作行复制键只管文本、消息右键只有「复制全文」，
+  零可见性，用户体感 = 生成的图片没有复制和另存的能力。
+- **修复**（可见入口三处 + 共享件一份）：①`MessageActionsRow` 新增
+  `imagePaths`，带图消息动作行出现「复制图片 / 另存图片」两枚图标（单图直接
+  执行，多图先弹选张；三处调用点——气泡页脚 / 智能体回合尾 ×2——全部接上）；
+  ②消息右键菜单在「复制全文」之外补「复制图片 / 另存图片…」；③全屏预览
+  右上加复制/另存工具栏（作用于当前页）。复制/另存逻辑收敛进新共享件
+  `widgets/image_actions.dart`（气泡弹层/动作行/预览三处共用；气泡内原有的
+  两份 toast/FilePicker 重复实现删除）。
+- **加固**：气泡与选张缩略图 `Image.file` 补 errorBuilder——引用死路径
+  （缓存被清等）不再把气泡列表打成红块。
+- **测试**：新增 `test/widgets/image_actions_test.dart` 六锚（图标出现/隐藏、
+  空串=无图、多图选张弹层、右键菜单图片项有无）。锚注释钉住一个手势事实：
+  `MarkdownBody(selectable)` 内部选择手势件在桌面端吃掉正文上的右键，
+  菜单测试落点必须选页脚时间戳等中性区。widgets+screens 面全绿；
+  analyze 零新增（2413 为 vendored 存量基线）。
+
+### 新增 —— Linux 打包链：deb + tar.gz 双产物，x64（WSL）与 ARM64（DGX 原生）通用（2026-11-10）
+
+- **`packaging/build-linux.sh`**（单一入口，架构自动）：`flutter build linux --release`
+  → tar.gz 便携包（含依赖清单 README）+ deb（`/opt/wangcai` + `/usr/bin/wangcai`
+  符号链 + desktop 条目 + hicolor 图标按 logo 真实宽度挑档）。**Linux 包不含引擎**
+  （NPU/OpenVINO 守卫降级，生图/引擎走 LAN HTTP，口径见
+  `docs/image-gen-integration-plan.md`），区别于 Windows 包。
+- **`packaging/linux/wsl-setup.sh` / `apt-deps-root.sh`**：一次性环境（apt 依赖 +
+  Flutter 3.27.0 与 Windows 侧同版）；无免密 sudo 时 root 侧跑 apt 段或 `SKIP_APT=1`。
+- **runner 归位**：`APPLICATION_ID` → `org.wangcai.wangcai`，窗口标题「汪柴 WangCai」。
+- **构建坑四连（都写进脚本注释与 packaging/README）**：① rsync 裸 `--exclude src`
+  会连 `packages/*/lib/src` 一起排掉（须 `/src` 锚根）；② 插件 configure 中途失败把
+  CMakeCache 以 `prefix=/usr/local` 落盘且永不自愈（模板默认分支在
+  `include(generated_plugins)` 之后）→ 打包前 `rm -rf build/linux`；③ audioplayers_linux
+  需 GStreamer dev、tray_manager 需 ayatana-appindicator3-dev（Dart 侧有平台守卫但
+  链接期就要）、secure_storage 需 libsecret；④ Git Bash→wsl.exe 的 MSYS 路径/引号
+  三连坑，一律「脚本文件 + `bash -c "带引号整串"`」。
+- **DGX Spark（aarch64）**：同脚本原生构建（不交叉编译），产物自动 `-linux-arm64`。
+
+### 变更 —— 产品定位双平台化：Windows + Linux 桌面离线 AI 智能体（2026-11-10 用户点单）
+
+- **关于页**：tagline「Windows 桌面…」→「Windows / Linux 桌面离线 AI 智能体」；
+  「平台」行按运行系统显示（Windows 10/11（NPU 引擎全功能）/ Linux 桌面
+  （X11 / Wayland））；Linux 运行 AdditionalInfo 补灰色小字声明固有局限——本地
+  NPU 推理与系统托盘不可用（守卫降级）、模型引擎/生图请指向局域网 HTTP。
+- **README**：横幅与下载安装段改双端口径（Linux 产物随 **2026-11-10 重出包的 0.0.6
+  Releases** 一并发布——六产物直链 + 实测 sha256）；新增「Linux 桌面形态与限制」能力表
+  （NPU/CUDA ❌、远端引擎/直连搜索/生图 ✅、托盘 ❌、自启 🟡 + 一句话定位「远端客户壳」）；
+  README_en 横幅同步指引 + 补 Download 段与生图段（本轮）。
+
+### 变更 —— 设置页 SearXNG 配置折叠化，端侧直连升为唯一露出主方案（2026-11-10 用户点单）
+
+- 「API 接入 → 搜索」的 SearXNG 自架实例区默认收起，收成一行摘要
+  （「SearXNG 实例（备用）」+ 未配置提示/当前地址 + 展开箭头），点开才露出
+  地址/密钥/引擎/语言/条数/超时/测试全部配置项；说明文字改口「主方案是端侧
+  直连引擎，自架 SearXNG 是备用路径」。不常用配置不再大量露出。
+
+### 修复 —— Linux 端中文界面全乱码：CJK 字体缺失（2026-11-10 用户实测）
+
+- **根因**：Ubuntu 基础镜像不带 CJK 字体（`fc-list :lang=zh` 计数 0），Flutter
+  fontconfig 取不到中文字形 → 整屏豆腐块。这不是 App 缺陷，是**打包依赖漏项**。
+- **修复三层**：① deb `Depends` 追加 `fonts-noto-cjk`（apt 装包自动带上）；
+  ② tar.gz 便携包 README 依赖清单补位（注明「缺了整个 UI 全是豆腐块」）；
+  ③ 验证机 WSL 装字体复验。WSL 侧 apt 拉 61MB 字体包走不稳定镜像反复
+  `Ign→Get` 挂死，改 Windows 侧 `curl` 从清华镜像直下 + MD5 对 apt 索引后
+  挂载进 WSL `dpkg -i` 装上。双端（WSLg/Windows）截图复验中文渲染正常。
+- **同族第二案（emoji）**：设置页分节头 🧠🧩⚡🤖🔌 全是 **emoji 文本**（非
+  Material 图标），Ubuntu 不带 emoji 字体 → 同样豆腐块。三层同法补
+  `fonts-noto-color-emoji`（deb Depends / 便携包清单 / 测试机实装）。
+
+### 修复 —— Linux 顶栏/任务栏无应用图标（wslu 默认占位图）（2026-11-10 用户实测）
+
+- **根因**：`linux/runner` 从未设窗口图标（Windows 侧靠 `app_icon.ico`，Linux
+  无对应机制），WSLg 于是拿 wslu 默认「绿山野」占位图当应用图标。
+- **修复**：`my_application.cc` 新增 `set_wangcai_window_icon()`——从
+  `/proc/self/exe` 定位 bundle，把 `flutter_assets/assets/wangchai_logo.png`
+  （与 Windows `app_icon.ico` 同源 logo）`gtk_window_set_icon` 进窗口。
+  踩坑：`g_read_link` 是 GLib 2.70+ API，runner 编译期被版本护栏隐藏报
+  undeclared identifier → 改 `realpath("/proc/self/exe")`（glibc 恒有）。
+  WSLg 截图复验：任务栏出现柴犬图标。
+
+### 变更 —— 生图远程接入：Tailscale 地址口径 + 模型名改服务端下拉（2026-11-10 用户实测点单）
+
+- **远程地址报错根因（非客户端缺陷）**：`https://liang-geekpro…ts.net:8888` 配
+  置报错是**服务端 tailscale serve 形态问题**——实测 `:8888` 监听是**明文 HTTP**
+  （openssl 握手 `wrong version number`、curl https 报 `SEC_E_INVALID_TOKEN`），
+  tailnet 内 `http://…ts.net:8888/api/health` 直通 200。tailnet 流量本身端到端
+  加密，端上应填 **http** 方案；设置页服务地址 hint 补远程示例并注明该口径。
+- **模型名不再暴露服务端路径**：旧默认值 `kImageGenDefaultModel =
+  'E:/Unsloth/models'`（服务端扫描目录当模型名露出，终端无从理解）。新口径：
+  默认**空 = 省略 `model` 字段走服务端缺省**；`checkHealth` 解析
+  `GET /v1/models` 的 `data[].id` 落 `ImageGenHealth.models`；设置页模型字段
+  **测试连接成功后变下拉选单**（含「服务端缺省模型」空选项，存量值不在列表时
+  回落缺省不吞值），未测过连接才退回手填（注明可留空）。
+- **测试**：`image_gen_service_test` 锚同步新口径（空模型 body 无 model 键 /
+  显式模型透传两锚）；生图面 30 全绿；analyze 零新增。
+
+### 新增 —— DGX Spark（ARM64）原生构建落地（2026-11-10，用户拍板 Tailscale 过去打）
+
+- **通道**：Tailscale `gx10-85f3`（aarch64 / Ubuntu 24.04.5 / 20 核）密钥免密
+  SSH → tar 管道送源码 → `packaging/linux/wsl-setup.sh` + `build-linux.sh`
+  同套脚本跑通，产物 `WangCai-0.0.6-linux-arm64.{deb,tar.gz}`（deb 21MB /
+  tar 27MB）已回 `packaging/dist/`。
+- **版本口径（如实记录）**：**Flutter 官方不发布 linux-arm64 SDK**（从国内镜像
+  强下「Linux」包是 x86 版，arm64 上 QEMU 模拟段错误实锤）；DGX 构建用**机上
+  3.29.0（arm64）**，与 Windows/WSL 侧 3.27.0 存在版本差——3.29 向后兼容、
+  编译产物装机验证通过（arm64 ELF、ldd 0 missing），发布页需注明构建版本。
+- **构建依赖坑两个（都进 setup 清单与注释）**：① `libgstreamer1.0-dev` 在
+  arm64 上 `Requires: libunwind`，缺 `libunwind-dev` 时 pkg_check_modules 报
+  「gstreamer-1.0 not found」误导性错误；② Ubuntu 24.04 **t64 改名**——
+  `libgtk-3-0`→`libgtk-3-0t64` 等，deb `Depends` 改备选语法
+  `libgtk-3-0 | libgtk-3-0t64`、`libsqlite3-0 | libsqlite3-0t64`，一份 deb
+  兼容 22.04/24.04 客户机。
+- `wsl-setup.sh` 加固：`FLUTTER_DIR`/`FLUTTER_VER` 可覆盖、目标目录版本不符
+  挪 `.bak` 不覆盖机主现有安装、下载加国内镜像 fallback。
+
 ## [0.0.6] — 2026-11-08 · 装机版引擎根因修复 + 4B 重估（`b7cb158`/`7a7326b`）
 
 ### 修复 —— 装机版「NPU 引擎不可用」两层根因 + 退出卡顿（2026-11-07 用户装机实测）

@@ -10,6 +10,7 @@ import '../agent/mcp/mcp_client.dart' show McpServerConfig;
 import '../models/agent_persona.dart';
 import '../models/api_model.dart';
 import '../models/local_model.dart';
+import 'image_gen_service.dart' show kImageGenDefaultModel;
 
 /// 推理引擎相关的用户设置（GPU 加速开??+ 卸载层数 + 后端选择 + 上下文大小）??
 ///
@@ -481,6 +482,22 @@ class InferenceSettings {
   /// 可控制的手机白名单（ip:port）。空列表 = 一台都没配，工具会引导去设置添加。
   final List<AdbTarget> adbTargets;
 
+  // ---- 图像生成（Unsloth Studio，docs/image-gen-integration-plan.md）----
+
+  /// 图像生成总开关（默认关；开启后聊天 🎨/「/图」入口与 generate_image
+  /// 工具才可用——与 webSearchEnabled 同一门控语义）。
+  final bool imageGenEnabled;
+
+  /// 生图服务地址（如 http://127.0.0.1:8888 或局域网 IP）。空串 = Windows
+  /// 回落 [kImageGenDefaultBaseUrl]，其余平台视为未配置（提示手填 LAN 地址）。
+  final String imageGenBaseUrl;
+
+  /// 生图模型名（= 服务端模型扫描目录注册名，`GET /v1/models` 可列实际 id）。
+  final String imageGenModel;
+
+  /// 默认出图尺寸档位（kImageGenSizes 之一；脏值回落 1024x1024）。
+  final String imageGenDefaultSize;
+
   /// 危险命令策略：'deny'（默认，黑名单直接拒绝）/ 'ask'（转用户审批）。
   final String dangerousCommandPolicy;
 
@@ -612,6 +629,10 @@ class InferenceSettings {
     // ---- 开发模式（Dev Agent）----
     this.devModeEnabled = false,
     this.adbEnabled = false,
+    this.imageGenEnabled = false,
+    this.imageGenBaseUrl = '',
+    this.imageGenModel = kImageGenDefaultModel,
+    this.imageGenDefaultSize = '1024x1024',
     this.devWorkspaceId = 'default',
     List<SshConfig>? sshConfigs,
     List<AdbTarget>? adbTargets,
@@ -796,6 +817,10 @@ class InferenceSettings {
     // ---- 开发模式（Dev Agent）----
     bool? devModeEnabled,
     bool? adbEnabled,
+    bool? imageGenEnabled,
+    String? imageGenBaseUrl,
+    String? imageGenModel,
+    String? imageGenDefaultSize,
     String? devWorkspaceId,
     List<SshConfig>? sshConfigs,
     List<AdbTarget>? adbTargets,
@@ -931,6 +956,10 @@ class InferenceSettings {
       activePersonaId: activePersonaId ?? this.activePersonaId,
       devModeEnabled: devModeEnabled ?? this.devModeEnabled,
       adbEnabled: adbEnabled ?? this.adbEnabled,
+      imageGenEnabled: imageGenEnabled ?? this.imageGenEnabled,
+      imageGenBaseUrl: imageGenBaseUrl ?? this.imageGenBaseUrl,
+      imageGenModel: imageGenModel ?? this.imageGenModel,
+      imageGenDefaultSize: imageGenDefaultSize ?? this.imageGenDefaultSize,
       adbTargets: adbTargets ?? this.adbTargets,
       devWorkspaceId: devWorkspaceId ?? this.devWorkspaceId,
       sshConfigs: clearSshConfig ? const [] : (sshConfigs ?? this.sshConfigs),
@@ -1045,6 +1074,10 @@ class InferenceSettings {
         // ---- 开发模式（Dev Agent）----
         'devModeEnabled': devModeEnabled,
         'adbEnabled': adbEnabled,
+        'imageGenEnabled': imageGenEnabled,
+        'imageGenBaseUrl': imageGenBaseUrl,
+        'imageGenModel': imageGenModel,
+        'imageGenDefaultSize': imageGenDefaultSize,
         'adbTargets': [for (final t in adbTargets) t.toJson()],
         'devWorkspaceId': devWorkspaceId,
         'sshConfigs': [for (final c in sshConfigs) c.toJson()],
@@ -1238,6 +1271,11 @@ class InferenceSettings {
       // ---- 开发模式（Dev Agent）：旧配置缺字段时默认关闭（向后兼容）----
       devModeEnabled: json['devModeEnabled'] as bool? ?? false,
       adbEnabled: json['adbEnabled'] as bool? ?? false,
+      imageGenEnabled: json['imageGenEnabled'] as bool? ?? false,
+      imageGenBaseUrl: json['imageGenBaseUrl'] as String? ?? '',
+      imageGenModel: json['imageGenModel'] as String? ?? kImageGenDefaultModel,
+      imageGenDefaultSize:
+          json['imageGenDefaultSize'] as String? ?? '1024x1024',
       adbTargets: parseAdbTargets(json['adbTargets']),
       devWorkspaceId: json['devWorkspaceId'] as String? ?? 'default',
       // 新版列表优先；旧版单配置自动迁移为列表首项。

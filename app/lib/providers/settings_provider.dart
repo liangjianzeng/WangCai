@@ -1,8 +1,10 @@
-import 'package:flutter/foundation.dart' show debugPrint;
+import 'package:flutter/foundation.dart' show debugPrint, TargetPlatform, defaultTargetPlatform;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../agent/mcp/mcp_client.dart' show McpServerConfig;
 import '../agent/dev/ssh/secret_store.dart'
     show deleteSshSecrets, migrateSshSecrets, saveSshSecrets;
+import '../services/image_gen_service.dart'
+    show kImageGenDefaultBaseUrl, kImageGenSizes;
 
 import '../agent/adb/adb_targets.dart';
 import '../agent/dev/ssh/ssh_credentials.dart' show SshConfig;
@@ -340,6 +342,40 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
   /// 边界由"只能连白名单里的目标机 + 命令黑名单"承担（见 adb_tool.dart）。
   Future<void> setAdbEnabled(bool value) async {
     state = state.copyWith(adbEnabled: value);
+    await _persist();
+  }
+
+  // ---- 图像生成（Unsloth Studio）----
+
+  /// 图像生成总开关。开启时若地址为空且是 Windows，预填本机默认地址
+  /// （零配置起步；Linux 留空引导手填 LAN 地址）。
+  Future<void> setImageGenEnabled(bool value) async {
+    var next = state.copyWith(imageGenEnabled: value);
+    if (value &&
+        state.imageGenBaseUrl.trim().isEmpty &&
+        defaultTargetPlatform == TargetPlatform.windows) {
+      next = next.copyWith(imageGenBaseUrl: kImageGenDefaultBaseUrl);
+    }
+    state = next;
+    await _persist();
+  }
+
+  /// 生图服务地址（空串 = Windows 回落本机默认 / 其他平台未配置）。
+  Future<void> setImageGenBaseUrl(String value) async {
+    state = state.copyWith(imageGenBaseUrl: value.trim());
+    await _persist();
+  }
+
+  /// 生图模型名（服务端扫描目录注册名）。
+  Future<void> setImageGenModel(String value) async {
+    state = state.copyWith(imageGenModel: value.trim());
+    await _persist();
+  }
+
+  /// 默认出图尺寸档位（仅接受 kImageGenSizes 内的值）。
+  Future<void> setImageGenDefaultSize(String value) async {
+    if (!kImageGenSizes.contains(value)) return;
+    state = state.copyWith(imageGenDefaultSize: value);
     await _persist();
   }
 

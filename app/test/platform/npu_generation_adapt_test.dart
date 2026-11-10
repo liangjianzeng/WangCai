@@ -1,10 +1,12 @@
 // 世代自适应网关级单测（2026-11-05；2026-11-06 随「全局 ctx」拍板改口径；
 // 2026-11-07 随 admission 收紧再改：4B 级 NPU ctx>512 前置禁入——
-// Qwen3-4B@4096 首请求 L0 UNINITIALIZED、Spark@4096 预算塌方 0.42 t/s）：
+// Qwen3-4B@4096 首请求 L0 UNINITIALIZED、Spark@4096 预算塌方 0.42 t/s；
+// 2026-11-09 随「兜底准入」再改：4B 级 >512 不再拒载，网关把请求 ctx 收敛
+// 到实测安全档 512 继续加载——硬拒载只留给无安全档的全禁入模型）：
 // 探测→世代→档案上限→实测豁免→OOM 回退全链离线验证。fake 进程/health/
 // 端口（同 engine_defaults_chain 纪律），绑定表走 sqlite ffi（同 m2_dod）。
 // ctx 口子不变：模型级 > 引擎默认 > 全局值（默认 4096）；红线更新：
-// **≤512 全线放行**，4B 级 >512 走 admission 先验拦（实测豁免可越过）。
+// **≤512 全线放行**，4B 级 >512 兜底收敛 512（实测豁免可越过原档）。
 import 'dart:convert';
 import 'dart:io';
 
@@ -171,11 +173,16 @@ void main() {
         'NPUW_FOLD=YES');
   });
 
-  test('实测豁免不外溢：别的模型没跑过 → 越档照样被准入前置拦', () async {
+  test('实测豁免不外溢：别的模型没跑过 → 不享受实测档，兜底回 512 先保可用',
+      () async {
     probeRunnerForTest = (_, __) async => enum3820;
     await seedStable('Qwen3-4B-a.gguf', 8192);
-    expect(await load('Qwen3-4B-b.gguf', nCtx: 8192), isFalse,
-        reason: 'b 无实测背书 → 4B@>4096 先验照常拦，不拉必崩 server');
+    expect(await load('Qwen3-4B-b.gguf', nCtx: 8192), isTrue,
+        reason: 'b 无实测背书 → 8192 不放行，但兜底准入（2026-11-09）收敛 '
+            '4B 实测安全档 512 先保可用，不再拒载');
+    final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']),
+        reason: '实测豁免不外溢：b 拿不到 a 的 8192，只落到实测安全档 512');
   });
 
   test('档案数据位：注入 ultra2 覆盖（lfm3→4096）压显式 8192，一代原样放行',
@@ -199,7 +206,7 @@ void main() {
         reason: '无档案覆盖位 = 显式 ctx 原样入场（preset 先验已退役）');
   });
 
-  test('失败回退：实测档执行期 OOM → 收回上抬；重载越档回准入拦、4096 仍稳',
+  test('失败回退：实测档执行期 OOM → 收回上抬；重载越档兜底 512、4096 仍稳',
       () async {
     probeRunnerForTest = (_, __) async => enum3720;
     await seedStable('Qwen3-4B-demote.gguf', 8192);
@@ -208,13 +215,35 @@ void main() {
     expect(await load('Qwen3-4B-demote.gguf', nCtx: 8192), isFalse);
     expect((await readBinding('Qwen3-4B-demote.gguf'))!.maxStableCtx, isNull,
         reason: '被证伪的实测豁免必须收回');
-    // 第二载：无实测背书 → 先验准入回位，越档拒载。
+    // 第二载：无实测背书 → 先验准入回位；兜底准入（2026-11-09）把越档请求
+    // 收敛到 4B 实测安全档 512，不再拒载。
     oomOnSpawn = false;
-    expect(await load('Qwen3-4B-demote.gguf', nCtx: 8192), isFalse);
+    expect(await load('Qwen3-4B-demote.gguf', nCtx: 8192), isTrue);
+    var h = reg.hostOf('wangcai-npu') as LlamaServerHost;
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']),
+        reason: 'OOM 证伪 8192 后，兜底回落实测安全档 512 先保可用');
     // 4B 合法基本档（512）不受回退牵连：永远放行。
     expect(await load('Qwen3-4B-demote.gguf', nCtx: 512), isTrue);
-    final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
+    h = reg.hostOf('wangcai-npu') as LlamaServerHost;
     expect(h.lastSpawnArgs, containsAllInOrder(['-c', '512']));
+  });
+
+  test('兜底×实测联运：该机实测 1024 > 规则兜底 512 → 收敛到实测档 1024',
+      () async {
+    // 「实测只抬高先验，不压低」对兜底准入同样成立：规则声明的 512 是未曾
+    // 实测机器的兜底地板，本机已在 1024 跑成功过 → 4096 请求收敛到 1024
+    // 而不是 512（1024 ≤ measuredCtx 时规则也让位，双保险一致）。
+    probeRunnerForTest = (_, __) async => enum3720;
+    await seedStable('Qwen3-4B-fb.gguf', 1024);
+    final logs = <String>[];
+    inf.onLoadingLog = (m) {
+      if (m != null) logs.add(m);
+    };
+    expect(await load('Qwen3-4B-fb.gguf', nCtx: 4096), isTrue);
+    final h = reg.hostOf('wangcai-npu') as LlamaServerHost;
+    expect(h.lastSpawnArgs, containsAllInOrder(['-c', '1024']),
+        reason: '兜底档被该机实测上抬：收敛到 1024，不吃 512 地板');
+    expect(logs.join(), contains('该机实测档'), reason: '$logs');
   });
 
   test('demoteCtx store 语义：低于失败值保留 / 无行空转（失败不证伪更低档）',

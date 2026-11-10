@@ -1304,6 +1304,7 @@ class AgentTurnBlock extends StatelessWidget {
               timestamp: answer!.timestamp,
               onBranch: isLive ? null : onBranch,
               imagePath: answer!.imagePath,
+              imagePaths: answer!.imagePaths, // 生图/多图回答（≤10 张横排）
               audioPath: answer!.audioPath,
               inferenceStats: answer!.inferenceStats,
               // 页脚集中到回合尾动作区（一条信息一个家）。
@@ -1322,6 +1323,8 @@ class AgentTurnBlock extends StatelessWidget {
                 canSpeak:
                     answer!.kind == MessageKind.text && !_answerPending,
                 conversationId: answer!.conversationId,
+                // 生图/多图回答：动作行给复制图片/另存图片可见入口。
+                imagePaths: answer!.imagePaths,
               ),
             ),
           // WP-C：本轮产物汇总（export_file 成功项去重）——快捷打开链接。
@@ -1367,6 +1370,7 @@ class AgentTurnBlock extends StatelessWidget {
             timestamp: answer!.timestamp,
             isStreaming: isLive && answer!.isStreaming,
             imagePath: answer!.imagePath,
+            imagePaths: answer!.imagePaths, // 生图/多图回答（≤10 张横排）
             audioPath: answer!.audioPath,
             inferenceStats: answer!.inferenceStats,
             // 页脚集中到回合尾动作区（一条信息一个家）。
@@ -1388,6 +1392,8 @@ class AgentTurnBlock extends StatelessWidget {
               isUser: false,
               canSpeak: answer!.kind == MessageKind.text,
               conversationId: answer!.conversationId,
+              // 生图/多图回答：动作行给复制图片/另存图片可见入口。
+              imagePaths: answer!.imagePaths,
             ),
           ),
         // WP-C：本轮产物汇总（export_file 成功项去重）——快捷打开链接。

@@ -121,6 +121,50 @@
 - [x] **P7 每项独立 commit/push + 清单勾选**：P1–P6 全部完成（8577f20 + 本 commit），push 断网时
   本地积攒、恢复后重推。
 
+## 2026-11-09：兜底准入——问题模型自动回退定制 ctx，先保可用（用户拍板「先兜底定制 ctx，确保先能用」）+ README 模型现状坦白版
+
+**背景与拍板**：4B 线自 2026-11-07 admission 收紧后，全局 ctx 4096（更不必说 16K）在
+NPU 上对 Spark/Qwen3-4B/NeoHorse 全部**硬拒载**——用户下载 2.3 GB 模型后加载报错，
+须自己摸索「模型级 ctx 调 ≤512 或换 CUDA/Vulkan」。用户裁决：问题模型不走统一的
+4K..16K，**先兜底定制 ctx 确保先能用**；README 把模型现状坦然写清。
+
+**机制**（数据进 manifest，代码只认语义）：
+- `AdmissionRule.fallbackCtx`（4B 线两条 ctx 门槛规则 = 512；Qwen3.5/MiniCPM5 不声明
+  = 维持硬拒载）。声明纪律：兜底档必须 ≤ ifCtxGt（兜底档就是门槛本身）。
+- `EngineManifest.evaluateAdmission → {violations, fallbackCtx}`：触发规则全带兜底档
+  取最小；任一缺省即 null（硬拒载）。`checkAdmission` 改薄壳，规则级测试锚不动。
+- 网关 `loadModel`：ctx 优先级链 + 档案 clamp 之后、admission 终检之前插入兜底评估；
+  命中则 `ctx → max(fallbackCtx, 该机实测 maxStableCtx)`（**实测只抬不压**——实测
+  1024 的机器收敛到 1024 不吃 512 地板，与 `_ctxCeilingFor` 同一不变量），兜底依据
+  逐条 ℹ️ 留痕（缺陷单引用不丢）+ 收敛摘要一行。收敛后重评，规则不再触发 → 放行。
+- 路由 `_route`（钉选 + Auto 两分支同口径）：可兜底的违例不算死候选；全禁入照旧
+  blocked → chooseEngine 拒绝+指引不改道（2026-11-07 拍板语义不变，锚改用 Qwen3.5
+  全禁入做 blocked 例）。
+- 闭环联运：实测豁免在 `triggers()` 内让位（measuredCtx ≥ ctx 规则不触发，兜底自然
+  不生效）；OOM → `demoteCtx` 收回证伪档后，下次越档请求仍兜底回安全档，模型永远
+  先能用。
+
+**测试锚改写**（契约变更全锚同步，全锦 1437/23/0，67 个相关用例先行验证）：
+- `manifest_test`：+2 锚（规则声明纪律 / evaluateAdmission 全矩阵：4B@4096→512、
+  全禁入→null、实测 4096 豁免、1.7B 不受影响）。
+- `engine_defaults_chain_test`：Spark 臂从「前置拦不拉 server」改「兜底加载
+  `-c 512` + ℹ️ 留痕 + 不改道」；MiniCPM5 拒载锚保留；钉选臂陈旧注释（「准入线
+  4096」）修正。
+- `npu_generation_adapt_test`：实测豁免不外溢臂、OOM demote 第二载臂从「拒载」改
+  「兜底 512」；新增兜底×实测联运锚（实测 1024 → 收敛 1024 而非 512）。
+- `m2_dod_test`（真机门控）：Spark 拒绝锚 → 兜底锚（loadModel true、NPU@512、日志含
+  兜底行 + 缺陷单依据），timeout 5→10 min（真机 4B 冷编预算）。
+- `app_npu_flow_test`（真机门控）：4B@4096 臂「-c 4096 放行」→「-c 512 兜底」——
+  该臂在 11-07 admission 收紧后已失实（真机必被前置拦），本次一并修正。
+
+**README**：新增「NPU 模型支持现状」坦白矩阵（8 条 preset 逐行实测口径 + 出路 +
+世代口径），修正副靶/4B decode/视觉/硬约束/横幅五处过时表述；npu-adaptation.md 的
+「4096 硬红线」句标注已被 11-07/11-09 两次推翻。CHANGELOG [Unreleased] 两条。
+
+**口径提醒**：本节改动是 App 壳层行为，引擎（llama.cpp/OpenVINO 栈）零改动；4B
+ctx>512 包线墙的引擎侧根因（设备预算）仍是 open 问题，P14e 根因修复（行动项 ①）
+优先级不变。
+
 ## 2026-11-08：4B 重估轮——Qwen3-4B「1.3 t/s」翻案 + P14e 杠杆跨模型迁移实锤（4B 性能空间重估行动项 ②）
 
 **背景**：4B 性能优化空间重估（2026-11-08）判定 4B 的主要矛盾已从 t/s 优化转向可用性恢复，

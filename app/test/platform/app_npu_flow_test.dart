@@ -136,15 +136,20 @@ void main() {
       final r2 = await chat.sendMessage(conv.id, '回一个字：好');
       expect(r2.trim(), isNotEmpty);
 
-      // 4) 全局 ctx 回到 4096（最基本档，4B 也放行）→ 模型管理页换 4B 再答一问。
+      // 4) 全局 ctx 回到 4096 → 模型管理页换 4B 再答一问。兜底准入
+      //（2026-11-09 用户拍板「先兜底定制 ctx，确保先能用」）：4B@4096 被
+      // 网关收敛到实测安全档 512 加载（此前 2026-11-07 admission 收紧后这个
+      // 臂在真机必被前置拦——旧锚「-c 4096 放行」已失实，随兜底口径改写）。
       await settings.setContextSize(4096);
       expect(await mgr.loadModel('Qwen3-4B-Q4_K_M'), isTrue,
           reason: '4B 加载失败：${mgr.loadingLogs.join('\n')}');
       final args4b = inf.debugHost()!.lastSpawnArgs!;
       expect(args4b[0], '-m');
       expect(args4b[1], contains('Qwen3-4B'));
-      expect(args4b, containsAllInOrder(['-c', '4096']),
-          reason: '4096 是最基本档：4B 也必须放行');
+      expect(args4b, containsAllInOrder(['-c', '512']),
+          reason: '兜底准入：4B@4096 收敛到实测包线 512 先保可用');
+      expect(mgr.loadingLogs.join(), contains('兜底准入'),
+          reason: '兜底动作必须对用户可见（为什么 4096 变 512）');
       final r3 = await chat.sendMessage(conv.id, '打个招呼，十个字以内');
       expect(r3.trim(), isNotEmpty);
 

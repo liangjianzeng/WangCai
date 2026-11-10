@@ -2,11 +2,11 @@
 # NPU 4B needs the reduced-budget config found in the first NPU round:
 # prefill chunk 128 + decode levels disabled (ZE_RESULT_ERROR_OUT_OF_HOST_MEMORY otherwise).
 $ErrorActionPreference = 'Stop'
-$Exe = 'D:\llm\npu\src\llama\build\bin\llama-cli.exe'
-$Model = 'D:\llm\npu\models\Spark-X2.6-4B-Q4_K_M.gguf'
-$env:PATH = 'D:\llm\npu\src\llama\build\bin;D:\llm\npu\ov\openvino\libs;' + $env:PATH
+$Exe = 'E:\llm\npu\src\llama\build\bin\llama-cli.exe'
+$Model = 'E:\llm\npu\models\Spark-X2.6-4B-Q4_K_M.gguf'
+$env:PATH = 'E:\llm\npu\src\llama\build\bin;E:\llm\npu\ov\openvino\libs;' + $env:PATH
 $env:GGML_OPENVINO_DEVICE = 'NPU'
-$env:GGML_OPENVINO_CACHE_DIR = 'D:\llm\npu\cache_spark_npu2'
+$env:GGML_OPENVINO_CACHE_DIR = 'E:\llm\npu\cache_spark_npu2'
 $env:GGML_OPENVINO_PREFILL_CHUNK_SIZE = '128'
 $env:GGML_OPENVINO_DISABLE_DECODE_LEVELS = '1'
 
@@ -18,7 +18,7 @@ $questions = @(
 
 $failed = 0
 foreach ($q in $questions) {
-    $log = "D:\llm\npu\txt\spark_npu_q_" + $q.Expect + ".log"
+    $log = "E:\llm\npu\txt\spark_npu_q_" + $q.Expect + ".log"
     & $Exe -m $Model -c 512 -n 48 --temp 0 --seed 42 -np 1 -fa 1 -dev OPENVINO3 -st -p $q.Prompt *> $log
     $code = $LASTEXITCODE
     $text = ''

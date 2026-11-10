@@ -195,16 +195,23 @@ void main() {
     expect(spawns.envByExe['npu']!['GGML_OPENVINO_DISABLE_DECODE_LEVELS'], '0');
   });
 
-  test('admission 模型禁入（2026-11-07）：Spark@NPU 前置拦，不拉必歇菜的 server',
+  test('兜底准入（2026-11-09）：Spark@NPU@4096 不再拒载——自动回退 ctx 512 加载',
       () async {
-    // 2026-11-07 路由重设计后语义加强：核心档拒绝后**不改道**（旧语义会
-    // 偷跑 Vulkan——用户实测抱怨「一加载就搞进独显去了」）。
-    await loadNpu('Spark-X2.6-4B-Fake.gguf', expectOk: false);
-    expect(spawns.byExe['npu'], isNull,
-        reason: 'Spark 4B 在 NPU 引擎 decode 特性失效（缺陷单），'
-            '必须 admission 前置拦截而不是拉起 server 让用户等死');
+    // 用户拍板「问题模型先兜底定制 ctx，确保先能用」：Spark 4B 有实测包线墙
+    // （defect-npu-spark-b12034：@4096 非确定性塌方 0.42 t/s），旧语义是前置
+    // 拦+让用户自己调 ctx；新语义 = 网关收敛到实测安全档 512 继续加载
+    // （ℹ️ 留痕），模型先能用。仍不改道——拒绝语义只留给无安全档的全禁入
+    // 模型（MiniCPM5 锚在下方）。
+    final logs = <String>[];
+    inf.onLoadingLog = (m) {
+      if (m != null) logs.add(m);
+    };
+    await loadNpu('Spark-X2.6-4B-Fake.gguf'); // 全局默认 4096 → 兜底 512
+    expect(spawns.byExe['npu'], containsAllInOrder(['-c', '512']),
+        reason: '兜底准入把 4096 收敛到实测安全档 512，server 照常拉起');
+    expect(logs.any((l) => l.contains('兜底准入')), isTrue, reason: '$logs');
     expect(spawns.byExe['cuda'], isNull,
-        reason: '核心档拒绝 = 拒绝，绝不自动改道旁路（换引擎是用户的决定）');
+        reason: '兜底是降档不是改道（换引擎仍是用户的决定）');
   });
 
   test('admission 模型禁入（2026-11-07）：MiniCPM5-2B@NPU 前置拦（4096 基本档双配方双死）',
@@ -277,17 +284,19 @@ void main() {
     expect(reg.hostOf('wangcai-npu').baseUrl, isNotNull);
   });
 
-  test('钉选引擎受 admission 约束：超限配置被拒而不是拉必崩 server', () async {
-    // 全局 ctx 口径（2026-11-06）：准入线 4096，4096 本身全线放行；构造
-    // preset 不命中（paramsB 未知）的大参数量模型验证钉选分支原样放行：
+  test('钉选引擎受 admission 约束：无触发条件的超限配置原样放行由 server 自证',
+      () async {
+    // 全局 ctx 口径（2026-11-06）+ 兜底准入（2026-11-09）后语义：preset 不
+    // 命中（glob 不匹配）→ paramsB 未知 → ctx 门槛/参数量规则都拿不到触发
+    // 条件，既无兜底也无拒载——钉选分支原样放行（探测型断言：钉选分支没有
+    // 静默吞掉大 ctx）。
     reg.instance('wangcai-npu')!.defaultConfig = const EngineDefaults(ctx: 4096);
     final ok = await inf.loadModel(
         '${tmp.path}${Platform.pathSeparator}BigModel-8B.gguf',
         nCtx: 4096,
         engineId: 'wangcai-npu');
-    // preset 不命中（glob 不匹配）→ 无实测上限 → admission ifParamsBAtLeast 3.5
-    // 拿不到 paramsB（null）→ 放行由 server 自证。这里断言放行即可（探测型
-    // 断言：钉选分支没有静默吞掉大 ctx）。
+    // preset 不命中（glob 不匹配）→ paramsB 未知 → admission 规则拿不到
+    // 触发条件 → 放行由 server 自证（探测型断言：钉选分支没有静默吞掉大 ctx）。
     expect(ok, isTrue);
     expect(spawns.byExe['npu'], containsAllInOrder(['-c', '4096']));
   });

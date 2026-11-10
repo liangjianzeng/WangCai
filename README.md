@@ -8,9 +8,19 @@
 > 让被业界晾了多年的 *Intel® AI Boost* 重新产生价值。
 >
 > **v0.0.1 · 2026-10-31 引擎收官** —— NPU 端到端跑通 LFM3，精度主缺陷已定案修复（三问验收 3/3）。
-> **v0.0.2 · 2026-11-02/03 助手落地** —— Windows 桌面壳 M1–M4 完成：NPU / CUDA / Vulkan / 远端
-> 四线路由、托盘驻留、识图 DoD（官方引擎线）、Agent 回归、便携包 + Inno Setup 安装器。
-> 变更全文见 [CHANGELOG.md](CHANGELOG.md)。**直接用？→ [下载安装包](#下载安装windows-用户看这里)**
+> **v0.0.2 · 2026-11-02/03 助手落地** —— Windows 桌面壳 M1–M4：NPU / CUDA / Vulkan / 远端四线路由、
+> 托盘驻留、Agent 回归、便携包 + Inno Setup 安装器。
+> **v0.0.6 · 2026-11-08** —— 装机版引擎根因修复、NPU 世代自适应（Ultra 一/二/三代）、语音
+> ASR&TTS 重构、4B 包线墙实测收口。
+> **2026-11-10 · 生图整合** —— 聊天区 🎨 chip /「/图」直连 Unsloth Studio 文生图
+> （Qwen-Image-2.1-Turbo，1024² 实测 17–29 s），智能体 `generate_image` 自主配图；
+> Windows 本机/局域网/Tailscale、Linux 远端两端同一入口（方案
+> [docs/image-gen-integration-plan.md](docs/image-gen-integration-plan.md)）。
+> **2026-11-10 · Linux 桌面入库** —— Ubuntu 22.04 系 deb + tar.gz 双产物（WSLg 实跑验证）、
+> DGX Spark（ARM64）原生构建链。**Linux 端是远端客户壳形态**：本地 NPU 推理不可用，
+> 模型引擎/生图走局域网 HTTP——能力边界见 [Linux 桌面形态与限制](#linux-桌面形态与限制)。
+> 变更全文见 [CHANGELOG.md](CHANGELOG.md)。**直接用？→ [下载安装包](#下载安装windows--linux)**
+> 模型哪些能用、哪些不能用 → [NPU 模型支持现状](#npu-模型支持现状)（坦白版）。
 
 **简体中文** · [English](README_en.md)
 
@@ -67,10 +77,11 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | Prefill 追平 CPU | ✅ **反超（2026-11-04 性能轮）**：`NPUW_FOLD=NO` 成为 NPU 默认（P12）+ 每图共享重复小链（P14a/b）后，pp512 406→**779 t/s**（+92%）、pp2048 284→**433 t/s**（+52%，均 vs P11 基线，暖 blob `-r 3`），已越过原生 CPU 参照（570 t/s）与 OV-CPU 动态图（610 t/s）|
 | Decode 追平 CPU | 🟡 **P11 证伪"带宽界"定案后 decode 攻坚重启（2026-11-04）**：Q8_0 权重字节 +67% 步时不变，逐节点剖析显示 MatMul 仅占步时 18–23%，其余是 eltwise/state 算子汤。FOLD=NO + P14a/b 后 1.7B tg **22.6 t/s**（+61% vs 基线 14.07，三轴全部 ≥+50% 达标），已入 OV-CPU 参照带（21.7–29.2）下沿；早前"decode 攻坚收官"结论已被本轮取代 |
 | LFM3 全模态（音频 / 视觉输入） | 🟡 **音频与视觉输入 NPU 均端到端（2026-11-01）**：音频与 native Q8_0 参照逐字一致；视觉两根因定案修复（cacheless `input_len=-1` 平面越界 + NPUW `FOLD×FUNCALL_FOR_ALL` 配置交互损坏 clip 图），NPU 描述与 native 一致、文本三问 3/3；视觉吞吐（2026-11-02）warm encode 12.6 s → **亚秒级（542 ms 稳态 / 896 ms FS 冷）**（vs native 435 ms），根因：NPU 分支补 `ov::cache_dir` 插件 blob 缓存，权重烤成 Constants 的 clip 图此前每进程全量重编译 |
-| **副靶：跨模型验证（Spark-X2.6-4B + Qwen3-4B）** | ✅ **两个外部模型家族端到端跑通（2026-11-01）**：讯飞 Spark-X2.6-4B 与 Qwen3-4B（均为标准稠密 Transformer，与 LFM3 混合架构不同系）在 NPU 三问验收全 3/3；副靶顺带修好两个横切缺陷——u4 权重无法包宿主内存（曾阻塞所有非对称 4-bit 路径）与整数零点舍入（曾让静态图精度退化），Q4_K_M checkpoint 现在 OV-CPU 开箱即用。4B 在 llama-cli/server 流需 `PREFILL_CHUNK_SIZE=128`（预算规则：chunk + 最大 decode 图联合驻留，见 HANDOFF 2026-11-02 深夜；ctx≤512 的短对话实测 chunk256 可用且 pp +55–59%）；llama-bench 离线流 chunk256 随便用 |
-| **NPU decode 性能（4B）** | 🟢 **decode 达标：6.9 → 12.26 t/s（+78% vs P11 基线，2026-11-05）**：P14e KV 行写出图外（full 层摘链，`KV_HOST_WRITE` **转默认 ON**）——**2026-11-05 深夜修复**：6077ff8 的翻转本失效（`getenv_int` 对未设置变量返回 0，被当显式关，默认实为 OFF，当天 tg128 实测 8.87=链式），改用 `getenv_str` 判空后翻转真正生效，unset 实测 12.11 与 A/B 一致。**严格同 cache A/B 实锤**：链式 8.89 → 摘链 12.26 t/s = +38% 纯增益；pp2048(ck128) **52.5**（+22.7%）、pp512(ck256) **191.6**（+41.6%）未达 +50%——缺口在 DPU MatMul 计算域（54%）+ residual Add launch 界（27%），translator 级杠杆已榨干（P15 MoE-NPU：Spark 是 dense 无对象；P16 rope NegMul：被上游吸收；P17 DQ 族 decode 专属；P19 chunk：384/512 图全编译过但 infer 即败，设备 scratch 崖在 256–384 之间，chunk256 为物理上限；P20 FOLD=YES：两轴 -29%/-37% 反噬；均 no-op 入册）。**P18 自动升档（2026-11-05）**：env 钉 chunk 128（4B 生产档）时，129–512 token 的 prefill 自动走 chunk256 图（bench pp200 184.8 t/s，同区间 chunk128 模型值 ~127 = **+46%**）；>512 保持 128、≤128 不换图、unset 保持 256 缺省。1.7B 三轴 +92/+52/+61% 全达标。详见 docs/env-vars.md `GGML_OPENVINO_KV_HOST_WRITE`/`PREFILL_CHUNK_SIZE` 与 HANDOFF P15–P20 |
-| **端侧多模态助手「汪柴」（v0.0.2）** | ✅ **M1–M4 全部完成（2026-11-02/03 开发机验证）**：`app/` Flutter Windows 壳（TongYi-Lite Dart 同路径 vendored，分叉清单 `app/UPSTREAM.md`）+ llama-server 子进程网关；三引擎齐——引擎商店钉官方 llama.cpp b12034（Vulkan+CUDA，sha256 白名单）+ OpenAI 远端 + 绑定表实测 t/s 回写 + 路由三档（速度优先 / NPU 优先 / 自动·拔电 NPU 加权），**DoD 四线真机 5/5**（NPU 1.7B / CUDA 4B 117.6 t/s / Vulkan 双卡 / 远端协议）；托盘驻留 + 电源感知 + HKCU 自启；**识图 DoD 达成**（SmolVLM2-500M + 商店 CUDA 引擎，壳网关 20 s 出准确语义描述；NPU 视觉编码缺陷归档 [docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md)，NPU 线做纯文本）；Agent `--jinja` 工具链全链路回归（tools 200，agent c4096）；便携包 `WangCai-0.0.2-win-x64-portable.zip`（干净进程自测 DLL 闭合）+ Inno Setup 脚本。⬜ 干净机装机验证待人工（`packaging/README.md`） |
+| **副靶：跨模型验证（Spark-X2.6-4B + Qwen3-4B）** | 🟡 **2026-11-01 两个外部模型家族端到端跑通（三问 3/3）→ 2026-11-07/08 实测收窄：4B 线 NPU 包线墙钉在 ctx≤512**（Spark@4096 非确定性塌方 0.42 t/s、Qwen3-4B>512 首执行 UNINITIALIZED），Qwen3.5/MiniCPM5 禁入；「历史 1.3 t/s」已翻案（bench 8.15）——明细与出路见 [NPU 模型支持现状](#npu-模型支持现状) |
+| **NPU decode 性能（4B）** | 🟡 **生产口径 ctx≤512：Spark 8.89 / Qwen3-4B 8.15 t/s（KV_HOST_WRITE=0）**；P14e 摘链杠杆（KVH=1）A/B 实锤 +33–38%（Spark 12.26 / Qwen3-4B 10.82，2026-11-08 跨模型迁移实锤）**但文本闸未过前禁入生产**（复读缺陷，defect-npu-p14e-kvhostwrite——根因修复是当前最大性能杠杆）。>512 是包线墙非性能问题（首执行 UNINITIALIZED）。1.7B 线不受影响（tg 22.6 全 ctx） |
+| **端侧多模态助手「汪柴」（v0.0.2）** | ✅ **M1–M4 全部完成（2026-11-02/03 开发机验证）**：`app/` Flutter Windows 壳（TongYi-Lite Dart 同路径 vendored，分叉清单 `app/UPSTREAM.md`）+ llama-server 子进程网关；三引擎齐——引擎商店钉官方 llama.cpp b12034（Vulkan+CUDA，sha256 白名单）+ OpenAI 远端 + 绑定表实测 t/s 回写 + 路由三档（速度优先 / NPU 优先 / 自动·拔电 NPU 加权），**DoD 四线真机 5/5**（NPU 1.7B / CUDA 4B 117.6 t/s / Vulkan 双卡 / 远端协议）；托盘驻留 + 电源感知 + HKCU 自启；**识图 DoD 达成**（SmolVLM2-500M + 商店 CUDA 引擎，壳网关 20 s 出准确语义描述；NPU 视觉当时归档缺陷，**2026-11-07 引擎修复后 NPU 带图三线 E2E 全绿**，见 [docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md)）；Agent `--jinja` 工具链全链路回归（tools 200，agent c4096）；便携包 + Inno Setup 脚本。⬜ 干净机装机验证待人工（`packaging/README.md`） |
 | **App 模型清单扩容：2B/4B 线（2026-11-07）** | ✅ **NPU 预置区扩到 8 条 preset + 目录补齐下载地址**：manifest 新增 `neohorse-1-4b`（TokenRhythm NeoHorse-1 4B Q4_K_M 2.5GB，262k ctx，留位未实测，通用 4B admission 自动接管：ctx≤512 放行、>512 拦）与 `qwen3.5-2b`（unsloth MTP UD-Q4_K_XL 1.29GB，同 qwen35 混合架构——GatedDeltaNet opset 风险与 4B 实锤同源 [defect-npu-qwen35-b12034](docs/defect-npu-qwen35-b12034.md)，2B 不预设结论、按「错放危害<错拦」不加家族禁入）；catalog 补 `Qwen3-4B-Q4_K_M` 下载条目（官方 Qwen 仓三镜像，sha256=本机已验证文件实测且与官方 HF LFS oid 逐位一致——此前 NPU 预置区缺文件却无处可下，用户只能手动放文件）；qwen3.5-2b 条目同步修到下载契约（魔搭置首 / `resolve/master` / 钉 sha，原 hf-mirror 置首+裸下载）。下载契约测试扩到 6 预置（落盘名命中 glob / 三镜像分支 / ±2% 字节带），全锦 1434/23/0 |
+| **生图整合（2026-11-10）** | ✅ **Win/Linux 双端可用，同一份 Dart**：聊天区两入口——🎨 chip /「/图 提示词」确定性直调（不经 LLM，简单聊天模式可用、零 token）+ 智能体 `generate_image` 工具（LLM 判断该配图时自主调用，未启用/断连不注册、不幻觉）。服务端 = Unsloth Studio OpenAI 兼容 `POST /v1/images/generations`（Qwen-Image-2.1-Turbo Q5_K_M 8 步 Turbo；1024² 实测 17–29 s、2048² ≈105 s，n≤4 单飞队列串行），seed/尺寸/耗时随消息落库可溯源复现；设置「API 接入 → 图像生成」测连接绿灯，断连 chip 置灰带原因；图片复制/另存三处入口（动作行 / 右键 / 全屏预览）。Windows 本机 `127.0.0.1:8888` 或 Tailscale 远端均可（tailnet 内填 **http** 方案） |
 
 精度主缺陷的完整攻坚记录是这个仓库最有价值的资产之一：从"logits 被压平、K 缓存第 0 行错八个
 数量级"出发，历经 scatter / conv 算子 / DQ / RMS 池化 / 广播 tile 一连串被证伪的假设，最终钉死在
@@ -82,6 +93,32 @@ token 严格判据待复测（48 token 三问验收已全对）。
 两条用血换来的测量纪律，写在 [docs/npu-internals.md](docs/npu-internals.md) 里，读转储之前先看：
 `prefill_0/1`、`decode_2` 是 llama.cpp 的 **warmup 假批次**（换 prompt 后字节不变），拿它们算余弦等于
 没测；**续写题不能当连贯性判据**——它在设备算错时也能逐字一致，只有指令跟随题能暴露问题。
+
+## NPU 模型支持现状
+
+坦白版：App 内置 NPU 预置区 8 条模型，**当前能健康用的只有 LFM3 两条主打线**。下表每行都是本机
+（Ultra 9 275HX · NPU 3720 · driver 32.0.100.4512 · OpenVINO 2026.4.1 · llama.cpp b12034 栈）的实测
+口径，出处是各缺陷单与 [docs/HANDOFF.md](docs/HANDOFF.md)，不形容词化：
+
+| 模型 | NPU 现状 | 实测口径 | 出路 |
+|---|---|---|---|
+| **LFM3-1.7B** Q4_K_M | ✅ **主打，全 ctx 健康** | tg 22.6 t/s（与 ctx 无关）、pp512 779 t/s；ctx≤8192 实测、16K 图级通过 | 默认推荐起步 |
+| **LFM3-Omni-2B** Q4_0 | ✅ 文本全 ctx + **带图可用**（2026-11-07 引擎修复） | 文本 21.9 t/s；带图 10.15 t/s；遗留：大图首编 ≈7 min、视觉尾段无编译缓存、4096+mmproj 编译管线待复验 | 视觉线主力；音频输入 NPU 亦端到端 |
+| Spark-X2.6-4B | 🟡 **仅 ctx≤512** | @512 warm ≈4.7–6 t/s；**@4096 非确定性塌方 0.42 t/s**（[defect-npu-spark-b12034](docs/defect-npu-spark-b12034.md)） | App 自动兜底到 512；长上下文用 CUDA（实测 99.2 t/s） |
+| Qwen3-4B | 🟡 **仅 ctx≤512** | tg 8.15 t/s（KV_HOST_WRITE=1 达 10.82、+33%，但文本闸未过前禁入生产）；**>512 首执行 UNINITIALIZED**——2026-11-08 bench：ctx2176 编译 39 s 过、执行放不下 | 同上 |
+| NeoHorse-1 4B | ⬜ **留位未实测** | 无实测数字，不预设结论；按通用 4B admission 接管 | 实测后补注 |
+| Qwen3.5-4B / 2B | ❌ **禁入** | GatedDeltaNet 融合算子以自定义 opset 序列化，driver VCL 反序列化即编译期死；5540 驱动 decode DEVICE_LOST 终审 driver/硬件级（[defect-npu-qwen35-b12034](docs/defect-npu-qwen35-b12034.md)） | CUDA/Vulkan（qwen3.5-4b-gpu preset 真机首验通过） |
+| MiniCPM5-2B | ❌ **禁入** | 全矩阵 6 配方点仅 1 点功能完整（ctx512 @ 2.0 t/s = 健康线的 1/10，thinking 模型一轮 CoT 96 s 起；DDL 回落臂亦作废；[defect-npu-minicpm5-b12034](docs/defect-npu-minicpm5-b12034.md)） | CUDA/Vulkan |
+
+**4B 线的「先能用」兜底（2026-11-09）**：全局 ctx 默认 4096、可拖 16K，但 4B 在 NPU 上的实测包线是
+512。App 现在对此**不再拒载**——网关自动把请求 ctx 收敛到实测安全档继续加载（未曾实测的机器收敛到
+512；该机实测跑通过更高档位则按实测档收敛），ℹ️ 日志留痕，模型先能用。要更长上下文，装 CUDA/Vulkan
+引擎（设置 → 引擎管理，4B 实测 88–99 t/s）。无实测安全档的模型（Qwen3.5 / MiniCPM5）维持硬拒载 +
+改道建议，不假装能用。
+
+**世代口径**：以上全部数字来自 NPU 3720（Ultra 一代）**一台实机**；Ultra 二代（3820）/ 三代（4000 系）
+**没有实机、未实测**——App 按「保守起步 + 该机实测上探」自适应（[docs/npu-adaptation.md](docs/npu-adaptation.md)），
+拿到二/三代实机之前，别把这张表外推到别的机器上。
 
 ## 实测数据
 
@@ -108,18 +145,55 @@ LFM3-1.7B `Q4_K_M`（1049 MB）· 24 层（13 门控短卷积 + 5 滑动窗口@2
 
 复现方式见 [`tools/`](tools/README.md)。
 
-## 下载安装（Windows 用户看这里）
+## 下载安装（Windows / Linux）
 
-从 [GitHub Releases](https://github.com/liangjianzeng/WangCai/releases/latest) 获取（当前 **0.0.6**，2026-11-08）：
+从 [GitHub Releases](https://github.com/liangjianzeng/WangCai/releases/latest) 获取（当前 **0.0.6**，
+2026-11-10 出包——含生图整合与 Linux 产物，Windows/Linux 共六件）：
 
 | 产物 | 适合 | 说明 |
 |---|---|---|
-| **[Setup.exe 安装包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-Setup.exe)**（68 MB，sha256 `3bc173f9…`）· 推荐 | 大多数人 | 标准 Windows 安装向导：每用户安装**无需管理员**，可选桌面图标 / 开机自启；壳 + **汪柴 NPU 引擎 + OpenVINO 运行时**一体安装；卸载保留会话库/模型/编译缓存 |
-| **[portable.zip 便携包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-portable.zip)**（108 MB，sha256 `700d5277…`） | 免安装 / U 盘 | 解压即用，跑 `App\WangCai.exe`（布局同安装器） |
+| **[Setup.exe 安装包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-Setup.exe)**（68 MB，sha256 `282b3511…`）· Windows 推荐 | 大多数人 | 标准 Windows 安装向导：每用户安装**无需管理员**，可选桌面图标 / 开机自启；壳 + **汪柴 NPU 引擎 + OpenVINO 运行时**一体安装；卸载保留会话库/模型/编译缓存 |
+| **[portable.zip 便携包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-portable.zip)**（108 MB，sha256 `20ce51b2…`） | Windows 免安装 / U 盘 | 解压即用，跑 `App\WangCai.exe`（布局同安装器） |
+| **[linux-amd64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.deb)**（19 MB，sha256 `45b15b78…`）· Linux x64 推荐 | Ubuntu 22.04/24.04 x64 | `sudo apt install ./WangCai-*.deb`：`/opt/wangcai` + `/usr/bin/wangcai` 符号链 + 桌面条目 + 图标；CJK/emoji 字体、xclip 等依赖 apt 自动带入 |
+| **[linux-amd64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.tar.gz)**（24 MB，sha256 `e5d40620…`） | x64 免安装 | 解压跑 `wangcai`，依赖清单随包 README |
+| **[linux-arm64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.deb)**（21 MB，sha256 `568416ec…`）· ARM64 推荐 | DGX Spark 等 ARM64 | 同 deb 口径；`Depends` 用 22.04/24.04 兼容语法（`libgtk-3-0 \| libgtk-3-0t64` 等）；DGX Spark 原生构建（Flutter 3.29.0 arm64——官方不发 linux-arm64 SDK，如实记录） |
+| **[linux-arm64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.tar.gz)**（26 MB，sha256 `8132a447…`） | ARM64 免安装 | 解压跑 `wangcai` |
 
-装完第一件事：设置页 → 模型 → 下载 **LFM3-1.7B** 起步，引擎管理确认 NPU 就绪。硬件门槛见[硬件要求](#硬件要求)。
+装完第一件事（Windows）：设置页 → 模型 → 下载 **LFM3-1.7B** 起步（NPU 主打线，全 ctx 健康）。想跑 4B 智能体模型
+也可以——NPU 上它们只有 ctx≤512 的实测包线，App 会自动兜底收敛（见 [NPU 模型支持现状](#npu-模型支持现状)）。
+引擎管理确认 NPU 就绪。想试试生图：设置 →「API 接入 → 图像生成」填 Unsloth Studio 地址（见
+[生图整合方案](docs/image-gen-integration-plan.md)）。硬件门槛见[硬件要求](#硬件要求)。
 
 > CUDA / Vulkan 外挂引擎不随安装器分发，在 App 内「引擎商店」按需下载；NPU 引擎与 OpenVINO 运行时始终随包。
+
+**Linux 包是远端客户壳**（不含 NPU 引擎，能力边界见下节）：装完第一件事把设置页的模型引擎指向
+局域网/远端的 llama.cpp / vLLM / OpenAI 兼容 HTTP，生图指向 Windows 侧 Unsloth Studio（LAN 地址或
+`http://<host>.ts.net:8888`——tailnet 流量端到端加密，端上填 **http** 方案）。想自构建（WSL 一条
+脚本 / DGX Spark 原生）见 [packaging/README](packaging/README.md)，产物口径
+`WangCai-<ver>-linux-<amd64|arm64>.{deb,tar.gz}`。
+
+## Linux 桌面形态与限制
+
+Linux 端与 Windows 端**同一份 Dart 代码**，差异全部来自平台守卫——与其让你对着"加载不了模型"
+猜原因，这里把边界一次说清（2026-11-10 Ubuntu 22.04/WSLg 首轮验证）：
+
+| 能力 | Linux 状态 | 说明 |
+|---|---|---|
+| 本地 NPU 推理（主打线） | ❌ 不可用 | `llama-server`（ggml-openvino/NPU 后端）是 Windows 构建，Intel AI Boost 插件仅 Windows 提供。**Linux 没有"本地加载 GGUF 跑 NPU"这条路** |
+| 本地 CUDA / Vulkan 引擎 | ❌ 不可用 | 随包/商店的本地引擎同样是 Windows 二进制 |
+| **远端引擎（主方案）** | ✅ | 设置页填局域网/远端的 llama.cpp / vLLM / OpenAI 兼容 HTTP 地址（含 SSH 隧道形态） |
+| 联网搜索（端侧直连） | ✅ | Bing/360/搜狗等直连抓取，纯 Dart |
+| 生图（客户侧） | ✅ | 连局域网 Windows 侧 Unsloth Studio（设置页填其 LAN 地址；与 Windows 端同一入口：🎨 chip /「/图」） |
+| 智能体工具/会话/待办/计划 | ✅ | 纯 Dart，与 Windows 同行为 |
+| 语音 TTS（Edge） | ✅ | 网络服务，跨平台 |
+| 本地 ASR（sherpa-onnx） | ⚠️ 未实测 | Linux 预编译库存在，本轮未专门验证 |
+| 系统托盘 / 关窗驻留 | ❌ | `tray_manager` Windows-only，守卫降级：关窗即退出，无常驻图标 |
+| API 密钥安全存储 | 🟡 | Linux 走 libsecret——需要桌面提供 secret service（GNOME Keyring / KWallet）；没有时回退明文文件（fail-open 设计使然，公共机器注意） |
+| 图片复制到剪贴板 | ✅ | 需 `xclip`（X11）或 `wl-clipboard`（Wayland）——deb 已声明依赖自动带入 |
+| 开机自启 / 桌面集成 | 🟡 | deb 安装带 `.desktop` 项；注册表类"开机自启"为 Windows 特性，Linux 未提供 |
+
+**一句话定位**：Windows 上汪柴是"纯 NPU 端侧推理引擎 + 智能体"；Linux 上是**接入你局域网
+AI 算力的桌面智能体壳**——UI、会话、智能体、搜索、生图体验两端一致，缺的是本地大模型推理。
 
 ## 快速开始
 
@@ -163,8 +237,8 @@ tools\chat-npu.ps1 -Model models\LFM3-1.7B-Q4_K_M.gguf
 | `-st`（对话模板） | instruct 模型走裸续写会退化成重复胡话，任何后端都一样 |
 | `GGML_OPENVINO_DEVICE=NPU` | 选 NPU 而不是 OpenVINO-CPU |
 | `GGML_OPENVINO_CACHE_DIR` | 持久化图编译缓存（`FOLD=NO` 下冷编译约为旧配置 10×，靠 blob 缓存吸收）；**每种配置用独立目录**，否则过期编译图会无声胜出；4B 每个 ctx 形状 ~19 GB，预留 ≥20 GB |
-| `-c` ≤ 8192 实测通过 | 多跨度 decode 图组落地后 decode 速度与 ctx 无关（c=8192 实测 14.1 t/s）；更高 ctx 未验证 |
-| 4B 模型（NPU）：`GGML_OPENVINO_PREFILL_CHUNK_SIZE=64`（短 prompt）/ `128`（长 prompt） | 4B 预算规则（BUDGET-TRACE 定案，HANDOFF 2026-11-02 深夜）：**prefill 图(chunk) + 最大 decode 图（级别 = KV 行跨度）联合驻留**。chunk256 只容 decode 级别 ≤512（**ctx≤512 实测可用，pp +55–59%**）；ctx≥1024 时 decode 需级别 ≥1024 → 超预算（首 execute ZE append 失败），chat/server 用 64/128。llama-bench 离线流 decode mask 从不超 256，chunk256 随便用；1.7B 任意 ctx 可 chunk256。短 prompt 首 token 延迟 chunk64 比 128 好 ~17%，32 以下固定开销反噬。**P18 自动升档（2026-11-05）**：钉 128 时，129–512 token 的 prefill 自动改走 chunk256 图（bench pp200 184.8 t/s vs chunk128 模型值 ~127 = **+46%**），>512 保持 128、unset 保持 256 缺省——用户不再需要手调 |
+| `-c`（1.7B 线）≤ 8192 实测通过、16K 图级通过 | 多跨度 decode 图组落地后 decode 速度与 ctx 无关（c=8192 实测 14.1 t/s）；**4B 线另有限制：ctx≤512 是包线墙**（>512 首执行 UNINITIALIZED，与 chunk 无关），见 [NPU 模型支持现状](#npu-模型支持现状) |
+| 4B 模型（NPU）：`GGML_OPENVINO_PREFILL_CHUNK_SIZE=64`（短 prompt）/ `128`（长 prompt） | 4B 预算规则（BUDGET-TRACE 定案，HANDOFF 2026-11-02 深夜）：**prefill 图(chunk) + 最大 decode 图（级别 = KV 行跨度）联合驻留**。chunk256 只容 decode 级别 ≤512（**ctx≤512 实测可用，pp +55–59%**）；ctx≥1024 时 decode 需级别 ≥1024 → 超预算（首 execute ZE append 失败），chat/server 用 64/128。llama-bench 离线流 decode mask 从不超 256，chunk256 随便用；1.7B 任意 ctx 可 chunk256。短 prompt 首 token 延迟 chunk64 比 128 好 ~17%，32 以下固定开销反噬。**P18 自动升档（2026-11-05）**：钉 128 时，129–512 token 的 prefill 自动改走 chunk256 图（bench pp200 184.8 t/s vs chunk128 模型值 ~127 = **+46%**），>512 保持 128、unset 保持 256 缺省——用户不再需要手调。**App 侧（2026-11-09）按包线墙自动兜底**：4B 请求 ctx>512 时网关自动收敛到实测安全档 512 加载（ℹ️ 留痕），不再拒载 |
 
 `llama-server.exe` 也一并构建，可用同样的环境变量提供 OpenAI 兼容 HTTP 服务；`-c`/-fa/-np 约束相同。
 **`llama-server` 必须加 `--no-warmup`（P16 硬性要求，2026-11-04）**：启动期 warmup eval 会毒化其后的
@@ -233,10 +307,24 @@ LFM3 时 prefill 已达 **779 t/s**（高于原生 CPU 参照的 570，2026-11-0
 ### 多模态
 
 助手线**识图 DoD 已达成（2026-11-03，官方引擎线）**：SmolVLM2-500M（商店下载入模型库）+ 引擎商店
-CUDA 引擎，壳网关全链路 20 s 出准确语义描述（`app/test/platform/vision_official_test.dart`）。NPU 侧
-视觉编码在 OV 后端 `graph_compute` 返 -1，缺陷归档 [docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md)
-——**NPU 线当前做纯文本**，识图由路由派给官方引擎。引擎侧音频输入 NPU 已端到端（与 native Q8_0
-参照逐字一致，见上表）。语音输入/输出管线（sherpa ASR / TTS）随壳 vendored，未列入 M1–M4 验收面。
+CUDA 引擎，壳网关全链路 20 s 出准确语义描述（`app/test/platform/vision_official_test.dart`）。
+**NPU 线视觉也已打通（2026-11-07 引擎修复）**：`clip_encode failed -1` 的根因链定案并修复后，NPU
+带图三线 E2E 全绿（mtmd-cli 128px / 1920×1200 壁纸 / llama-server OpenAI 格式带图 10.15 t/s），
+引擎声明 `vision=true` 回填——遗留：大图首次编译 ≈7 分钟、视觉尾段无编译缓存、4096+mmproj 编译管线
+待复验（[docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md)）。引擎侧音频输入 NPU 已端到端（与
+native Q8_0 参照逐字一致，见上表）。语音输入/输出管线（sherpa ASR / TTS）随壳 vendored 并于 v0.0.6
+完成 M0–M3 重构（唤醒双引擎仲裁 + offline TTS 链）。
+
+**生图线（2026-11-10 整合）**：一个实现双入口——聊天区 🎨 chip /「/图 提示词」确定性直调（不经
+LLM，简单聊天模式与离线可用、零 token），智能体模式则由 LLM 自主调用 `generate_image` 工具配图。
+共同底座 `image_gen_service.dart` 是纯 Dart HTTP（零原生依赖）：OpenAI 兼容
+`POST /v1/images/generations` 打给 Windows 侧 Unsloth Studio（Qwen-Image-2.1-Turbo Q5_K_M，8 步
+Turbo，1024² 实测 17–29 s），n≤4 客户端单飞队列串行，图片落盘 `文档/imagegen/日期/` 并以
+`imagePaths` 入库（seed/尺寸/耗时随消息留存，同 seed 可复现）。配置在设置「API 接入 → 图像生成」，
+测连接绿灯；未启用/断连 chip 置灰带原因、工具不注册。Windows 可本机 `127.0.0.1:8888`、局域网或
+Tailscale 远端；Linux 端连同一服务即得同等体验（这正是"零原生依赖"换来的双端一致）。图片的复制
+进剪贴板 / 另存在动作行、右键菜单、全屏预览三处都有入口。完整方案与验收
+[docs/image-gen-integration-plan.md](docs/image-gen-integration-plan.md)。
 
 ### 分期
 
@@ -245,8 +333,9 @@ CUDA 引擎，壳网关全链路 20 s 出准确语义描述（`app/test/platform
   C ABI 直链为并行线，成熟后替换传输层、壳无感。
 - **Phase 2**：App 在 Windows 跑通。✅ **v0.0.2 M1–M4 完成**：NPU/CUDA/Vulkan/远端四线 DoD、
   托盘驻留、路由三档、Agent 回归、便携包 + Inno Setup 安装器（⬜ 干净机验证待人工）。
-- **Phase 3**：多模态端到端。🟡 识图 DoD 已在官方引擎线达成；NPU 视觉编码缺陷归档（NPU 线纯文本）；
-  语音管线 vendored、未列入已验收面。
+- **Phase 3**：多模态端到端。🟡 识图 DoD 已在官方引擎线达成；**NPU 视觉 2026-11-07 引擎修复后带图
+  三线 E2E 全绿**（遗留：大图首编 ≈7 min，见 defect-npu-mtmd）；语音管线 vendored，v0.0.6 M0–M3
+  重构合流。
 - **Phase 4**：低功耗实测 + 功耗感知的调度策略。⬜ 未启动（前置：电池机或外置功率计）。
 
 出包与安装：`packaging/build-installer.ps1`（便携 zip 无需 Inno 即可产出；装 Inno Setup 6 后自动附出
@@ -279,6 +368,7 @@ src/llama/            vendored 的 llama.cpp（.gitignore 排除，由 bootstrap
 | [故障排查](docs/troubleshooting.md) | 我们踩过的每一个报错及解法 |
 | [路线图](docs/roadmap.md) | 先精度、再吞吐、然后全模态 |
 | [助手 v0.0.2 设计](docs/assistant-v0.0.2-design.md) | 壳架构、引擎注册表、路由策略、M1–M4 DoD |
+| [生图整合方案](docs/image-gen-integration-plan.md) | Unsloth Studio 客户侧：双入口、落盘/seed 口径、远程接入与验收 |
 
 ## 硬件要求
 
@@ -286,7 +376,7 @@ src/llama/            vendored 的 llama.cpp（.gitignore 排除，由 bootstrap
 |---|---|
 | SoC | 带 `Intel(R) AI Boost` 的 Intel Core Ultra（Series 1/2），设备类 `PCI\VEN_8086&DEV_AD1D` |
 | 驱动 | 与所装 OpenVINO 版本匹配的 Intel NPU 驱动 |
-| 系统 | Windows 11（Linux 路径上游支持，本机未验证） |
+| 系统 | Windows 10/11（下表约束为**本地 NPU 推理线**；Linux 桌面壳不受这些约束——它是远端形态，Ubuntu 22.04 系 x64/ARM64，见 [Linux 桌面形态与限制](#linux-桌面形态与限制)） |
 | 内存 | 每 2 GB 模型至少 8 GB 空闲；1–4 B 模型 16 GB 舒适；**NPU 重度冷编译需 ≥25 GB 物理内存空闲**（空闲不足表现为编译无声挂起，P14 教训） |
 | 磁盘 | 图编译缓存按"模型 × ctx 形状"计，4B 实测 ~19 GB/份：打包/部署**每个模型每个 ctx 预留 ≥20 GB** |
 
@@ -297,7 +387,7 @@ Unreleased 段的日期是"该改动在硬件上被验证的日期"）。
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| Unreleased | — | 此后改动见 [CHANGELOG.md](CHANGELOG.md) Unreleased 段 |
+| Unreleased | 2026-11-09 → 11-10 | **生图整合**（🎨 chip /「/图」+ 智能体 `generate_image`，Unsloth Studio 直连，Win/Linux 双端）、**Linux 打包链**（deb + tar.gz，x64/ARM64，CJK/emoji 字体与窗口图标补漏）、**4B 兜底准入**（问题模型自动收敛到实测安全档，先保可用）、SearXNG 配置折叠化；**2026-11-10 重出包**——以上改动并入 0.0.6 产物（Windows 双件 + Linux 四件，链接见[下载安装](#下载安装windows--linux)段）。逐条见 [CHANGELOG.md](CHANGELOG.md) Unreleased 段 |
 | [0.0.6](CHANGELOG.md) | 2026-11-07 → 11-08 | **装机版引擎根因修复**（engines.json「缓存不夺权」+ PATH 前置重建修「NPU 引擎不可用」、退出 c000041d/WER 卡顿修复、`app.log` 黑匣子日志）；**4B 重估轮**（Qwen3-4B「1.3 t/s」翻案为 bench 口径 8.15/10.82、ctx>512 包线墙实测钉准、P14e 杠杆跨模型迁移 +33%）；并入 2026-11-05→07 批次：**NPU 世代自适应**（一/二/三代探测 + clamp 链 + 实测上探闭环）、**语音 ASR&TTS 重构 M0–M3**、**路由两档制**、**NPU 视觉引擎修复**、**4B admission 收紧族**（Spark 深上下文拦 / Qwen3.5 编译禁入 / MiniCPM5 禁入）、**模型清单扩容**（neohorse-1-4b / qwen3.5-2b + 下载契约 6 预置） |
 | [0.0.5](CHANGELOG.md) | 2026-11-05（tag 11-06） | 引擎线合流收官：P15–P20 入册（`KV_HOST_WRITE` 翻转修复、chunk 自动升档）、16K 深上下文预设、引擎按需安装改 **zip 流式解包**（修 CUDA 800MB+ 包下载完成即崩）；侧边栏常显收窄 |
 | 0.0.4 | 2026-11-05 | **数据家统一**四家并一家进 `%APPDATA%\WangCai`（搬迁语义 6 用例）；路由定调 **NPU 主打**；JSONL 真相源通电（write-through + fast path）；窗口几何记忆/单实例/快捷键等桌面基本件；交互去手机化 |

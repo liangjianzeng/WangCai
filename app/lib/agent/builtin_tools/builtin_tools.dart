@@ -20,6 +20,7 @@ export 'file_tools.dart'
         createWriteFileTool;
 export 'data_api/data_api_tool.dart' show createDataApiTool;
 export 'fetch_url_tool.dart' show createFetchUrlTool, kFetchMaxBytes;
+export 'generate_image_tool.dart' show createGenerateImageTool;
 export 'get_time.dart' show createGetTimeTool;
 export 'memory_tool.dart' show createMemoryGetTool, createMemorySetTool;
 export 'note_tool.dart' show createNoteListTool, createNoteTakeTool, resetNoteStore;
@@ -72,7 +73,10 @@ import '../dev/tools/ssh_tools.dart';
 import '../dev/tools/sync_tools.dart';
 import '../dev/tools/verify_tool.dart';
 import '../tool_definition.dart';
+import '../../services/image_gen_service.dart'
+    show ImageGenConfig, ImageGenResult;
 import 'calculator.dart';
+import 'generate_image_tool.dart';
 import 'export_file_tool.dart';
 import 'file_tools.dart';
 import 'data_api/data_api_tool.dart';
@@ -114,6 +118,7 @@ const List<String> kOptionalToolNames = [
   'get_weather',
   'shell_exec',
   'python_exec',
+  'generate_image',
 ];
 
 /// Dev 开发工具名（开发模式开启后可见；默认关闭）。
@@ -148,6 +153,9 @@ const List<String> kDevToolNames = [
 /// [onTodosChanged]：todo_write 成功后的 UI 通知（对话内任务清单活卡 upsert）。
 /// [conversationId]：todo 清单按会话隔离的存储键（todo_v3；null 回退
 /// 'default' 键，现网唯一调用方 chat_provider 恒传真实会话 id）。
+/// [imageGenConfigLoader] / [onImageGenerated]：生图工具（入口②）的配置
+/// 取新值与成图落库回调；loader 为 null = 不创建（开关关闭时接入层不传，
+/// 模型看不见该工具——weather/web_search 同一门控语义）。
 List<ToolDefinition> createBuiltinTools({
     int webSearchMaxSearchesPerTurn = 5,
     bool includeDevTools = false,
@@ -156,6 +164,9 @@ List<ToolDefinition> createBuiltinTools({
     List<AdbTarget> adbTargets = const [],
     AdbSecretStore? adbKeyStore,
     String? conversationId,
+    Future<ImageGenConfig> Function()? imageGenConfigLoader,
+    void Function(ImageGenResult result, String prompt, String model)?
+        onImageGenerated,
     void Function(List<Map<String, String>> items)? onTodosChanged}) => [
       createGetTimeTool(),
       createCalculatorTool(),
@@ -206,4 +217,10 @@ List<ToolDefinition> createBuiltinTools({
       if (adbEnabled)
         createAdbTool(
             targets: adbTargets, keyStore: adbKeyStore, adbEnabled: adbEnabled),
+      // 图像生成（入口②）：loader 非空才创建（开关在接入层双保险过滤）。
+      // 与入口①共用 ImageGenService（单飞队列串行）。
+      if (imageGenConfigLoader != null)
+        createGenerateImageTool(
+            configLoader: imageGenConfigLoader,
+            onGenerated: onImageGenerated),
     ];

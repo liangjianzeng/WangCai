@@ -86,10 +86,21 @@ import '../services/attachment_service.dart'
 import '../services/openai_service.dart';
 import '../services/settings_service.dart';
 import '../services/storage_service.dart';
+import '../services/api_key_store.dart' show apiKeyStore;
+import '../services/image_gen_service.dart'
+    show
+        ImageGenConfig,
+        ImageGenException,
+        ImageGenResult,
+        ImageGenService,
+        ImageGenErrorKind,
+        kImageGenApiKeyId,
+        kImageGenSlashPrefix;
 import 'agent_approval.dart'
     show sandboxApproverProvider, toolPreApproverProvider;
 import 'agent_state_provider.dart'
     show agentUiStateProvider, UiTimelineThinking, UiTimelineTool;
+import 'image_gen_provider.dart' show ImageGenJob, imageGenJobsProvider;
 import 'shared_providers.dart'
     show inferenceServiceProvider, openAiServiceProvider;
 import 'settings_provider.dart' show settingsProvider;
@@ -514,6 +525,123 @@ class ChatNotifier extends StateNotifier<bool> {
     await _refreshConversationMeta(conversationId);
     agent.steer(trimmed);
     return '（已作为插话转入执行中的回合）';
+  }
+
+  // ---------------------------------------------------------------------------
+  // 图像生成（入口①，docs/image-gen-integration-plan.md 评审定案落地）
+  // ---------------------------------------------------------------------------
+
+  /// 生图配置快照：设置四项 + 安全存储密钥（内存态，绝不落盘）。
+  Future<ImageGenConfig> _imageGenConfig() async {
+    final s = _ref.read(settingsProvider);
+    String key = '';
+    try {
+      key = await apiKeyStore.read(kImageGenApiKeyId) ?? '';
+    } catch (_) {
+      // fail-open：安全存储不可用时无 key 直连（本机回环通常也免不了鉴权，
+      // 报 401 的文案会引导去设置补 key）。
+    }
+    return ImageGenConfig(
+      enabled: s.imageGenEnabled,
+      baseUrl: s.imageGenBaseUrl,
+      model: s.imageGenModel,
+      defaultSize: s.imageGenDefaultSize,
+      apiKey: key,
+    );
+  }
+
+  /// 成图/失败消息文案（入口①②共用一个形态，单真源）。
+  static String _imageGenResultText(ImageGenResult r) =>
+      '🎨 生成 ${r.paths.length} 张 · ${r.size} · seed ${r.seed} · '
+      '${(r.ms / 1000).toStringAsFixed(1)}s';
+
+  /// 工具回调落库：智能体生图同样以带 imagePaths 的 assistant 消息持久化
+  /// （重进会话可回看；onTodosChanged 同款先例）。
+  Future<void> _saveGeneratedImageMessage(
+      String conversationId, ImageGenResult result, String prompt,
+      {required String model}) async {
+    await _storage.saveMessage(ChatMessage(
+      id: 'imga_${DateTime.now().millisecondsSinceEpoch}',
+      conversationId: conversationId,
+      role: MessageRole.assistant,
+      content: _imageGenResultText(result),
+      imagePaths: result.paths,
+      genMeta: jsonEncode(result.metaJson(prompt, model)),
+    ));
+    await _refreshConversationMeta(conversationId);
+  }
+
+  /// 入口①：确定性直调生图（不经 LLM，离线可用、零 token）。
+  ///
+  /// 流程（评审定案）：user 消息先落库 → **临时占位**（imageGenJobsProvider，
+  /// 不入库，杀 App 不留脏占位）→ 完成才写带 imagePaths 的 assistant 消息；
+  /// 失败写错误文案 + 原提示词（重发即重试）。
+  /// [prompt] 可带 [kImageGenSlashPrefix] 前缀（「/图 」），统一剥掉后入库。
+  Future<void> generateImageDirect(
+      String conversationId, String prompt) async {
+    var promptText = prompt.trim();
+    if (promptText.startsWith(kImageGenSlashPrefix)) {
+      promptText = promptText.substring(kImageGenSlashPrefix.length).trim();
+    }
+    if (promptText.isEmpty) return;
+    final jobs = _ref.read(imageGenJobsProvider.notifier);
+    if (jobs.state.containsKey(conversationId)) {
+      await _storage.saveMessage(ChatMessage(
+        id: 'imgbusy_${DateTime.now().millisecondsSinceEpoch}',
+        conversationId: conversationId,
+        role: MessageRole.assistant,
+        content: '🎨 已有生图任务进行中，请等待完成或先取消。',
+      ));
+      await _refreshConversationMeta(conversationId);
+      return;
+    }
+    final cfg = await _imageGenConfig();
+    final size = cfg.effectiveSize;
+    await _storage.saveMessage(ChatMessage(
+      id: 'imgu_${DateTime.now().millisecondsSinceEpoch}',
+      conversationId: conversationId,
+      role: MessageRole.user,
+      content: promptText,
+    ));
+    await _refreshConversationMeta(conversationId);
+    jobs.start(ImageGenJob(
+        conversationId: conversationId,
+        prompt: promptText,
+        size: size,
+        startedAt: DateTime.now()));
+    try {
+      final result = await ImageGenService.instance
+          .generate(config: cfg, prompt: promptText, size: size);
+      await _saveGeneratedImageMessage(conversationId, result, promptText,
+          model: cfg.model);
+    } on ImageGenException catch (e) {
+      final content = e.kind == ImageGenErrorKind.cancelled
+          ? '🎨 已取消生成。'
+          : '🎨 生图失败：${e.message}\n（提示词：$promptText —— 重发即可重试）';
+      await _storage.saveMessage(ChatMessage(
+        id: 'imge_${DateTime.now().millisecondsSinceEpoch}',
+        conversationId: conversationId,
+        role: MessageRole.assistant,
+        content: content,
+      ));
+      await _refreshConversationMeta(conversationId);
+    } catch (e) {
+      await _storage.saveMessage(ChatMessage(
+        id: 'imge_${DateTime.now().millisecondsSinceEpoch}',
+        conversationId: conversationId,
+        role: MessageRole.assistant,
+        content: '🎨 生图失败：$e\n（提示词：$promptText —— 重发即可重试）',
+      ));
+      await _refreshConversationMeta(conversationId);
+    } finally {
+      jobs.finish(conversationId);
+    }
+  }
+
+  /// 取消当前生图（占位卡的取消按钮）：真正掐断 HTTP 请求（CancelToken），
+  /// 服务端串行队列里的排队任务不受影响。
+  void cancelImageGen() {
+    ImageGenService.instance.cancelActive();
   }
 
   /// 回答 ask_user_question 的挂起提问（UI 卡片提交/点选项/跳过时调用）。
@@ -2566,6 +2694,16 @@ class ChatNotifier extends StateNotifier<bool> {
         adbEnabled: settings.adbEnabled,
         adbTargets: settings.adbTargets,
         conversationId: conversationId,
+        // 图像生成（入口②）：开关开启才传 loader（工具创建），关闭时模型
+        // 根本看不见 generate_image——weather/web_search 同一门控语义。
+        // loader 在 execute 时取新配置（含安全存储密钥），成图经回调落库。
+        imageGenConfigLoader:
+            settings.imageGenEnabled ? _imageGenConfig : null,
+        onImageGenerated: conversationId == null
+            ? null
+            : (result, prompt, model) => unawaited(_saveGeneratedImageMessage(
+                conversationId, result, prompt,
+                model: model)),
         // todo_write 成功 → 对话内固定 id 的「☑ 任务清单」活卡 upsert
         //（用户有地方看进度；固定 id 反复重写不刷屏，模型历史可见）。
         // 清单本体也按会话隔离存储（v3）：不同会话各看各的清单。
@@ -2633,6 +2771,11 @@ class ChatNotifier extends StateNotifier<bool> {
     // 与本文件其它能力开关同构，双保险成本为零）。
     if (!settings.adbEnabled) {
       registry.unregister('adb');
+    }
+
+    // 图像生成：关闭时兜底反注册（同 ADB 双保险；创建处 loader 已门控一次）。
+    if (!settings.imageGenEnabled) {
+      registry.unregister('generate_image');
     }
 
     // python_exec：用户设置关闭时不可见（默认开启；无 Chaquopy 时工具优雅降级）。

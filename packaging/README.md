@@ -40,6 +40,47 @@ OpenVINO 运行时源由脚本统一裁决：仓库 vendored `ov/openvino/libs` 
 - 可选任务：桌面图标、开机自启（写 HKCU Run；运行期也可在 App 内开关）。
 - 卸载：清壳与 `engines\wangcai`；**用户数据保留**（会话库/绑定表/编译缓存/模型库）。
 
+## Linux 打包（deb + tar.gz，2026-11-10 新增）
+
+**定位**：Linux 端是**远端客户壳**（口径见 `docs/image-gen-integration-plan.md`
+与 README 系统行）——模型引擎/生图走局域网 HTTP，NPU/OpenVINO/托盘等在本仓
+已有平台守卫、Linux 自动降级。所以 **Linux 包不含引擎**（区别于 Windows 包），
+纯 Dart 壳，产物 `WangCai-<ver>-linux-<amd64|arm64>.{deb,tar.gz}`。
+
+**一次性环境**（Ubuntu 22.04 系；Flutter 固定 3.27.0 与 Windows 侧一致）：
+
+```bash
+bash packaging/linux/wsl-setup.sh        # apt 依赖 + Flutter → $HOME/flutter + precache
+# WSL 无免密 sudo 时拆两步：
+#   wsl -u root  <apt 段>   或   SKIP_APT=1 bash packaging/linux/wsl-setup.sh
+```
+
+**构建 + 组包**（`packaging/build-linux.sh`，x64/ARM64 同一份，架构自动）：
+
+```bash
+# 必须 ext4 工作区（/mnt/c、/mnt/e 跨 fs 构建慢一个数量级）：
+rsync -a --delete --exclude .git --exclude /src --exclude build \
+      --exclude .dart_tool /mnt/e/DTXY/WangCai/ ~/wc-build/
+# /src 必须带斜杠锚定根目录（裸 src 会连 packages/*/lib/src 一起排掉）。
+bash ~/wc-build/packaging/build-linux.sh
+cp ~/wc-build/packaging/dist/WangCai-* /mnt/e/DTXY/WangCai/packaging/dist/
+```
+
+**DGX Spark（ARM64）原生构建**：同一套脚本，在 DGX 的 Ubuntu（aarch64）上
+`git clone` 本仓 → `bash packaging/linux/wsl-setup.sh`（有 sudo，一把跑完）→
+`bash packaging/build-linux.sh`（DGX 上仓库本就在 ext4，跳 rsync）。产物自动
+命名 `-linux-arm64`。**不要**在 x64 WSL 交叉编译 ARM64（multiarch 工具链不值
+当，DGX 原生更快）。
+
+**安装**：`sudo apt install ./WangCai-<ver>-linux-amd64.deb`（依赖自动拉：
+libgtk-3-0 / libsecret-1-0 / xclip|wl-clipboard）；便携包解压跑
+`WangCai-<ver>-linux-<arch>/wangcai`。
+
+**WSL 构建踩坑记录（Git Bash 侧）**：① 向 `wsl.exe` 传 `/mnt/...` 裸路径会被
+MSYS 转换成 `C:/Program Files/Git/mnt/...`——路径必须包进带引号的
+`bash -c "…"` 整串；② 复杂命令带 `(`/PATH 注入同理炸解析，一律走**脚本文件**；
+③ WSL 用户无免密 sudo → apt 用 `wsl -u root` 或脚本 `SKIP_APT=1`。
+
 ## 已验证 / 待人工
 
 - ✅ 本机（有 VS/OV 开发环境）`flutter build windows` + 路径解析单测

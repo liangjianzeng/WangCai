@@ -7,11 +7,18 @@
 //
 // ctx 口径（2026-11-06 用户拍板，替代旧 per-preset ctx）：「4096 是最基本，
 // 否则狗毛都干不了」——preset 不再携带 ctx，全线走**全局单值**（默认 4096，
-// 设置页滑杆 512 一档至 16K，持久化 routing.json ctx 键，见
-// local_server_inference.setGlobalCtx）。preset 只保留质量臂数据：chunk、
-// device、paramsB、extraEnv（DISABLE_DECODE_LEVELS 等实测必需项）。
+// 设置页滑杆 512 一档至 16K，真源 = InferenceSettings.contextSize，经
+// loadModel 的 nCtx 入场）。preset 只保留质量臂数据：chunk、device、
+// paramsB、extraEnv（DISABLE_DECODE_LEVELS 等实测必需项）。
 // 旧的 16K deep preset 已删：深上下文臂（NPUW_FOLD=YES）由网关在
 // ctx>4096 时自动挂载，不再是一个模型档位。
+//
+// 兜底准入（2026-11-09 用户拍板「问题模型先兜底定制 ctx，确保先能用」）：
+// ctx 门槛类规则可声明 fallbackCtx（= 该模型 NPU 实测确定可用的包线上限），
+// 触发时网关不拒载、自动把 ctx 收敛到该档继续加载（ℹ️ 日志留痕）；无实测
+// 安全档的模型（Qwen3.5-4B 编译即死 / MiniCPM5 全矩阵仅 1 点可用）不声明，
+// 维持硬拒载。该机实测跑通过更高 ctx（maxStableCtx）时规则让位，兜底自动
+// 不生效——实测上探闭环（recordRun/demoteCtx）不受影响。
 import 'engine_manifest.dart';
 
 // vision=true（2026-11-07 第二幕回填）：defect-npu-mtmd 引擎修复后 NPU
@@ -61,15 +68,15 @@ const String wangcaiNpuManifestJson = '''
      "note": "副靶（TokenRhythm NeoHorse-1 4B Q4_K_M，2.5GB，262k ctx，原生工具调用，下载目录已在架）：preset 留位，2026-11-07 尚未本机实测——不预设性能/稳定性结论；chunk128 对齐 4B 家族先例（qwen3-4b/qwen3.5-4b/spark 同款），paramsB 4.0 自动落入通用 4B admission（ctx≤512 放行、>512 前置拦+改道建议），实测后按结果补注"}
   ],
   "admission": [
-    {"ifModelGlob": "Spark-X2.6-4B*.gguf", "ifCtxGt": 512,
+    {"ifModelGlob": "Spark-X2.6-4B*.gguf", "ifCtxGt": 512, "fallbackCtx": 512,
      "message": "Spark-X2.6-4B 在 NPU 上深上下文必塌：对话深度到 level 1024 档图即撞设备预算，全局回退后 0.42 t/s 地板（defect-npu-spark-b12034，2026-11-07 智能体场景实锤）；ctx≤512 档 level 图实测健康（2026-11-07 复测 warm ≈6 t/s，零预算异常）",
-     "suggestion": "模型级 ctx 调到 ≤512 即可在 NPU 保守使用（聊天可用，智能体不建议）；长上下文/智能体改用 LFM3-1.7B / Omni-2B（21.6/21.9 t/s）"},
+     "suggestion": "NPU 档加载时自动回退 ctx≤512 保守使用（聊天可用，智能体不建议）；长上下文/智能体改用 LFM3-1.7B / Omni-2B（21.6/21.9 t/s）或 CUDA/Vulkan（99.2 t/s）"},
     {"ifModelGlob": "Qwen3.5-4B*.gguf",
      "message": "Qwen3.5-4B 在 NPU 引擎上编译即失败：GatedDeltaNet 融合算子（qwen35 混合 SSM/attention 架构独有）以自定义 opset 序列化，NPU driver VCL 反序列化不支持（「Cannot create GatedDeltaNet layer ... unsupported opset: extension」，driver 32.0.100.4512，2026-11-07 实锤；引擎侧 ref 分解/CPU 分段/naive 分段三路收口均不可行，详见 defect-npu-qwen35-b12034）",
      "suggestion": "改用 CUDA/Vulkan 引擎跑 Qwen3.5-4B（unsloth Q4_K_M 已就位），或 NPU 档配 LFM3-1.7B / Omni-2B；NPU driver 升级后按 defect 文档复验条件重测"},
-    {"ifCtxGt": 512, "ifParamsBAtLeast": 3.5,
+    {"ifCtxGt": 512, "ifParamsBAtLeast": 3.5, "fallbackCtx": 512,
      "message": "4B 级模型在 NPU 上超 512 上下文不可用（2026-11-07 本机实锤：Qwen3-4B@4096 首请求即 L0 UNINITIALIZED 500 Compute error；Spark@4096 预算非确定性塌方 0.42 t/s——bindings 旧档已按 stable 语义收回；2026-11-08 bench 复核：Qwen3-4B@ctx2176 编译 39s 过、首执行同样 UNINITIALIZED——包线墙实测钉在 512 上方）；ctx≤512 确定可用（Spark warm ≈6 t/s、Qwen3-4B bench 口径 tg 8.15 t/s——「历史 1.3 t/s」系旧引擎时代遗留口径，已翻案，详见 docs/HANDOFF.md 2026-11-08 节）",
-     "suggestion": "模型级 ctx 调到 ≤512，或 NPU 档配 LFM3-1.7B / Omni-2B（全 ctx 健康 21.6/21.9 t/s）"},
+     "suggestion": "NPU 档加载时自动回退 ctx≤512 先保可用，或 NPU 档配 LFM3-1.7B / Omni-2B（全 ctx 健康 21.6/21.9 t/s）"},
     {"ifModelGlob": "MiniCPM5-2B*.gguf",
      "message": "MiniCPM5-2B 在 NPU 引擎上过不了 4096 基本档（2026-11-07 本机实锤两种配方双死：preset 现配方 chunk256 编译过但首执行 ZE_RESULT_ERROR_DEVICE_LOST 设备挂死 server 随之崩；4B 家族先例 chunk128 编译管线卡死 >8min 后进程静默崩溃无任何错误行；旧机验收脚本 minicpm5-npu-accept.ps1 只验过 ctx 512——4096 从未被任何配方验证；对照组 Omni 同 ctx 同 DLL 全天健康，MiniCPM5 arch 特异性，详见 defect-npu-minicpm5-b12034）",
      "suggestion": "改用 CUDA/Vulkan 引擎跑 MiniCPM5-2B，或 NPU 档配 LFM3-1.7B / Omni-2B（Omni 已支持 NPU 读图）；NPU driver/引擎更新后按 defect 文档复验条件重测"}

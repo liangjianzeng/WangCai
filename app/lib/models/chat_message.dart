@@ -168,12 +168,18 @@ class ChatMessage {
   /// notice / error 的机器码（turnTrace / compacted / retry / …）。
   final String? noticeCode;
 
+  /// 生图溯源元数据（JSON 字符串；null = 非生图消息）。结构见
+  /// [ImageGenService] 的 `{"seed":…,"size":…,"ms":…,"model":…,"prompt":…}`，
+  /// 供「同 seed 重生成」与问题图片溯源。独立一列而非塞进 attachments——
+  /// attachments 是文件路径 List<String>（≤5），语义不同（评审定案 2026-11-09）。
+  final String? genMeta;
+
   ChatMessage({
     required this.id,
     required this.conversationId,
     required this.role,
     required this.content,
-    this.imagePath,
+    String? imagePath,
     List<String>? imagePaths,
     List<String>? visionPaths,
     this.attachments,
@@ -184,13 +190,24 @@ class ChatMessage {
     MessageKind? kind,
     this.toolData,
     this.noticeCode,
+    this.genMeta,
   })  : kind = kind ??
             (toolData != null
                 ? MessageKind.toolActivity
                 : MessageKind.text),
+        // 双向不变量（2026-11-10 真机定案）：注释声称「imagePath 恒等于首张」，
+        // 但旧构造只从 imagePath 正向推 imagePaths，反向不推——生图消息只传
+        // imagePaths 时 imagePath 为 null，气泡渲染判 imagePath → n=1 整张不显示。
+        // 两个方向都在构造期补齐，DB 旧行（imagePath=null + imagePaths 有值）
+        // 读取时自动修复，无需迁移。
+        imagePath = (imagePath != null && imagePath.isNotEmpty)
+            ? imagePath
+            : ((imagePaths != null && imagePaths.isNotEmpty)
+                ? imagePaths.first
+                : null),
         imagePaths = (imagePaths != null && imagePaths.isNotEmpty)
             ? imagePaths
-            : (imagePath != null ? [imagePath] : null),
+            : (imagePath != null && imagePath.isNotEmpty ? [imagePath] : null),
         visionPaths = (visionPaths != null && visionPaths.isNotEmpty)
             ? visionPaths
             : null,
@@ -232,6 +249,7 @@ class ChatMessage {
       'kind': kind.name,
       'toolData': toolData == null ? null : jsonEncode(toolData!.toMap()),
       'noticeCode': noticeCode,
+      'genMeta': genMeta,
     };
   }
 
@@ -268,6 +286,7 @@ class ChatMessage {
       ),
       toolData: _decodeToolData(map['toolData']),
       noticeCode: map['noticeCode'] as String?,
+      genMeta: map['genMeta'] as String?,
     );
   }
 
@@ -288,6 +307,7 @@ class ChatMessage {
     MessageKind? kind,
     ToolActivityData? toolData,
     String? noticeCode,
+    String? genMeta,
   }) {
     return ChatMessage(
       id: id,
@@ -305,6 +325,7 @@ class ChatMessage {
       kind: kind ?? this.kind,
       toolData: toolData ?? this.toolData,
       noticeCode: noticeCode ?? this.noticeCode,
+      genMeta: genMeta ?? this.genMeta,
     );
   }
 }

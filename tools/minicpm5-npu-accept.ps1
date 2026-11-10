@@ -17,11 +17,11 @@ param(
     [int]$Tokens = 192
 )
 $ErrorActionPreference = 'Stop'
-$Exe = 'D:\llm\npu\src\llama\build\bin\llama-cli.exe'
-$Model = 'D:\llm\npu\models\MiniCPM5-2B-Q4_K_M.gguf'
-$env:PATH = 'D:\llm\npu\src\llama\build\bin;D:\llm\npu\ov\openvino\libs;' + $env:PATH
+$Exe = 'E:\llm\npu\src\llama\build\bin\llama-cli.exe'
+$Model = 'E:\llm\npu\models\MiniCPM5-2B-Q4_K_M.gguf'
+$env:PATH = 'E:\llm\npu\src\llama\build\bin;E:\llm\npu\ov\openvino\libs;' + $env:PATH
 $env:GGML_OPENVINO_DEVICE = 'NPU'
-$env:GGML_OPENVINO_CACHE_DIR = 'D:\llm\npu\cache_mcpm_npu_' + $Arm
+$env:GGML_OPENVINO_CACHE_DIR = 'E:\llm\npu\cache_mcpm_npu_' + $Arm
 if ($Arm -eq 'spark') {
     # 4B-proven reduced-budget arm (HANDOFF 2026-11-01): chunk128 + no decode level graphs.
     $env:GGML_OPENVINO_PREFILL_CHUNK_SIZE = '128'
@@ -36,7 +36,7 @@ $questions = @(
 
 $failed = 0
 foreach ($q in $questions) {
-    $log = 'D:\llm\npu\txt\minicpm5_npu_' + $Arm + '_q_' + $q.Expect + '.log'
+    $log = 'E:\llm\npu\txt\minicpm5_npu_' + $Arm + '_q_' + $q.Expect + '.log'
     # cmd.exe redirection, not PowerShell *>: PS stream redirection truncates the OpenVINO
     # exception text exactly where diagnostics are needed (run-npu.ps1 lesson) and writes
     # UTF-16 that dies as a 0-byte file when the process is killed.

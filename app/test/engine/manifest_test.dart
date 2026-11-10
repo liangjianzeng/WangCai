@@ -277,6 +277,91 @@ void main() {
       expect(ctxOnly.triggers(ctx: 4096, paramsB: null, measuredCtx: 4096),
           isFalse);
     });
+
+    test('兜底准入（2026-11-09）：4B 线规则声明 fallbackCtx=512，全禁入规则不声明', () {
+      // 用户拍板「问题模型先兜底定制 ctx，确保先能用」：ctx 门槛类规则（实测
+      // 存在安全档）触发时网关不拒载、把 ctx 收敛到 fallbackCtx 继续加载；
+      // 无实测安全档的模型（Qwen3.5-4B 编译即死 / MiniCPM5 全矩阵仅 1 点可用
+      // 2.0 t/s，禁入拍板在案）不声明 → 维持硬拒载。
+      final npu = bundledManifests()['wangcai-npu']!;
+      // 规则 1（Spark）与规则 3（通用 4B）带兜底档；规则 2（Qwen3.5-4B）与
+      // 规则 4（MiniCPM5）不带。
+      final fallbacks = {
+        for (final r in npu.admission)
+          if (r.ifModelGlob != null) r.ifModelGlob!: r.fallbackCtx,
+      };
+      expect(fallbacks['Spark-X2.6-4B*.gguf'], 512);
+      expect(fallbacks['MiniCPM5-2B*.gguf'], isNull);
+      expect(fallbacks['Qwen3.5-4B*.gguf'], isNull);
+      // 通用 4B 规则没有 glob 键，单独按条件找。
+      expect(
+          npu.admission
+              .firstWhere((r) => r.ifCtxGt == 512 && r.ifModelGlob == null)
+              .fallbackCtx,
+          512);
+      // 声明纪律：兜底档必须 ≤ ifCtxGt（兜底档就是门槛本身）。
+      for (final r in npu.admission) {
+        if (r.fallbackCtx != null && r.ifCtxGt != null) {
+          expect(r.fallbackCtx! <= r.ifCtxGt!, isTrue,
+              reason: '规则 ${r.ifModelGlob ?? r.ifParamsBAtLeast} 兜底档越过了门槛');
+        }
+      }
+    });
+
+    test('兜底准入 evaluateAdmission：4B@4096 → 收敛 512；全禁入 → fallback null（硬拒载）', () {
+      final npu = bundledManifests()['wangcai-npu']!;
+      // Qwen3-4B@4096（通用 4B 规则触发）：有兜底档。
+      final q4 = npu.evaluateAdmission(
+          ctx: 4096, paramsB: 4.0, modelFile: 'Qwen3-4B-Q4_K_M.gguf');
+      expect(q4.violations, isNotEmpty);
+      expect(q4.fallbackCtx, 512, reason: '收敛到实测安全档 512，而非拒载');
+      // 收敛后重评：规则不再触发（ctx≤512 确定可用档）。
+      expect(
+          npu.evaluateAdmission(
+                  ctx: q4.fallbackCtx!,
+                  paramsB: 4.0,
+                  modelFile: 'Qwen3-4B-Q4_K_M.gguf')
+              .violations,
+          isEmpty);
+      // Spark@4096（规则 1+3 双触发，兜底档同 512）：取最小。
+      final spark = npu.evaluateAdmission(
+          ctx: 4096, paramsB: 4.0, modelFile: 'spark-x2.6-4b-q4_k_m.gguf');
+      expect(spark.violations, isNotEmpty);
+      expect(spark.fallbackCtx, 512);
+      // 无规则触发 → violations 空且 fallback null（不 clamp）。
+      final ok = npu.evaluateAdmission(
+          ctx: 512, paramsB: 4.0, modelFile: 'Qwen3-4B-Q4_K_M.gguf');
+      expect(ok.violations, isEmpty);
+      expect(ok.fallbackCtx, isNull);
+      // 全禁入模型：任一触发规则缺 fallbackCtx → fallback null（硬拒载）。
+      const qwen35 = 'Qwen3.5-4B-Q4_K_M.gguf';
+      final ban = npu.evaluateAdmission(
+          ctx: 512, paramsB: 4.0, modelFile: qwen35, generation: 'ultra1');
+      expect(ban.violations, isNotEmpty);
+      expect(ban.fallbackCtx, isNull,
+          reason: 'Qwen3.5-4B 无任何实测安全档（编译即死），必须硬拒载');
+      final mini = npu.evaluateAdmission(
+          ctx: 512, paramsB: 2.6, modelFile: 'MiniCPM5-2B-Q4_K_M.gguf');
+      expect(mini.violations, isNotEmpty);
+      expect(mini.fallbackCtx, isNull,
+          reason: 'MiniCPM5 全矩阵仅 1 点可用（2.0 t/s），禁入拍板在案');
+      // 实测豁免联运：该机实测跑通过 4096 → ctx 门槛规则让位 → 无兜底需求
+      //（规则豁免条件是 ctx ≤ measuredCtx；实测 1024 只豁免 ≤1024 的请求，
+      // 更高请求仍触发、由网关按 max(兜底档, 实测档) 收敛——网关锚在
+      // npu_generation_adapt_test）。
+      final measured = npu.evaluateAdmission(
+          ctx: 4096,
+          paramsB: 4.0,
+          modelFile: 'Qwen3-4B-Q4_K_M.gguf',
+          measuredCtx: 4096);
+      expect(measured.violations, isEmpty,
+          reason: '实测上探闭环不受兜底影响：measuredCtx ≥ ctx 规则让位');
+      // 1.7B 主打线不受兜底机制影响（全 ctx 健康）。
+      final lfm = npu.evaluateAdmission(
+          ctx: 16384, paramsB: 1.7, modelFile: 'LFM3-1.7B-Q4_K_M.gguf');
+      expect(lfm.violations, isEmpty);
+      expect(lfm.fallbackCtx, isNull);
+    });
   });
 
   group('profileId（D6 缓存目录隔离）', () {

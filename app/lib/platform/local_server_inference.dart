@@ -326,15 +326,20 @@ class LocalServerInference implements InferenceBackend {
         final ceil = _ctxCeilingFor(
             generation: gen, presetName: p?.name, measured: measured);
         final tentative = (ceil != null && requested > ceil) ? ceil : requested;
-        final v = m.checkAdmission(
+        final eval = m.evaluateAdmission(
             ctx: tentative,
             paramsB: p?.paramsB,
             generation: gen?.name,
             measuredCtx: measured,
             modelFile: _basename(path));
-        if (v.isNotEmpty) {
-          return RoutingDecision.none('指定引擎拒绝（$engineId）：${v.join('；')}',
-              '改用 Auto 路由，或调小上下文后重试');
+        if (eval.violations.isNotEmpty) {
+          // 兜底准入（2026-11-09）：触发规则全部声明 fallbackCtx（实测安全档）
+          // 时不算死候选——实际收敛在 loadModel 落地；无安全档维持拒绝。
+          final fb = eval.fallbackCtx;
+          if (fb == null || fb >= tentative) {
+            return RoutingDecision.none('指定引擎拒绝（$engineId）：${eval.violations.join('；')}',
+                '改用 Auto 路由，或调小上下文后重试');
+          }
         }
         return RoutingDecision(
             instanceId: engineId, reason: '指定引擎（钉选）：$engineId');
@@ -366,13 +371,17 @@ class LocalServerInference implements InferenceBackend {
       final ceil = _ctxCeilingFor(
           generation: gen, presetName: p?.name, measured: measured);
       final tentative = (ceil != null && requested > ceil) ? ceil : requested;
-      final v = m.checkAdmission(
+      final eval = m.evaluateAdmission(
           ctx: tentative,
           paramsB: p?.paramsB,
           generation: gen?.name,
           measuredCtx: measured,
           modelFile: _basename(path));
-      if (v.isNotEmpty) blocked[inst.id] = v.join('；');
+      if (eval.violations.isNotEmpty && eval.fallbackCtx == null) {
+        // 兜底准入（2026-11-09）：可兜底的 ctx 门槛违例不作死候选（loadModel
+        // 收敛到实测安全档继续加载）；无安全档（全禁入）照旧 blocked+不改道。
+        blocked[inst.id] = eval.violations.join('；');
+      }
     }
     // 路由现场快照（2026-11-07 装机排障：npus.isEmpty 无从取证）——候选、
     // 档位、拦截集一行打尽，NPU 候选为何缺席/为何被拦这里必有答案。
@@ -571,13 +580,43 @@ class LocalServerInference implements InferenceBackend {
       final requestedCtx = nCtx ?? dc?.ctx ?? kGlobalCtxDefault;
       final ctxCeiling = _ctxCeilingFor(
           generation: npuGen, presetName: preset?.name, measured: measured);
-      final ctx =
+      var ctx =
           (ctxCeiling != null && requestedCtx > ctxCeiling) ? ctxCeiling : requestedCtx;
       if (ctx != requestedCtx) {
         final learned = measured != null && ctxCeiling == measured;
         _log('ℹ️ ctx $requestedCtx → 收敛到上限 $ctx（${learned ? '该机实测档位' : '世代档案上限'}'
             '${npuGen != null ? ' · ${npuGen.label}' : ''}；'
             '更大上下文请改用 CUDA/Vulkan 引擎）');
+      }
+      // ── 兜底准入（2026-11-09 用户拍板「问题模型先兜底定制 ctx，确保先能用」）：
+      // ctx 门槛类 admission 规则全部声明 fallbackCtx 时不再硬拒载——把 ctx
+      // 收敛到实测安全档（4B 线=512）继续加载；无安全档（Qwen3.5-4B/MiniCPM5
+      // 全禁入）保持 ⛔。实测豁免在 triggers() 内让位，实测上探闭环不受影响。
+      final preAdmission = manifest.evaluateAdmission(
+          ctx: ctx,
+          paramsB: preset?.paramsB,
+          generation: npuGen?.name,
+          measuredCtx: measured,
+          modelFile: _basename(path));
+      if (preAdmission.violations.isNotEmpty) {
+        final fb = preAdmission.fallbackCtx;
+        // 兜底档与实测档联运：该机实测跑通过更高 ctx（maxStableCtx）时以实测
+        // 为准——「实测只抬高先验，不压低」（与 _ctxCeilingFor 同一不变量）；
+        // 规则声明的 512 只是未曾实测机器的兜底地板。
+        final fbEffective =
+            (fb != null && (measured ?? 0) > fb) ? measured! : fb;
+        if (fbEffective != null && fbEffective < ctx) {
+          // 兜底依据逐条留痕（缺陷单引用/实测数字都在规则 message 里），
+          // 再打一行收敛摘要——排障时「为什么我的 16K 变 512」这里必有答案。
+          for (final v in preAdmission.violations) {
+            _log('ℹ️ 兜底准入依据：$v');
+          }
+          _log('ℹ️ 兜底准入：ctx $ctx 超出 ${_basename(path)} 的 NPU 实测包线'
+              '（≤$fbEffective 确定可用${fbEffective != fb ? ' · 该机实测档' : ''}），'
+              '自动回退先保可用；更长上下文请改用 CUDA/Vulkan 引擎或 '
+              'LFM3-1.7B / Omni-2B');
+          ctx = fbEffective;
+        }
       }
       // 深上下文臂（2026-11-06，替代已退役的 lfm3-1.7b-deep preset 档位）：
       // NPU 且 ctx>4096 自动挂 NPUW_FOLD=YES（run-npu-16k.bat 实测配方）；

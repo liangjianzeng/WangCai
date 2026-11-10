@@ -7,6 +7,7 @@ import '../models/chat_message.dart';
 import '../providers/settings_provider.dart' show settingsProvider;
 import '../services/share_service.dart';
 import '../tts/edge_tts_service.dart' show EdgeTtsService;
+import 'image_actions.dart';
 import 'image_preview.dart';
 import 'todo_card.dart';
 import 'context_menu_region.dart';
@@ -84,6 +85,17 @@ class ChatBubble extends StatelessWidget {
 
   /// 思考中占位（内容为空 + 流式中 → 显示「思考中…」指示器）。
   bool get _isThinkingPlaceholder => !_isUser && isStreaming && content.isEmpty;
+
+  /// 消息携带的展示图片（生图/多图上传，过滤空串；null = 无图）。动作行
+  /// 图标与右键菜单用它决定「复制图片/另存图片」是否出现。
+  List<String>? get _visibleImages {
+    final src = (imagePaths != null && imagePaths!.isNotEmpty)
+        ? imagePaths
+        : (imagePath != null && imagePath!.isNotEmpty ? [imagePath!] : null);
+    if (src == null) return null;
+    final filtered = src.where((p) => p.isNotEmpty).toList();
+    return filtered.isEmpty ? null : filtered;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -169,29 +181,19 @@ class ChatBubble extends StatelessWidget {
                         ),
                         const SizedBox(height: 6),
                       ],
-                      // Show image if present (user messages only)；多图 ≤10 依次展示。
-                      // 点任意缩略图 → 全屏预览（可缩放/翻页）。
+                      // Show image if present（用户上传与生图 assistant 消息
+                      // 共用此渲染路径）；多图 ≤10 依次展示。
+                      // 点任意缩略图 → 全屏预览（可缩放/翻页）；
+                      // 长按 / 右键 → 预览 / 复制图片 / 另存为（用户 2026-11-10）。
                       if (imagePath != null && imagePath!.isNotEmpty) ...[
-                        GestureDetector(
-                          onTap: () => showImagePreview(
-                            context,
-                            imagePaths:
-                                imagePaths != null && imagePaths!.isNotEmpty
-                                    ? imagePaths!
-                                    : [imagePath!],
-                            initialIndex: 0,
-                          ),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(8),
-                            child: ConstrainedBox(
-                              constraints: const BoxConstraints(
-                                  maxWidth: 300, maxHeight: 300),
-                              child: Image.file(
-                                File(imagePath!),
-                                fit: BoxFit.cover,
-                              ),
-                            ),
-                          ),
+                        _BubbleImage(
+                          path: imagePath!,
+                          allPaths: imagePaths != null && imagePaths!.isNotEmpty
+                              ? imagePaths!
+                              : [imagePath!],
+                          index: 0,
+                          maxWidth: 300,
+                          maxHeight: 300,
                         ),
                         const SizedBox(height: 8),
                       ],
@@ -204,21 +206,11 @@ class ChatBubble extends StatelessWidget {
                               for (var i = 1; i < imagePaths!.length; i++)
                                 Padding(
                                   padding: const EdgeInsets.only(right: 8),
-                                  child: GestureDetector(
-                                    onTap: () => showImagePreview(
-                                      context,
-                                      imagePaths: imagePaths!,
-                                      initialIndex: i,
-                                    ),
-                                    child: ClipRRect(
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: Image.file(
-                                        File(imagePaths![i]),
-                                        height: 100,
-                                        width: 100,
-                                        fit: BoxFit.cover,
-                                      ),
-                                    ),
+                                  child: _BubbleImage(
+                                    path: imagePaths![i],
+                                    allPaths: imagePaths!,
+                                    index: i,
+                                    boxSize: 100,
                                   ),
                                 ),
                             ],
@@ -410,6 +402,7 @@ class ChatBubble extends StatelessWidget {
                     isUser: _isUser,
                     canSpeak: _canSpeak,
                     conversationId: conversationId,
+                    imagePaths: _visibleImages,
                   ),
               ],
             ),
@@ -433,6 +426,25 @@ class ChatBubble extends StatelessWidget {
               );
             },
           ),
+          // 带图消息（生图/上传）：图片也能直接复制/另存（用户 2026-11-10）。
+          // 菜单 route 用 ctx 关，后续选张/保存用气泡自己的 context——
+          // ctx 随弹层销毁，拿它弹 sheet 会炸。
+          if (_visibleImages != null) ...[
+            ContextMenuButtonItem(
+              label: '复制图片',
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                runImageAction(context, _visibleImages!, ImageActionKind.copy);
+              },
+            ),
+            ContextMenuButtonItem(
+              label: '另存图片…',
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                runImageAction(context, _visibleImages!, ImageActionKind.save);
+              },
+            ),
+          ],
           if (onBranch != null)
             ContextMenuButtonItem(
               label: '从此分叉',
@@ -465,6 +477,12 @@ class MessageActionsRow extends StatelessWidget {
   /// TTS 播放按钮）。普通聊天/用户消息带，智能体回合气泡通常 null。
   final String? conversationId;
 
+  /// 消息携带的图片（生图/多图上传，≤10；null/空 = 无图）。非空时动作行
+  /// 出现「复制图片 / 另存图片」两个可见图标——此前图片操作只藏在长按/
+  /// 右键图片本身的弹层里，零可见性（用户 2026-11-10 点名：生图后复制键
+  /// 只复制文本，图片没有复制/另存的入口）。
+  final List<String>? imagePaths;
+
   const MessageActionsRow({
     super.key,
     required this.content,
@@ -473,11 +491,14 @@ class MessageActionsRow extends StatelessWidget {
     required this.isUser,
     this.canSpeak = false,
     this.conversationId,
+    this.imagePaths,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final images =
+        (imagePaths ?? const <String>[]).where((s) => s.isNotEmpty).toList();
     return Padding(
       // 水平缩进由调用方负责：ChatBubble 页脚走外层 16px 消息列；
       // agent_workflow 的独立调用点自带 Padding(16)。此处只管行距。
@@ -524,6 +545,42 @@ class MessageActionsRow extends StatelessWidget {
                   Icons.content_copy,
                   size: 15,
                   color: Colors.grey.shade400,
+                ),
+              ),
+            ),
+          ],
+          // 带图消息的图片动作（2026-11-10）：复制进剪贴板 / 另存为。
+          // 单图直接执行，多图先弹选张（runImageAction 内部裁决）。
+          if (images.isNotEmpty) ...[
+            const SizedBox(width: 6),
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => runImageAction(context, images, ImageActionKind.copy),
+              child: Tooltip(
+                message: '复制图片',
+                child: Padding(
+                  padding: const EdgeInsets.all(2),
+                  child: Icon(
+                    Icons.copy_all,
+                    size: 15,
+                    color: Colors.grey.shade400,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => runImageAction(context, images, ImageActionKind.save),
+              child: Tooltip(
+                message: '另存图片',
+                child: Padding(
+                  padding: const EdgeInsets.all(2),
+                  child: Icon(
+                    Icons.save_alt,
+                    size: 15,
+                    color: Colors.grey.shade400,
+                  ),
                 ),
               ),
             ),
@@ -653,5 +710,105 @@ class MessageActionsRow extends StatelessWidget {
             : ' · 听音 ${s.audioMs}ms')
         : '';
     return '$first$vision$audio · 耗时 $total · $rate tok/s';
+  }
+}
+
+/// 图片解码/读取失败的灰块占位（缓存被清、文件被删等；此前无 errorBuilder，
+/// 一条引用死路径的图片能把整个气泡列表打成红块）。
+Widget _brokenImagePlaceholder(BuildContext _, Object __, StackTrace? ___) =>
+    Container(
+      width: 80,
+      height: 80,
+      color: Colors.grey.shade300,
+      alignment: Alignment.center,
+      child: const Icon(Icons.broken_image_outlined,
+          size: 28, color: Colors.grey),
+    );
+
+/// 气泡内单张图片（首图 / 多图缩略共用）：点按全屏预览；长按与桌面右键
+/// 弹动作菜单（预览 / 复制图片 / 另存为…）。用户 2026-11-10：生图要能
+/// 直接拿走——复制进剪贴板（图像内容，非文件引用）+ 另存到自选目录。
+class _BubbleImage extends StatelessWidget {
+  final String path;
+  final List<String> allPaths;
+  final int index;
+  final double? maxWidth;
+  final double? maxHeight;
+  final double? boxSize;
+
+  const _BubbleImage({
+    required this.path,
+    required this.allPaths,
+    required this.index,
+    this.maxWidth,
+    this.maxHeight,
+    this.boxSize,
+  });
+
+  void _openPreview(BuildContext context) {
+    showImagePreview(context, imagePaths: allPaths, initialIndex: index);
+  }
+
+  void _showActions(BuildContext context) {
+    showModalBottomSheet<void>(
+      context: context,
+      builder: (sheetCtx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.fullscreen),
+              title: const Text('全屏预览'),
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                _openPreview(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy),
+              title: const Text('复制图片'),
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                copyImageToClipboard(context, path);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.save_alt),
+              title: const Text('另存为…'),
+              onTap: () {
+                Navigator.pop(sheetCtx);
+                saveImageAs(context, path);
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Widget image;
+    if (boxSize != null) {
+      image = Image.file(File(path),
+          height: boxSize,
+          width: boxSize,
+          fit: BoxFit.cover,
+          errorBuilder: _brokenImagePlaceholder);
+    } else {
+      image = ConstrainedBox(
+        constraints: BoxConstraints(
+            maxWidth: maxWidth ?? 300, maxHeight: maxHeight ?? 300),
+        child: Image.file(File(path),
+            fit: BoxFit.cover, errorBuilder: _brokenImagePlaceholder),
+      );
+    }
+    return GestureDetector(
+      onTap: () => _openPreview(context),
+      onLongPress: () => _showActions(context),
+      // 桌面右键同菜单（Windows 右键习惯）。
+      onSecondaryTapUp: (_) => _showActions(context),
+      child: ClipRRect(borderRadius: BorderRadius.circular(8), child: image),
+    );
   }
 }

@@ -1,5 +1,5 @@
 import sys
-sys.path.insert(0, 'D:/llm/npu/ov')
+sys.path.insert(0, 'E:/llm/npu/ov')
 import numpy as np
 import openvino as ov
 from openvino import opset13 as ops

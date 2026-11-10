@@ -82,17 +82,20 @@ void main() {
     });
 
     test('NPU 被 admission 拦：拒绝 + 指引，绝不自动改道 GPU（用户拍板核心语义）', () {
+      // 兜底准入（2026-11-09）后，blocked 只剩无安全档的全禁入模型（Spark 这类
+      // ctx 门槛违例已被网关兜底收敛，不再进 blocked）——本锚锁 chooseEngine
+      // 对 blocked 的语义：拒绝 + 指引 + 绝不改道。
       final d = chooseEngine(RoutingRequest(
         tier: RoutingTier.npuFirst,
         candidates: all4,
         bindings: [b(cuda, tps: 42), b(vulkan, tps: 12)],
-        blocked: {npu.instanceId: 'Spark-X2.6-4B 在 NPU 引擎上 decode 特性失效'},
+        blocked: {npu.instanceId: 'Qwen3.5-4B 在 NPU 引擎上编译即失败'},
       ));
       expect(d.instanceId, isNull,
           reason: 'NPU 跑不了就是跑不了——绝不静默滑进独显（2026-11-07 用户实测抱怨）');
       expect(d.suggestion, contains('GPU 外挂'),
           reason: '拒绝必须带可操作的指引：外挂在哪、怎么选');
-      expect(d.reason, contains('decode 特性失效'),
+      expect(d.reason, contains('编译即失败'),
           reason: '拒绝原因原文必须透传给用户（reason 主文案）');
     });
 

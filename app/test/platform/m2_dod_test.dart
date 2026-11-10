@@ -245,11 +245,13 @@ void main() {
       : false;
 
   test(
-    'Spark NPU 核心档拒绝（真机锚）：npu 档 + Spark → 拒绝 + 指引，绝不改道 GPU',
+    'Spark NPU 兜底准入（真机锚）：npu 档 + 4096 → 收敛 ctx 512 加载，不改道 GPU',
     () async {
-      // 2026-11-07 用户拍板（路由重设计）：NPU 是核心，GPU 是旁路——NPU 被
-      // admission 拦 = 明确报错 + 指引（外挂在哪），绝不静默滑进独显。
-      // 真机锚定：loadModel false、无 server 拉起、日志含缺陷单原因+外挂指引。
+      // 2026-11-09 用户拍板「问题模型先兜底定制 ctx，确保先能用」：Spark@NPU
+      // 旧语义（admission 前置拦 + 指引改道，2026-11-07 路由重设计）翻为兜底
+      // 准入——网关把 4096 收敛到实测安全档 512 继续加载（ℹ️ 留痕），模型先
+      // 能用；换引擎仍是用户的决定，绝不静默滑进独显。真机锚定：loadModel
+      // true、server 拉起于 NPU@512、日志含缺陷单依据 + 兜底行。
       final inf = LocalServerInference.instance;
       await inf.unloadModel(); // 前测残留防御（失败中止不会走各测的尾清场）
       await inf.setRoutingTier('npu');
@@ -265,17 +267,15 @@ void main() {
             if (m != null) print('[engine] $m');
           });
       final ok = await inf.loadModel(spark.path, nCtx: 4096);
-      expect(ok, isFalse, reason: 'NPU 核心档对 Spark 必须拒绝（引擎病无配置可救）');
-      // debugHost 是取证语义（失败也保留 host 对象），断言看 baseUrl：
-      // null = 没有任何旁路 server 被拉起（换不换道是用户的决定）。
-      expect(inf.debugHost()?.baseUrl, isNull,
-          reason: '绝不拉起任何旁路 server');
+      expect(ok, isTrue, reason: '兜底准入把 4096 收敛到 512，Spark NPU 线先能用');
+      expect(inf.debugHost()?.instanceId, 'wangcai-npu',
+          reason: '兜底是降档不是改道——拉起的 server 必须还是 NPU');
+      expect(logs.join(), contains('兜底准入'),
+          reason: '收敛动作必须留痕（用户可见为什么 16K/4096 变 512）');
       expect(logs.join(), contains('defect-npu-spark-b12034'),
-          reason: '拒绝原因必须留痕');
-      expect(logs.join(), contains('GPU 外挂'),
-          reason: '拒绝必须告诉用户旁路在哪（可操作的指引）');
+          reason: '兜底依据（缺陷单原文）必须留痕');
     },
-    timeout: const Timeout(Duration(minutes: 5)),
+    timeout: const Timeout(Duration(minutes: 10)),
     skip: sparkSkip,
   );
 

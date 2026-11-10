@@ -758,6 +758,17 @@ static void craft_unchained_kv_mask(const std::shared_ptr<GgmlOvDecoder> & ggml_
         return;
     }
     const int64_t fill = *(const int32_t *) inp_pos_t->data;
+    if (ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE_DEBUG")) {
+        const auto * f16 = (const ggml_fp16_t *) data;
+        const auto * f32 = (const float *) data;
+        auto val = [&](int64_t c) -> float {
+            if (c < 0 || (size_t) c >= cols) { return NAN; }
+            return (mask_tensor->type == GGML_TYPE_F16) ? GGML_FP16_TO_FP32(f16[c]) : f32[c];
+        };
+        GGML_LOG_INFO("kvhw_dbg mask: fill=%lld level=%lld cols=%zu m[fill-1]=%.3f m[fill]=%.3f m[level-2]=%.3f m[level-1]=%.3f\n",
+                      (long long) fill, (long long) level, cols,
+                      val(fill - 1), val(fill), val(level - 2), val(level - 1));
+    }
     auto set_col = [&](int64_t col, float v) {
         if (col < 0 || (size_t) col >= cols) {
             return;
@@ -770,6 +781,16 @@ static void craft_unchained_kv_mask(const std::shared_ptr<GgmlOvDecoder> & ggml_
     };
     set_col(fill, -INFINITY);       // stale cur row: replaced by the appended column
     set_col(level - 1, 0.0f);       // appended cur column: valid
+    if (ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE_DEBUG")) {
+        const auto * f16 = (const ggml_fp16_t *) data;
+        const auto * f32 = (const float *) data;
+        auto val = [&](int64_t c) -> float {
+            if (c < 0 || (size_t) c >= cols) { return NAN; }
+            return (mask_tensor->type == GGML_TYPE_F16) ? GGML_FP16_TO_FP32(f16[c]) : f32[c];
+        };
+        GGML_LOG_INFO("kvhw_dbg mask AFTER: fill=%lld level=%lld m[fill]=%.3f m[level-1]=%.3f\n",
+                      (long long) fill, (long long) level, val(fill), val(level - 1));
+    }
 }
 
 ov::Tensor get_ov_input_tensor_static_decode(const std::shared_ptr<GgmlOvDecoder> & ggml_decoder,
@@ -2719,6 +2740,12 @@ enum ggml_status ov_graph_compute_static(ggml_cgraph * cgraph, const std::shared
                     row += rows;
                 }
                 const size_t row_bytes = (size_t) w.cache->ne[0] * ggml_type_size(w.cache->type);
+                if (ggml_openvino_getenv_int("GGML_OPENVINO_KV_HOST_WRITE_DEBUG")) {
+                    const float * v = (const float *) w.value->data;
+                    GGML_LOG_INFO("kvhw_dbg writeback: idx=%lld row=%lld rows=%lld row_bytes=%zu v[0..3]=%.4f %.4f %.4f %.4f\n",
+                                 (long long) idx, (long long) row, (long long) rows, row_bytes,
+                                 v[0], v[1], v[2], v[3]);
+                }
                 std::memcpy((char *) w.cache->data + (size_t) row * w.cache->nb[1], w.value->data, row_bytes);
             }
         }

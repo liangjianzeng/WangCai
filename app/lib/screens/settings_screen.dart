@@ -43,6 +43,7 @@ import '../providers/project_provider.dart'
     show activeProjectProvider, projectsProvider;
 import 'engine_install_dialog.dart';
 import 'engine_manager_section.dart' show EngineManagerSection; // WangCai 分叉 #8
+import 'image_gen_section.dart' show ImageGenSection; // 图像生成（Unsloth Studio）
 import '../agent/adb/adb_client.dart';
 import '../agent/adb/adb_targets.dart';
 import '../agent/mcp/mcp_client.dart' show McpServerConfig;
@@ -3359,6 +3360,14 @@ const _appVersion = '0.0.6';
 /// GitHub 项目主页地址（README 介绍与使用说明）。
 const _githubUrl = 'https://github.com/liangjianzeng/WangCai';
 
+/// 关于页「平台」行：报**当前运行形态**（此前硬编码「Android API 33+」是
+/// 上游安卓版遗留——桌面壳里看自己跑在 Android 上，纯属误导）。
+String get _aboutPlatformLabel {
+  if (Platform.isWindows) return 'Windows 10/11（NPU 引擎全功能）';
+  if (Platform.isLinux) return 'Linux 桌面（X11 / Wayland）';
+  return Platform.operatingSystem;
+}
+
 /// 通过系统外部浏览器打开 GitHub README 页面。
 Future<void> _openGithub(BuildContext context) async {
   final uri = Uri.parse(_githubUrl);
@@ -3388,14 +3397,27 @@ class AboutSettingsCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             const Text(
-              'Windows 桌面离线 AI 智能体',
+              'Windows / Linux 桌面离线 AI 智能体',
               style: TextStyle(color: Colors.grey, fontSize: 14),
             ),
             const SizedBox(height: 10),
             _AboutRow(label: '版本', value: _appVersion),
             _AboutRow(label: '推理引擎', value: 'llama.cpp b11267'),
             _AboutRow(label: '框架', value: 'Flutter 3.x'),
-            _AboutRow(label: '平台', value: 'Android API 33+'),
+            _AboutRow(label: '平台', value: _aboutPlatformLabel),
+            // Linux 固有局限显式化（用户 2026-11-10）：本地 NPU/引擎是 Windows
+            // 构建（Intel AI Boost 插件仅 Windows），Linux 端为远端客户壳形态——
+            // 与其让用户在 Linux 上对着「加载不了模型」猜，不如关于页直接讲清。
+            if (Platform.isLinux)
+              const Padding(
+                padding: EdgeInsets.only(top: 4),
+                child: Text(
+                  'Linux 为远端客户壳形态：本地 NPU 推理与系统托盘不可用（守卫降级）；'
+                  '模型引擎、生图服务请指向局域网/远端 HTTP（设置页配置）。',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey, fontSize: 11, height: 1.5),
+                ),
+              ),
             const SizedBox(height: 8),
             const Divider(),
             const SizedBox(height: 8),
@@ -5750,6 +5772,10 @@ class ApiSettingsBody extends ConsumerWidget {
           const SizedBox(height: 20),
           // 联网搜索（SearXNG 实例地址等）：与 API 接入同属"外部服务"配置。
           const WebSearchSettingsBody(),
+          const SizedBox(height: 12),
+          // 图像生成（Unsloth Studio）：同属外部服务配置；独立文件
+          // image_gen_section.dart（vendored 文件只插一行，分叉清单同 #8 惯例）。
+          const ImageGenSection(),
         ],
       ),
     );
@@ -6166,6 +6192,10 @@ class WebSearchSettingsBodyState extends ConsumerState<WebSearchSettingsBody> {
   bool _testing = false;
   String? _testResult;
   bool _testOk = false;
+  /// SearXNG 实例表单的展开态：默认**收起**（用户 2026-11-10：端侧直连是
+  /// 主方案，SearXNG 不常用，不需要大量露出配置项）——收起态只留一行摘要，
+  /// 常显「未配置（走端侧直连）」或当前实例地址，不点开也看得清现状。
+  bool _searxExpanded = false;
 
   /// 提前捕获 notifier（provider 与应用同生命周期）：dispose（离开页面）时
   /// 还要落盘草稿，而那时不能再触碰 ref。
@@ -6357,9 +6387,9 @@ class WebSearchSettingsBodyState extends ConsumerState<WebSearchSettingsBody> {
             _buildSectionHeader('🌐 联网搜索', context),
             const SizedBox(height: 4),
             Text(
-              '为智能体提供 web_search 联网搜索。「端侧直连引擎」开关打开时'
-              '优先级最高（忽略下方 SearXNG 地址）；关闭后用你的 SearXNG 实例'
-              '（需手机能直接访问，局域网 IP 或 Tailscale 地址均可）。',
+              '为智能体提供 web_search 联网搜索。主方案是下方「端侧直连引擎」；'
+              '自架 SearXNG 实例是备用路径（需设备能直接访问，局域网 IP 或 '
+              'Tailscale 地址均可），点「SearXNG 实例」一行展开配置。',
               style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
             ),
             SwitchListTile(
@@ -6375,7 +6405,37 @@ class WebSearchSettingsBodyState extends ConsumerState<WebSearchSettingsBody> {
             // ---- 端侧直连引擎（SearXNG 地址为空时生效）----
             // 2026-11-06：与 SearXNG 模块调换位置（用户要求直连在上、SearXNG 在下）。
             _buildDirectEngineSection(context, notConfigured, settings),
-            // ---- SearXNG 实例配置（直连引擎开关打开时优先级更高）----
+            // ---- SearXNG 实例配置（备用路径）：整块收进一行摘要，点开才展开
+            // （用户 2026-11-10：端侧直连是主方案，此区不常用）----
+            InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => setState(() => _searxExpanded = !_searxExpanded),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 10),
+                child: Row(
+                  children: [
+                    Icon(Icons.dns_outlined,
+                        size: 16, color: Colors.grey.shade600),
+                    const SizedBox(width: 6),
+                    const Text('SearXNG 实例（备用）',
+                        style: TextStyle(
+                            fontSize: 13, fontWeight: FontWeight.w600)),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        notConfigured ? '未配置（走端侧直连）' : url,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            TextStyle(fontSize: 12, color: Colors.grey.shade600),
+                      ),
+                    ),
+                    Icon(_searxExpanded ? Icons.expand_less : Icons.expand_more,
+                        size: 18, color: Colors.grey.shade600),
+                  ],
+                ),
+              ),
+            ),
+            if (_searxExpanded) ...[
             const SizedBox(height: 8),
             TextField(
               controller: _url,
@@ -6511,6 +6571,7 @@ class WebSearchSettingsBodyState extends ConsumerState<WebSearchSettingsBody> {
                 ),
               ),
             ],
+            ], // if (_searxExpanded)
           ],
         ),
       ),
