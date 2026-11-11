@@ -10,14 +10,27 @@ class WangCaiPaths {
   static Directory Function()? dataRootOverrideForTest;
 
   /// %APPDATA%\WangCai（engines.json / per-profile 编译缓存 / 进程账本落这里）。
+  /// Linux 分支（2026-11-11 实案）：无 APPDATA 时旧写法落到 systemTemp——
+  /// WSL /tmp 是 tmpfs，每次实例回收数据家整体蒸发（会话/设置/黑匣子日志全丢，
+  /// 「首启播种」天天重演）。Linux 按 XDG 走 XDG_DATA_HOME 或 ~/.local/share。
   static Directory dataRoot() {
     final o = dataRootOverrideForTest;
     if (o != null) return o();
     final appData = Platform.environment['APPDATA'];
-    final root = (appData != null && appData.isNotEmpty)
-        ? appData
-        : Directory.systemTemp.path;
-    return Directory('$root${Platform.pathSeparator}WangCai');
+    if (appData != null && appData.isNotEmpty) {
+      return Directory('$appData${Platform.pathSeparator}WangCai');
+    }
+    if (!Platform.isWindows) {
+      final xdg = Platform.environment['XDG_DATA_HOME'];
+      final base = (xdg != null && xdg.isNotEmpty)
+          ? xdg
+          : '${Platform.environment['HOME'] ?? Directory.systemTemp.path}'
+              '${Platform.pathSeparator}.local${Platform.pathSeparator}share';
+      return Directory('$base${Platform.pathSeparator}WangCai');
+    }
+    // Windows 极端环境兜底（无 APPDATA）：维持 systemTemp 旧行为。
+    return Directory(
+        '${Directory.systemTemp.path}${Platform.pathSeparator}WangCai');
   }
 
   static EnginePaths enginePaths() => EnginePaths.root(dataRoot());

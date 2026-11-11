@@ -10,6 +10,33 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 此处累积已入库、随下一版发布的改动。
 
+### 修复 —— Linux 全新数据首启聊天区全屏转圈（2026-11-11 WSLg 用户实测「为什么一直转圈」）
+
+- **根因（黑匣子实锤 `Unhandled Exception: Bad state: No element` @ home_screen:298）**：
+  `conversationsProvider` watch `activeProjectIdProvider`；全新数据首启「创建默认项目」
+  让激活项目从 null 变实 id → provider 重建。`_initConversation` 的 `ensureLoaded()`
+  等的是旧实例、`create()` 写进的也是旧实例（销毁后 state 写入 **release 静默 no-op /
+  debug 抛 StateError**——两形态修复全覆盖），await 窗口里重读拿到**新实例的初始空态**
+  → `conversations.first` 抛 → `_initiallyLoaded=true` 永不执行 → 1132 行全屏
+  `CircularProgressIndicator` 永转。Windows 装机机永远有存量会话不走播种分支，
+  「干净机验证待人工」（packaging/README）欠的债被 Linux 首启踩出。
+- **修复三层**：`try/catch create()`（吞掉旧实例销毁异常，落库已完成）→ 对**当前实例**
+  `ensureLoaded()` 重读 → 仍空则 `_initiallyLoaded=true` 露空会话占位（可手动新建），
+  竞态与落库失败都不再卡圈。
+- **回归锚**：`test/providers/conversations_seed_race_test.dart` 双锚（跨重建裸 read
+  复现空态 + 修复后重读可见；同实例基线），2/2 全绿；analyze 零新增（37 为存量基线）。
+- **复验（WSLg 全新数据实跑）**：首启无异常 + 进程存活；黑匣子启动标记 `dataRoot=
+  ~/.local/share/WangCai`；二次启动数据不丢、不重复播种。
+
+### 修复 —— Linux 数据家落 /tmp：WSL 实例回收即数据蒸发（2026-11-11 同轮发现）
+
+- **根因**：`WangCaiPaths.dataRoot()` 无 APPDATA 时兜底 `Directory.systemTemp`——
+  Linux 上即 `/tmp/WangCai`，而 WSL `/tmp` 是 tmpfs，实例回收即整家蒸发
+  （会话/设置/黑匣子日志全丢，「首启」天天重演，也是上一条竞态每次必现的帮凶）。
+- **修复**：dataRoot 加 Linux 分支走 XDG（`XDG_DATA_HOME` 或 `~/.local/share/WangCai`）；
+  Windows 无 APPDATA 极端环境维持 systemTemp 旧兜底不动。db/logs/projects.json
+  实测落 `~/.local/share/WangCai/`，跨实例重启不丢。
+
 ### 新增 —— 汪柴生图服务：Qwen-Image-2.1-Turbo diffusers 直调第二链路（2026-11-10 用户「好，施工」）
 
 - **tools/imagegen-server/ 三件套**（server.py / requirements.txt / README.md）：独立 FastAPI

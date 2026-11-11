@@ -292,8 +292,29 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     await notifier.ensureLoaded();
     var conversations = ref.read(conversationsProvider);
     if (conversations.isEmpty) {
-      await notifier.create();
+      // await create() 期间 provider 可能已被重建：本 notifier watch 激活
+      // 项目，首启「创建默认项目」让 activeProjectId 从 null 变实 id →
+      // conversationsProvider 失效。此时 create() 落库已完成，但旧实例销毁后
+      // 的 state 写入 release 静默 no-op、debug 抛 StateError（2026-11-11
+      // Linux 全新数据首启实案：`.first` 抛 Bad state，_initiallyLoaded 卡
+      // false → 聊天区全屏转圈永不结束）。吞掉这层异常，下面对**当前实例**
+      // 重读兜底；真落库失败（DB 异常）也会经重读为空走最后的空态防线。
+      try {
+        await notifier.create();
+      } catch (e) {
+        debugPrint('[Home] 播种新对话 state 写入异常（重读兜底）: $e');
+      }
       conversations = ref.read(conversationsProvider);
+      if (conversations.isEmpty) {
+        await ref.read(conversationsProvider.notifier).ensureLoaded();
+        conversations = ref.read(conversationsProvider);
+      }
+    }
+    if (!mounted) return;
+    if (conversations.isEmpty) {
+      // 最后防线：落库失败/竞态仍空 → 露出空会话占位（可手动新建），绝不卡圈。
+      setState(() => _initiallyLoaded = true);
+      return;
     }
     setState(() {
       _setCurrentConversation(conversations.first.id);
