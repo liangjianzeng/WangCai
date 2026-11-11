@@ -16,7 +16,8 @@
 > （Qwen-Image-2.1-Turbo，1024² 实测 17–29 s），智能体 `generate_image` 自主配图；
 > Windows 本机/局域网/Tailscale、Linux 远端两端同一入口（方案
 > [docs/image-gen-integration-plan.md](docs/image-gen-integration-plan.md)）。
-> **2026-11-10 · Linux 桌面入库** —— Ubuntu 22.04 系 deb + tar.gz 双产物（WSLg 实跑验证）、
+> **2026-11-10 · Linux 桌面入库**（11-11 升级兼容基线）—— **Debian 10 (glibc 2.28) chroot 基线**
+> deb + tar.gz 双产物（WSLg 实跑验证，UOS/Deepin 等老发行版兼容，readelf 版本闸把关）、
 > DGX Spark（ARM64）原生构建链。**Linux 端是远端客户壳形态**：本地 NPU 推理不可用，
 > 模型引擎/生图走局域网 HTTP——能力边界见 [Linux 桌面形态与限制](#linux-桌面形态与限制)。
 > 变更全文见 [CHANGELOG.md](CHANGELOG.md)。**直接用？→ [下载安装包](#下载安装windows--linux)**
@@ -148,16 +149,17 @@ LFM3-1.7B `Q4_K_M`（1049 MB）· 24 层（13 门控短卷积 + 5 滑动窗口@2
 ## 下载安装（Windows / Linux）
 
 从 [GitHub Releases](https://github.com/liangjianzeng/WangCai/releases/latest) 获取（当前 **0.0.6**，
-2026-11-10 出包——含生图整合与 Linux 产物，Windows/Linux 共六件）：
+2026-11-11 重出包——含生图整合、Linux 产物、**全新数据首启转圈修复**与 **Debian 10 (glibc 2.28)
+兼容基线**（UOS/Deepin 老发行版可跑），Windows/Linux 共六件；11-10 首发包不含这些修复，请更新）：
 
 | 产物 | 适合 | 说明 |
 |---|---|---|
-| **[Setup.exe 安装包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-Setup.exe)**（68 MB，sha256 `282b3511…`）· Windows 推荐 | 大多数人 | 标准 Windows 安装向导：每用户安装**无需管理员**，可选桌面图标 / 开机自启；壳 + **汪柴 NPU 引擎 + OpenVINO 运行时**一体安装；卸载保留会话库/模型/编译缓存 |
-| **[portable.zip 便携包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-portable.zip)**（108 MB，sha256 `20ce51b2…`） | Windows 免安装 / U 盘 | 解压即用，跑 `App\WangCai.exe`（布局同安装器） |
-| **[linux-amd64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.deb)**（19 MB，sha256 `45b15b78…`）· Linux x64 推荐 | Ubuntu 22.04/24.04 x64 | `sudo apt install ./WangCai-*.deb`：`/opt/wangcai` + `/usr/bin/wangcai` 符号链 + 桌面条目 + 图标；CJK/emoji 字体、xclip 等依赖 apt 自动带入 |
-| **[linux-amd64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.tar.gz)**（24 MB，sha256 `e5d40620…`） | x64 免安装 | 解压跑 `wangcai`，依赖清单随包 README |
-| **[linux-arm64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.deb)**（21 MB，sha256 `568416ec…`）· ARM64 推荐 | DGX Spark 等 ARM64 | 同 deb 口径；`Depends` 用 22.04/24.04 兼容语法（`libgtk-3-0 \| libgtk-3-0t64` 等）；DGX Spark 原生构建（Flutter 3.29.0 arm64——官方不发 linux-arm64 SDK，如实记录） |
-| **[linux-arm64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.tar.gz)**（26 MB，sha256 `8132a447…`） | ARM64 免安装 | 解压跑 `wangcai` |
+| **[Setup.exe 安装包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-Setup.exe)**（68 MB，sha256 `67177a85…`）· Windows 推荐 | 大多数人 | 标准 Windows 安装向导：每用户安装**无需管理员**，可选桌面图标 / 开机自启；壳 + **汪柴 NPU 引擎 + OpenVINO 运行时**一体安装；卸载保留会话库/模型/编译缓存 |
+| **[portable.zip 便携包](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-portable.zip)**（109 MB，sha256 `0ba8aeaa…`） | Windows 免安装 / U 盘 | 解压即用，跑 `App\WangCai.exe`（布局同安装器） |
+| **[linux-amd64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.deb)**（20 MB，sha256 `fa29de2c…`）· Linux x64 推荐 | Ubuntu 22.04/24.04、UOS/Deepin 等老发行版 | `sudo apt install ./WangCai-*.deb`：`/opt/wangcai` + `/usr/bin/wangcai` 符号链 + 桌面条目 + 图标；CJK/emoji 字体、xclip 等依赖 apt 自动带入；**Debian 10 (glibc 2.28) chroot 基线构建**（readelf 版本闸把关，UOS Desktop 20 实案驱动）|
+| **[linux-amd64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.tar.gz)**（24 MB，sha256 `bc7e1c86…`） | x64 免安装 | 解压跑 `wangcai`，依赖清单随包 README |
+| **[linux-arm64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.deb)**（21 MB，sha256 `8376b99e…`）· ARM64 推荐 | DGX Spark 等 ARM64 | 同 deb 口径；`Depends` 用 22.04/24.04 兼容语法（`libgtk-3-0 \| libgtk-3-0t64` 等）；DGX Spark 原生构建（Flutter 3.29.0 arm64——官方不发 linux-arm64 SDK，如实记录） |
+| **[linux-arm64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.tar.gz)**（26 MB，sha256 `7983ca2e…`） | ARM64 免安装 | 解压跑 `wangcai` |
 
 装完第一件事（Windows）：设置页 → 模型 → 下载 **LFM3-1.7B** 起步（NPU 主打线，全 ctx 健康）。想跑 4B 智能体模型
 也可以——NPU 上它们只有 ctx≤512 的实测包线，App 会自动兜底收敛（见 [NPU 模型支持现状](#npu-模型支持现状)）。
@@ -390,7 +392,7 @@ Unreleased 段的日期是"该改动在硬件上被验证的日期"）。
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| Unreleased | 2026-11-09 → 11-10 | **生图整合**（🎨 chip /「/图」+ 智能体 `generate_image`，Unsloth Studio 直连，Win/Linux 双端）、**Linux 打包链**（deb + tar.gz，x64/ARM64，CJK/emoji 字体与窗口图标补漏）、**4B 兜底准入**（问题模型自动收敛到实测安全档，先保可用）、SearXNG 配置折叠化；**2026-11-10 重出包**——以上改动并入 0.0.6 产物（Windows 双件 + Linux 四件，链接见[下载安装](#下载安装windows--linux)段）。逐条见 [CHANGELOG.md](CHANGELOG.md) Unreleased 段 |
+| Unreleased | 2026-11-09 → 11-11 | **生图整合**（🎨 chip /「/图」+ 智能体 `generate_image`，Unsloth Studio 直连，Win/Linux 双端）、**Linux 打包链**（deb + tar.gz，x64/ARM64，CJK/emoji 字体与窗口图标补漏）、**4B 兜底准入**（问题模型自动收敛到实测安全档，先保可用）、SearXNG 配置折叠化、**首启转圈三层修复 + Linux 数据家 XDG 化**、**Debian 10/UOS 兼容构建通道**（buster chroot + readelf 版本闸）；**2026-11-11 六件重出包**——以上改动全部并入 0.0.6 产物（Windows 双件 + Linux 四件，链接见[下载安装](#下载安装windows--linux)段）。逐条见 [CHANGELOG.md](CHANGELOG.md) Unreleased 段 |
 | [0.0.6](CHANGELOG.md) | 2026-11-07 → 11-08 | **装机版引擎根因修复**（engines.json「缓存不夺权」+ PATH 前置重建修「NPU 引擎不可用」、退出 c000041d/WER 卡顿修复、`app.log` 黑匣子日志）；**4B 重估轮**（Qwen3-4B「1.3 t/s」翻案为 bench 口径 8.15/10.82、ctx>512 包线墙实测钉准、P14e 杠杆跨模型迁移 +33%）；并入 2026-11-05→07 批次：**NPU 世代自适应**（一/二/三代探测 + clamp 链 + 实测上探闭环）、**语音 ASR&TTS 重构 M0–M3**、**路由两档制**、**NPU 视觉引擎修复**、**4B admission 收紧族**（Spark 深上下文拦 / Qwen3.5 编译禁入 / MiniCPM5 禁入）、**模型清单扩容**（neohorse-1-4b / qwen3.5-2b + 下载契约 6 预置） |
 | [0.0.5](CHANGELOG.md) | 2026-11-05（tag 11-06） | 引擎线合流收官：P15–P20 入册（`KV_HOST_WRITE` 翻转修复、chunk 自动升档）、16K 深上下文预设、引擎按需安装改 **zip 流式解包**（修 CUDA 800MB+ 包下载完成即崩）；侧边栏常显收窄 |
 | 0.0.4 | 2026-11-05 | **数据家统一**四家并一家进 `%APPDATA%\WangCai`（搬迁语义 6 用例）；路由定调 **NPU 主打**；JSONL 真相源通电（write-through + fast path）；窗口几何记忆/单实例/快捷键等桌面基本件；交互去手机化 |

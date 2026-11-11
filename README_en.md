@@ -244,17 +244,20 @@ Reproduce with [`tools/`](tools/README.md).
 
 ## Download (Windows / Linux)
 
-Current **0.0.6**, packaged 2026-11-10 — image generation included, Linux artifacts shipping for the
-first time. All six files live on [GitHub Releases](https://github.com/liangjianzeng/WangCai/releases/latest):
+Current **0.0.6**, repackaged 2026-11-11 — image generation included, Linux artifacts shipping for the
+first time, plus the **fresh-install boot spinner fix** and a **Debian 10 (glibc 2.28) compatibility
+baseline** for the amd64 pair (runs on UOS/Deepin and other older distros). The 11-10 first cut lacked
+these — please update. All six files live on
+[GitHub Releases](https://github.com/liangjianzeng/WangCai/releases/latest):
 
 | Artifact | For | sha256 (head) |
 |---|---|---|
-| [WangCai-0.0.6-win-x64-Setup.exe](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-Setup.exe) (68 MB) — recommended on Windows | per-user install, no admin; shell + **WangCai NPU engine + OpenVINO runtime** bundled | `282b3511…` |
-| [WangCai-0.0.6-win-x64-portable.zip](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-portable.zip) (108 MB) | no-install / USB — unpack, run `App\WangCai.exe` | `20ce51b2…` |
-| [WangCai-0.0.6-linux-amd64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.deb) (19 MB) — recommended on x64 | Ubuntu 22.04/24.04 x64; `sudo apt install ./WangCai-*.deb` pulls CJK/emoji fonts, xclip etc. | `45b15b78…` |
-| [WangCai-0.0.6-linux-amd64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.tar.gz) (24 MB) | x64 without dpkg — unpack, run `wangcai` | `e5d40620…` |
-| [WangCai-0.0.6-linux-arm64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.deb) (21 MB) — recommended on ARM64 | DGX Spark & friends; `Depends` uses 22.04/24.04-compatible alternates (`libgtk-3-0 \| libgtk-3-0t64`); built natively on DGX Spark (Flutter 3.29.0 arm64 — no official linux-arm64 SDK) | `568416ec…` |
-| [WangCai-0.0.6-linux-arm64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.tar.gz) (26 MB) | ARM64 without dpkg | `8132a447…` |
+| [WangCai-0.0.6-win-x64-Setup.exe](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-Setup.exe) (68 MB) — recommended on Windows | per-user install, no admin; shell + **WangCai NPU engine + OpenVINO runtime** bundled | `67177a85…` |
+| [WangCai-0.0.6-win-x64-portable.zip](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-win-x64-portable.zip) (109 MB) | no-install / USB — unpack, run `App\WangCai.exe` | `0ba8aeaa…` |
+| [WangCai-0.0.6-linux-amd64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.deb) (20 MB) — recommended on x64 | Ubuntu 22.04/24.04, UOS/Deepin & other older distros; `sudo apt install ./WangCai-*.deb` pulls CJK/emoji fonts, xclip etc.; built in a **Debian 10 (glibc 2.28) chroot** behind a readelf version gate | `fa29de2c…` |
+| [WangCai-0.0.6-linux-amd64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-amd64.tar.gz) (24 MB) | x64 without dpkg — unpack, run `wangcai` | `bc7e1c86…` |
+| [WangCai-0.0.6-linux-arm64.deb](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.deb) (21 MB) — recommended on ARM64 | DGX Spark & friends; `Depends` uses 22.04/24.04-compatible alternates (`libgtk-3-0 \| libgtk-3-0t64`); built natively on DGX Spark (Flutter 3.29.0 arm64 — no official linux-arm64 SDK) | `8376b99e…` |
+| [WangCai-0.0.6-linux-arm64.tar.gz](https://github.com/liangjianzeng/WangCai/releases/download/v0.0.6/WangCai-0.0.6-linux-arm64.tar.gz) (26 MB) | ARM64 without dpkg | `7983ca2e…` |
 
 On Linux WangCai is a **remote client shell**: no local NPU/CUDA inference — point the model engine
 and the image-generation service at your LAN/remote HTTP (capability matrix in

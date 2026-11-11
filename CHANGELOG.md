@@ -10,6 +10,55 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 此处累积已入库、随下一版发布的改动。
 
+### 修复 —— Linux deb 国产老发行版（UOS Desktop 20）装得上点不动：Debian 10 基线构建通道（2026-11-11 用户机实锤）
+
+- **现象**：0.0.6 deb 在 UOS Desktop 20（Debian 10 系，glibc 2.28 / GLIBCXX 3.4.25）
+  点击无反应——动态链接期死亡 + `Terminal=false` 吞 stderr = 屏幕零反馈退出码 1。
+- **根因（readelf 逐 ELF 钉死）**：runner 与本地编译插件要 **GLIBC_2.34**（新版 CRT
+  启动/clone3，Ubuntu 22.04 GCC11.4/clang14 工具链产物），sqlite3 插件还要 2.29/2.33；
+  而 Google 预编译件（flutter 引擎 GLIBC_2.18、onnxruntime/sherpa 2.16、libapp.so
+  无版本化依赖）在 2.28 全兼容——死因全部是「我们自己在 22.04 上编的」那批。
+- **修复**：新增 `packaging/linux/build-legacy-debian10.sh`——**buster chroot
+  （glibc 2.28 = UOS 同代）内重编全部本地产物**（debootstrap→aliyun archive 源→
+  工具链→Flutter 3.27→编译），出厂前 **readelf 版本闸**（任一 ELF 超 2.28/3.4.25
+  拒出包，复测：runner 2.34→2.3、sqlite3 2.34→2.28、GLIBCXX 最高 3.4.21）。
+  **官方 Linux 渠道收敛到这条通道**：glibc 向前兼容，buster 基线在
+  Ubuntu 22.04/24.04/DGX 照跑，同一份包通吃老发行版（DGX arm64 维持原通道）。
+- **加固**：deb 新增 `wangcai-launch.sh` 启动包装（desktop Exec 经它），stderr 落
+  `~/.local/state/wangcai/launch.log`——启动失败不再哑死（app.log 推理黑匣子的
+  启动期同族）。
+- **十轮施工坑全数钉进脚本**：debootstrap 半截现场自愈（dpkg --configure -a 续跑）、
+  tuna/ustc 无 debian-archive（404，aliyun 有货）、Flutter tarball URL 须含
+  `/stable/linux/` 段、buster cmake 3.13 过不了 sqlite3_flutter_libs ≥3.14 闸、
+  buster pip 18.1（pytoml 代）解析不了现代 pyproject（换 cmake 官方自包含 tarball）、
+  cmake 崩溃残料污染 bundle/（构建前清场纪律）、**pipefail 下 grep 空匹配杀脚本**
+  （libapp.so 因「太干净」无 GLIBC 依赖反成凶手）、任务运行中编辑脚本致 bash
+  字节偏移错乱（任务中冻结不动）。
+- **产物（同版本号 0.0.6 重出替换 dist 同名件，sha256 以最终出厂件为准）**：deb
+  `fa29de2c…`、tar `bc7e1c86…`（旧 45b15b78…/e5d40620… 及中途试制件 90ec0a91… 等
+  一律作废——GitHub Releases 六件已于 11-11 同步换件并匿名下载抽查）。
+
+### 构建 —— 2026-11-11 六件全量重出：Windows 打包线环境三连坑（排障实录）
+
+- UOS 兼容线落定后六件全量重出（Windows 双件自此**含首启转圈修复**；六件 sha 表见
+  README「下载安装」段）。本轮 Windows 打包被环境问题连绊：
+  - **VS Installer 实例注册整体蒸发**：`ProgramData\Microsoft\VisualStudio\Packages\_Instances`、
+    HKLM Setup 键、`Microsoft.VisualStudio.Setup.Service` 同日消失，vswhere 失明 → flutter
+    「Unable to find suitable Visual Studio toolchain」。BuildTools 本体与 Windows SDK 无恙
+    （症状酷似清理工具/InstallCleanup 手滑），web bootstrapper 修复重装恢复注册。
+  - **修复重装推荐集不含 ATL**：`atlstr.h`/`atls.lib` 缺 → `flutter_secure_storage_windows`
+    编译/链接死；补装 `Microsoft.VisualStudio.Component.VC.ATL` 解决。
+  - **VS 自带 cmake 在 `cmake --build` 时给子进程注入空格截断的 VS 环境变量**
+    （`VSInstallDir=D:\Program`），MSBuild 遂把 `D:\Program Files (x86)\…` 走成
+    `D:\Program\…` → LNK1104 找不到 atls.lib；同一工程直接 msbuild 全绿即铁证。
+    解法：官方 cmake.org 3.30.5（已装 `E:\dev-tools\cmake-3.30.5-windows-x86_64`）
+    **PATH 前置**再跑 `build-installer.ps1`——本机打包请沿用此姿势。
+- 连带发现：`src/llama/build`、`ov/openvino/libs`、`E:\dev-tools\ov` 等**未跟踪构建产物**
+  同期被清；引擎全家与 OV 运行时已从 11-10 便携包字节恢复。教训：便携包 zip 曾是这些
+  二进制的唯一副本，未跟踪产物也要有可再生渠道（引擎重建命令应固化进 packaging/README）。
+- 成品：Setup `67177a85…`（68MB）、portable `0ba8aeaa…`（109MB）、arm64 双件
+  `8376b99e…`/`7983ca2e…`（DGX 原生重出，同含首启修复）。
+
 ### 修复 —— Linux 全新数据首启聊天区全屏转圈（2026-11-11 WSLg 用户实测「为什么一直转圈」）
 
 - **根因（黑匣子实锤 `Unhandled Exception: Bad state: No element` @ home_screen:298）**：
