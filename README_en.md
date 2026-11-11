@@ -186,7 +186,11 @@ in their attachments — reproducible; copy-to-clipboard / save-as sit on the ac
 menu and the full-screen preview. Configure under Settings → API → Image generation (connection-test
 light; on Windows `127.0.0.1:8888` or LAN or Tailscale `http://<host>.ts.net:8888` — tailnet traffic
 is end-to-end encrypted, so the client uses **http**). Linux clients point the same settings at the
-LAN service and get the identical experience. Full plan:
+LAN service and get the identical experience. A self-hosted alternative backend needs no Unsloth
+Studio at all: `tools/imagegen-server/` (standalone FastAPI + diffusers running
+Qwen-Image-2.1-Turbo, protocol-identical to Unsloth, default `:8899` — the client just repoints its
+base URL; strongest at Chinese text rendering / posters) — see
+[tools/imagegen-server/README](tools/imagegen-server/README.md). Full plan:
 [docs/image-gen-integration-plan.md](docs/image-gen-integration-plan.md).
 
 ### Phases

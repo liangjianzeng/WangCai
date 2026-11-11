@@ -323,8 +323,11 @@ Turbo，1024² 实测 17–29 s），n≤4 客户端单飞队列串行，图片�
 `imagePaths` 入库（seed/尺寸/耗时随消息留存，同 seed 可复现）。配置在设置「API 接入 → 图像生成」，
 测连接绿灯；未启用/断连 chip 置灰带原因、工具不注册。Windows 可本机 `127.0.0.1:8888`、局域网或
 Tailscale 远端；Linux 端连同一服务即得同等体验（这正是"零原生依赖"换来的双端一致）。图片的复制
-进剪贴板 / 另存在动作行、右键菜单、全屏预览三处都有入口。完整方案与验收
-[docs/image-gen-integration-plan.md](docs/image-gen-integration-plan.md)。
+进剪贴板 / 另存在动作行、右键菜单、全屏预览三处都有入口。不想依赖 Unsloth Studio 还有一条
+**自托管第二链路** `tools/imagegen-server/`（独立 FastAPI + diffusers 直调 Qwen-Image-2.1-Turbo，
+与 Unsloth 同构 OpenAI 协议、默认 `:8899` 并存不打架——客户端零改动，设置页换地址即切链路；
+中文渲染/海报向是它的强项）：[tools/imagegen-server/README](tools/imagegen-server/README.md)。
+完整方案与验收 [docs/image-gen-integration-plan.md](docs/image-gen-integration-plan.md)。
 
 ### 分期
 

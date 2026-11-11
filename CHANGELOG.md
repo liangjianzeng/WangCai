@@ -10,6 +10,26 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 此处累积已入库、随下一版发布的改动。
 
+### 新增 —— 汪柴生图服务：Qwen-Image-2.1-Turbo diffusers 直调第二链路（2026-11-10 用户「好，施工」）
+
+- **tools/imagegen-server/ 三件套**（server.py / requirements.txt / README.md）：独立 FastAPI
+  服务直接托管 `QwenImage21Pipeline`（ModelScope Qwen/Qwen-Image-2.1-Turbo），对外暴露与
+  unsloth Studio 完全同构的三端点 OpenAI 协议壳——**汪柴客户端零改动**，设置页换地址即切链路；
+  默认 8899 与 unsloth 8888 并存不打架。Turbo 特性由壳吸收：8 步调度烘焙在 checkpoint、
+  CFG=1（steps/negative 照收不生效）；生成全局串行锁（排队不 429，客户端 120s/300s 超时档
+  已含排队预算）；尺寸钳 [256,2560] 16 对齐（放得下官方竖图例 1696×2528）；
+  env 全配置化（repo/key/port/dtype/offload）兼容本机 N 卡与 DGX Spark 128GB 双宿主。
+- **协议契约 WSL 实弹冒烟 9 点全绿**：health 加载态仍 200（绿灯不吃冷启动）/ models 无 key·
+  错 key → 401 unsloth 同款 `authentication_error` 体 / 对 key → `data[].id` 进设置页下拉 /
+  缺 prompt·脏 size·url 格式 → 400 / 依赖缺失 → 503 带可操作指引（装 git 版 diffusers）。
+  测量教训：WSL 冷启动 + DRVFS 9P 首读使 python 起服可达 10s+，固定 sleep 冒烟必假阴，
+  改轮询「Uvicorn running」就绪判定后稳定。
+- **许可 go/no-go 口径入 README**：Qwen RESEARCH LICENSE（2026-09-20 通义）原文实锤
+  「Non-Commercial = research or evaluation purposes only」，商用须向 model-business@notice
+  另行取得授权——服务启动横幅 + /api/health 双处打印此提示，部署方用途自审。
+- **依赖钉版**：diffusers 必须 git 主（QwenImage21Pipeline + PR #14950 pipeline-configured
+  sampling sigmas 未进 PyPI 正式版），requirements 注明官方收录后可换版本号。
+
 ### 新增 —— 兜底准入：问题模型自动回退定制 ctx，先保可用（2026-11-09 用户拍板「先兜底定制 ctx，确保先能用」）
 
 - **机制**：`AdmissionRule` 新增 `fallbackCtx`（4B 线两条 ctx 门槛规则声明 512）——

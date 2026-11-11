@@ -1,0 +1,21 @@
+# 汪柴生图服务（Qwen-Image-2.1-Turbo · diffusers 直调）依赖锁。
+#
+# 安装（CUDA 宿主，先按本机 CUDA 装 torch 再装本表）：
+#   python -m venv .venv && . .venv/bin/activate        # Windows: .venv\Scripts\activate
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#   pip install -r requirements.txt
+# DGX Spark（GB10，CUDA 13 / arm64 wheel）用 NGC 容器或 NVIDIA 官方 torch 轮子，
+# 不照抄上面的 cu124 索引。
+#
+# ⚠️ diffusers 必须 git 主：QwenImage21Pipeline 及其「pipeline-configured
+# sampling sigmas」（Turbo 内置 8 步调度的载体，PR #14950）未进 PyPI 正式版。
+# 若日后官方 release 收录（>= 对应版本），可把下行换成版本号钉死。
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pillow>=10.4
+safetensors>=0.4
+accelerate>=1.1
+transformers>=4.51
+modelscope>=1.23
+git+https://github.com/huggingface/diffusers.git@main

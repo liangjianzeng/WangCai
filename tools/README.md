@@ -17,6 +17,7 @@ ANSI 解析 `.ps1`，源码里只要出现中文字符串字面量或长破折�
 | `npu-sweep.ps1` | NPU 编译（compile）配置开关的矩阵扫描，每格输出一行 |
 | `compare-tensors.ps1` | 对两次 `GGML_OPENVINO_DUMP_BIN` 转储（dump）做逐元素比对 |
 | `top-token.ps1` | 每个 pass（一次图执行）的 top-1 token / norm / min / max，用于在不同次运行之间对齐 pass |
+| `imagegen-server/` | 第二生图链路的自托管服务：FastAPI + diffusers 直调 Qwen-Image-2.1-Turbo，与 Unsloth Studio 同构的 OpenAI 协议壳（默认 `:8899`），汪柴客户端零改动换地址即切——用法见 `imagegen-server/README.md` |
 
 所有产物都落在 `tmp/`（已被 git 忽略）下：日志、缓存、转储。
 
