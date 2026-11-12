@@ -38,6 +38,26 @@ class UserUnit extends RenderUnit {
   const UserUnit(this.message);
 }
 
+/// 生图提示词扩写确认卡（2026-11-12 一实例三角色方案）：assistant 消息
+/// genMeta 带未确认 `pendingImageGen` 时不走普通回答气泡，改渲染可编辑
+/// 确认卡（[ImageGenConfirmCard]）——「🎨 生图」「用原话」「重扩」三键。
+class ImageGenConfirmUnit extends RenderUnit {
+  final ChatMessage message;
+  const ImageGenConfirmUnit(this.message);
+}
+
+/// genMeta 是否为未确认的 pendingImageGen 卡（脏 JSON 一律按非卡处理）。
+bool isPendingImageGenCard(ChatMessage m) {
+  final meta = m.genMeta;
+  if (meta == null || meta.isEmpty) return false;
+  try {
+    final j = jsonDecode(meta);
+    return j is Map && j['pendingImageGen'] == true && j['confirmed'] != true;
+  } catch (_) {
+    return false;
+  }
+}
+
 /// 一个智能体回合：[tools, answer] 的重排展示单元。
 class TurnUnit extends RenderUnit {
   /// 存储顺序中的 🔧 活动消息（新模式 [user, ans, t1..tk]；
@@ -118,6 +138,18 @@ List<RenderUnit> groupMessages(List<ChatMessage> messages) {
       // 信封引用的工具消息缺失（极端：清理脚本删过）→ 整条回退旧重排。
       final referenced = trace.where((i) => i.type == 'tool').length;
       if (referenced > 0 && traceTools.length < referenced) trace = null;
+    }
+    // 生图确认卡优先于回答气泡：干净的单卡回合（无工具无思考无信封）时
+    // 渲染可编辑确认卡；confirmed 后本判定不再命中 → 回归普通回答展示。
+    if (pendingTools.isEmpty &&
+        pendingThinking.isEmpty &&
+        trace == null &&
+        pendingAnswer != null &&
+        isPendingImageGenCard(pendingAnswer!)) {
+      units.add(ImageGenConfirmUnit(pendingAnswer!));
+      turnMessages.clear();
+      pendingAnswer = null;
+      return;
     }
     units.add(TurnUnit(toolList, pendingAnswer,
         thinking: thinkingList, trace: trace, traceTools: traceTools));

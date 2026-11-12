@@ -6,6 +6,12 @@
 ///
 /// [onGenerated] 回调由接入层传入（chat_provider）：把成图以带 imagePaths
 /// 的 assistant 消息落库，保证重进会话可回看（onTodosChanged 同款先例）。
+///
+/// **扩写纪律（2026-11-12 一实例三角色方案定案）**：本工具**不过**
+/// [ImagePromptRewriter] 确认流——智能体回合里模型给的 prompt 本就是 LLM
+/// 按工具描述写的完整提示词，再套一层「扩写→等用户确认」会把自主回合
+/// 卡死在人机上。确认卡流只属于入口①（口语直发场景）。两态化实现见
+/// chat_provider.generateImageDirect。
 library;
 
 import '../../services/image_gen_service.dart';

@@ -379,6 +379,18 @@ class SettingsNotifier extends StateNotifier<InferenceSettings> {
     await _persist();
   }
 
+  /// 生图提示词扩写开关（默认开；关 = 🎨/「/图」回到直发旧行为）。
+  Future<void> setImageGenRewriteEnabled(bool value) async {
+    state = state.copyWith(imageGenRewriteEnabled: value);
+    await _persist();
+  }
+
+  /// 扩写模型（apiModels 档 id；空 = 跟随当前 API 主模型）。
+  Future<void> setImageGenRewriteModelId(String value) async {
+    state = state.copyWith(imageGenRewriteModelId: value.trim());
+    await _persist();
+  }
+
   /// 保存/覆盖一台 ADB 目标机（按 id 匹配，id 为空则追加）。
   ///
   /// 同一 ip:port 只留一条：手滑重复添加会让"默认目标机"（取第一条）变得不可预期。

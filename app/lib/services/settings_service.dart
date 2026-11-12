@@ -498,6 +498,16 @@ class InferenceSettings {
   /// 默认出图尺寸档位（kImageGenSizes 之一；脏值回落 1024x1024）。
   final String imageGenDefaultSize;
 
+  /// 生图提示词扩写开关（2026-11-12 一实例三角色方案，默认开）：🎨/「/图」
+  /// 发送后先经 [ImagePromptRewriter] 扩写并出确认卡，用户过目再生图；
+  /// 关 = 旧直发行为。扩写模型不可用/失败自动直发，永不阻塞（compaction 纪律）。
+  final bool imageGenRewriteEnabled;
+
+  /// 扩写模型（apiModels 档 id；本机推荐 = tools/imagegen-server :8899 的
+  /// chat 档，与生图共用同一份常驻 Qwen3-VL）。空 = 跟随当前 API 主模型，
+  /// 主模型是本地引擎档时跳过扩写直发。
+  final String imageGenRewriteModelId;
+
   /// 危险命令策略：'deny'（默认，黑名单直接拒绝）/ 'ask'（转用户审批）。
   final String dangerousCommandPolicy;
 
@@ -633,6 +643,8 @@ class InferenceSettings {
     this.imageGenBaseUrl = '',
     this.imageGenModel = kImageGenDefaultModel,
     this.imageGenDefaultSize = '1024x1024',
+    this.imageGenRewriteEnabled = true,
+    this.imageGenRewriteModelId = '',
     this.devWorkspaceId = 'default',
     List<SshConfig>? sshConfigs,
     List<AdbTarget>? adbTargets,
@@ -821,6 +833,8 @@ class InferenceSettings {
     String? imageGenBaseUrl,
     String? imageGenModel,
     String? imageGenDefaultSize,
+    bool? imageGenRewriteEnabled,
+    String? imageGenRewriteModelId,
     String? devWorkspaceId,
     List<SshConfig>? sshConfigs,
     List<AdbTarget>? adbTargets,
@@ -960,6 +974,10 @@ class InferenceSettings {
       imageGenBaseUrl: imageGenBaseUrl ?? this.imageGenBaseUrl,
       imageGenModel: imageGenModel ?? this.imageGenModel,
       imageGenDefaultSize: imageGenDefaultSize ?? this.imageGenDefaultSize,
+      imageGenRewriteEnabled:
+          imageGenRewriteEnabled ?? this.imageGenRewriteEnabled,
+      imageGenRewriteModelId:
+          imageGenRewriteModelId ?? this.imageGenRewriteModelId,
       adbTargets: adbTargets ?? this.adbTargets,
       devWorkspaceId: devWorkspaceId ?? this.devWorkspaceId,
       sshConfigs: clearSshConfig ? const [] : (sshConfigs ?? this.sshConfigs),
@@ -1078,6 +1096,8 @@ class InferenceSettings {
         'imageGenBaseUrl': imageGenBaseUrl,
         'imageGenModel': imageGenModel,
         'imageGenDefaultSize': imageGenDefaultSize,
+        'imageGenRewriteEnabled': imageGenRewriteEnabled,
+        'imageGenRewriteModelId': imageGenRewriteModelId,
         'adbTargets': [for (final t in adbTargets) t.toJson()],
         'devWorkspaceId': devWorkspaceId,
         'sshConfigs': [for (final c in sshConfigs) c.toJson()],
@@ -1276,6 +1296,8 @@ class InferenceSettings {
       imageGenModel: json['imageGenModel'] as String? ?? kImageGenDefaultModel,
       imageGenDefaultSize:
           json['imageGenDefaultSize'] as String? ?? '1024x1024',
+      imageGenRewriteEnabled: json['imageGenRewriteEnabled'] as bool? ?? true,
+      imageGenRewriteModelId: json['imageGenRewriteModelId'] as String? ?? '',
       adbTargets: parseAdbTargets(json['adbTargets']),
       devWorkspaceId: json['devWorkspaceId'] as String? ?? 'default',
       // 新版列表优先；旧版单配置自动迁移为列表首项。

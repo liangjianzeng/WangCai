@@ -173,7 +173,13 @@ class ImageGenService {
               // 就是分钟级长请求，超时分档在请求级 Future.timeout 控制。
             ));
 
-  static final ImageGenService instance = ImageGenService();
+  static final ImageGenService _default = ImageGenService();
+
+  /// 测试注入口：替换全局单例（chat_provider 生图路径走 [instance]，
+  /// 状态机单测注入假件免真 HTTP；docsDirOverride 同款惯例）。
+  static ImageGenService? instanceOverrideForTest;
+
+  static ImageGenService get instance => instanceOverrideForTest ?? _default;
 
   final Dio _dio;
 

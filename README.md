@@ -16,6 +16,15 @@
 > （Qwen-Image-2.1-Turbo，1024² 实测 17–29 s），智能体 `generate_image` 自主配图；
 > Windows 本机/局域网/Tailscale、Linux 远端两端同一入口（方案
 > [docs/image-gen-integration-plan.md](docs/image-gen-integration-plan.md)）。
+> **2026-11-12 · 生图主线升级「8899 壳一实例三角色」** —— 提示词**扩写确认流**上线：
+> 🎨/「/图」发送后先由 Qwen3-VL 把口语扩写成出图友好提示词，确认卡上过目/编辑/
+> 「用原话」「重扩」后再生图（扩写不可用/失败自动直发，永不阻塞）；扩写走
+> `tools/imagegen-server` 新增的 `/v1/chat/completions`（与生图共用同一份常驻
+> Qwen3-VL），8899 转主推链路、unsloth 8888 保留可选（其 TE 拆头不可扩写）。
+> **2026-11-13 实测收口**：TE（Qwen3-VL-8B）bf16 实测 **17G**，16GB 卡 TE 上卡不可行
+> （此前 ~9G 假设作废）——现行档 TE CPU 常驻（chat 全程显存 0 MiB、扩写 20.8s/80
+> token 实测可用），生图档 16GB 方案（TE int8 上卡候选）列为开放项，详见
+> [tools/imagegen-server/README](tools/imagegen-server/README.md) 开放项节。
 > **2026-11-10 · Linux 桌面入库**（11-11 升级兼容基线）—— **Debian 10 (glibc 2.28) chroot 基线**
 > deb + tar.gz 双产物（WSLg 实跑验证，UOS/Deepin 等老发行版兼容，readelf 版本闸把关）、
 > DGX Spark（ARM64）原生构建链。**Linux 端是远端客户壳形态**：本地 NPU 推理不可用，
@@ -83,6 +92,7 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | **端侧多模态助手「汪柴」（v0.0.2）** | ✅ **M1–M4 全部完成（2026-11-02/03 开发机验证）**：`app/` Flutter Windows 壳（TongYi-Lite Dart 同路径 vendored，分叉清单 `app/UPSTREAM.md`）+ llama-server 子进程网关；三引擎齐——引擎商店钉官方 llama.cpp b12034（Vulkan+CUDA，sha256 白名单）+ OpenAI 远端 + 绑定表实测 t/s 回写 + 路由三档（速度优先 / NPU 优先 / 自动·拔电 NPU 加权），**DoD 四线真机 5/5**（NPU 1.7B / CUDA 4B 117.6 t/s / Vulkan 双卡 / 远端协议）；托盘驻留 + 电源感知 + HKCU 自启；**识图 DoD 达成**（SmolVLM2-500M + 商店 CUDA 引擎，壳网关 20 s 出准确语义描述；NPU 视觉当时归档缺陷，**2026-11-07 引擎修复后 NPU 带图三线 E2E 全绿**，见 [docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md)）；Agent `--jinja` 工具链全链路回归（tools 200，agent c4096）；便携包 + Inno Setup 脚本。⬜ 干净机装机验证待人工（`packaging/README.md`） |
 | **App 模型清单扩容：2B/4B 线（2026-11-07）** | ✅ **NPU 预置区扩到 8 条 preset + 目录补齐下载地址**：manifest 新增 `neohorse-1-4b`（TokenRhythm NeoHorse-1 4B Q4_K_M 2.5GB，262k ctx，留位未实测，通用 4B admission 自动接管：ctx≤512 放行、>512 拦）与 `qwen3.5-2b`（unsloth MTP UD-Q4_K_XL 1.29GB，同 qwen35 混合架构——GatedDeltaNet opset 风险与 4B 实锤同源 [defect-npu-qwen35-b12034](docs/defect-npu-qwen35-b12034.md)，2B 不预设结论、按「错放危害<错拦」不加家族禁入）；catalog 补 `Qwen3-4B-Q4_K_M` 下载条目（官方 Qwen 仓三镜像，sha256=本机已验证文件实测且与官方 HF LFS oid 逐位一致——此前 NPU 预置区缺文件却无处可下，用户只能手动放文件）；qwen3.5-2b 条目同步修到下载契约（魔搭置首 / `resolve/master` / 钉 sha，原 hf-mirror 置首+裸下载）。下载契约测试扩到 6 预置（落盘名命中 glob / 三镜像分支 / ±2% 字节带），全锦 1434/23/0 |
 | **生图整合（2026-11-10）** | ✅ **Win/Linux 双端可用，同一份 Dart**：聊天区两入口——🎨 chip /「/图 提示词」确定性直调（不经 LLM，简单聊天模式可用、零 token）+ 智能体 `generate_image` 工具（LLM 判断该配图时自主调用，未启用/断连不注册、不幻觉）。服务端 = Unsloth Studio OpenAI 兼容 `POST /v1/images/generations`（Qwen-Image-2.1-Turbo Q5_K_M 8 步 Turbo；1024² 实测 17–29 s、2048² ≈105 s，n≤4 单飞队列串行），seed/尺寸/耗时随消息落库可溯源复现；设置「API 接入 → 图像生成」测连接绿灯，断连 chip 置灰带原因；图片复制/另存三处入口（动作行 / 右键 / 全屏预览）。Windows 本机 `127.0.0.1:8888` 或 Tailscale 远端均可（tailnet 内填 **http** 方案） |
+| **生图主线升级「8899 壳一实例三角色」+ 扩写确认流（2026-11-12/13）** | ✅ **扩写流全链路实测交付**：`tools/imagegen-server` 8899 壳新增 `/v1/chat/completions`——扩写、轻量聊天（与生图共用同一份常驻 Qwen3-VL），主推链路，unsloth 8888 保留可选（其 TE 拆头不可扩写，源码实证在壳 README）。🎨/「/图」两态化：口语先经 `ImagePromptRewriter` 扩写 → **确认卡**（可编辑/🎨 生图/用原话/重扩）→ 确认才出图；扩写不可用/超时自动直发**永不阻塞**；开关与扩写模型档在设置「图像生成」节；智能体 `generate_image` 不过确认流（自主回合不卡人机）。**实测**：chat 真端点非流式/流式绿（CPU 扩写 20.8s/80token、显存 0 MiB）、壳契约 25/25、app 新用例 21/21 + 全量回归绿；TE bf16 17G 实证 16GB 卡不上卡，生图档（TE int8 上卡候选）为开放项（壳 README 开放项节） |
 
 精度主缺陷的完整攻坚记录是这个仓库最有价值的资产之一：从"logits 被压平、K 缓存第 0 行错八个
 数量级"出发，历经 scatter / conv 算子 / DQ / RMS 池化 / 广播 tile 一连串被证伪的假设，最终钉死在
@@ -163,8 +173,11 @@ LFM3-1.7B `Q4_K_M`（1049 MB）· 24 层（13 门控短卷积 + 5 滑动窗口@2
 
 装完第一件事（Windows）：设置页 → 模型 → 下载 **LFM3-1.7B** 起步（NPU 主打线，全 ctx 健康）。想跑 4B 智能体模型
 也可以——NPU 上它们只有 ctx≤512 的实测包线，App 会自动兜底收敛（见 [NPU 模型支持现状](#npu-模型支持现状)）。
-引擎管理确认 NPU 就绪。想试试生图：设置 →「API 接入 → 图像生成」填 Unsloth Studio 地址（见
-[生图整合方案](docs/image-gen-integration-plan.md)）。硬件门槛见[硬件要求](#硬件要求)。
+引擎管理确认 NPU 就绪。想试试生图（主推 8899 壳）：`tools\imagegen-server\start.ps1 -DitGguf <本地
+DiT GGUF>` 起服 → 设置「API 接入 → 图像生成」填 `http://127.0.0.1:8899` → 「模型服务」加一档
+baseUrl `http://127.0.0.1:8899/v1` 的 API 模型并在「扩写模型」下拉选中，🎨/「/图」即走
+扩写→确认卡→出图（见 [tools/imagegen-server/README](tools/imagegen-server/README.md)；
+unsloth 8888 可选链路见 [生图整合方案](docs/image-gen-integration-plan.md)）。硬件门槛见[硬件要求](#硬件要求)。
 
 > CUDA / Vulkan 外挂引擎不随安装器分发，在 App 内「引擎商店」按需下载；NPU 引擎与 OpenVINO 运行时始终随包。
 
@@ -317,18 +330,28 @@ CUDA 引擎，壳网关全链路 20 s 出准确语义描述（`app/test/platform
 native Q8_0 参照逐字一致，见上表）。语音输入/输出管线（sherpa ASR / TTS）随壳 vendored 并于 v0.0.6
 完成 M0–M3 重构（唤醒双引擎仲裁 + offline TTS 链）。
 
-**生图线（2026-11-10 整合）**：一个实现双入口——聊天区 🎨 chip /「/图 提示词」确定性直调（不经
-LLM，简单聊天模式与离线可用、零 token），智能体模式则由 LLM 自主调用 `generate_image` 工具配图。
-共同底座 `image_gen_service.dart` 是纯 Dart HTTP（零原生依赖）：OpenAI 兼容
-`POST /v1/images/generations` 打给 Windows 侧 Unsloth Studio（Qwen-Image-2.1-Turbo Q5_K_M，8 步
+**生图线（2026-11-10 整合 · 2026-11-12 主线升级）**：一个实现双入口——聊天区 🎨 chip /
+「/图 提示词」确定性直调（不经主聊天 LLM，简单聊天模式与离线可用、零 token），智能体模式则由
+LLM 自主调用 `generate_image` 工具配图。共同底座 `image_gen_service.dart` 是纯 Dart HTTP
+（零原生依赖）：OpenAI 兼容 `POST /v1/images/generations`（Qwen-Image-2.1-Turbo Q5_K_M，8 步
 Turbo，1024² 实测 17–29 s），n≤4 客户端单飞队列串行，图片落盘 `文档/imagegen/日期/` 并以
 `imagePaths` 入库（seed/尺寸/耗时随消息留存，同 seed 可复现）。配置在设置「API 接入 → 图像生成」，
-测连接绿灯；未启用/断连 chip 置灰带原因、工具不注册。Windows 可本机 `127.0.0.1:8888`、局域网或
-Tailscale 远端；Linux 端连同一服务即得同等体验（这正是"零原生依赖"换来的双端一致）。图片的复制
-进剪贴板 / 另存在动作行、右键菜单、全屏预览三处都有入口。不想依赖 Unsloth Studio 还有一条
-**自托管第二链路** `tools/imagegen-server/`（独立 FastAPI + diffusers 直调 Qwen-Image-2.1-Turbo，
-与 Unsloth 同构 OpenAI 协议、默认 `:8899` 并存不打架——客户端零改动，设置页换地址即切链路；
-中文渲染/海报向是它的强项）：[tools/imagegen-server/README](tools/imagegen-server/README.md)。
+测连接绿灯；未启用/断连 chip 置灰带原因、工具不注册。图片的复制进剪贴板 / 另存在动作行、右键菜单、
+全屏预览三处都有入口。
+
+**主推链路 = `tools/imagegen-server` 8899 壳「一实例三角色」**（2026-11-12 用户拍板）：独立
+FastAPI + diffusers 直调 Qwen-Image-2.1-Turbo，同构 OpenAI 协议 + **`/v1/chat/completions`
+对话端点**——生图、**提示词扩写**、轻量聊天共用同一份常驻 Qwen3-VL text_encoder（完整
+`Qwen3VLForConditionalGeneration` 带 lm_head 能 generate；16GB 单卡口径 2026-11-13 实测修正：
+TE bf16 17G，CPU 常驻 + `QI_SKIP_DIT=1` TE-only 档，生图档二轮收口，**零双份零频繁换载**，
+与本地 24B/27B 聊天模型互斥）。扩写确认流：
+🎨/「/图」发送后 `ImagePromptRewriter` 先让模型把一两句口语扩写成 diffusion 友好提示词，
+**确认卡**上过目——可编辑、「🎨 生图」、「用原话」、「重扩」——确认才起 job；扩写模型不可用/
+超时/空回复自动直发，**永不阻塞**（上下文压缩同款降级纪律）。扩写模型在设置里选（推荐指 8899
+chat 档；unsloth 8888 的 TE 被拆头 `NoLogitsHead`，物理上不能承担扩写——源码实证见壳 README）。
+`.\start.ps1 -DitGguf …` 一键起服：[tools/imagegen-server/README](tools/imagegen-server/README.md)。
+**unsloth Studio 8888 保留为可选链路**（日常出图/flux 系；客户端设置页换地址即切）：
+Windows 可本机或 Tailscale 远端、Linux 端连同一服务即得同等体验（"零原生依赖"换来的双端一致）。
 完整方案与验收 [docs/image-gen-integration-plan.md](docs/image-gen-integration-plan.md)。
 
 ### 分期
@@ -392,7 +415,7 @@ Unreleased 段的日期是"该改动在硬件上被验证的日期"）。
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| Unreleased | 2026-11-09 → 11-11 | **生图整合**（🎨 chip /「/图」+ 智能体 `generate_image`，Unsloth Studio 直连，Win/Linux 双端）、**Linux 打包链**（deb + tar.gz，x64/ARM64，CJK/emoji 字体与窗口图标补漏）、**4B 兜底准入**（问题模型自动收敛到实测安全档，先保可用）、SearXNG 配置折叠化、**首启转圈三层修复 + Linux 数据家 XDG 化**、**Debian 10/UOS 兼容构建通道**（buster chroot + readelf 版本闸）；**2026-11-11 六件重出包**——以上改动全部并入 0.0.6 产物（Windows 双件 + Linux 四件，链接见[下载安装](#下载安装windows--linux)段）。逐条见 [CHANGELOG.md](CHANGELOG.md) Unreleased 段 |
+| Unreleased | 2026-11-09 → 11-12 | **生图整合**（🎨 chip /「/图」+ 智能体 `generate_image`，Unsloth Studio 直连，Win/Linux 双端）、**Linux 打包链**（deb + tar.gz，x64/ARM64，CJK/emoji 字体与窗口图标补漏）、**4B 兜底准入**（问题模型自动收敛到实测安全档，先保可用）、SearXNG 配置折叠化、**首启转圈三层修复 + Linux 数据家 XDG 化**、**Debian 10/UOS 兼容构建通道**（buster chroot + readelf 版本闸）；**2026-11-11 六件重出包**——以上改动全部并入 0.0.6 产物（Windows 双件 + Linux 四件，链接见[下载安装](#下载安装windows--linux)段）；**2026-11-12 生图主线升级**——8899 壳「一实例三角色」（`/v1/chat/completions` 与生图共用一份常驻 Qwen3-VL）+ **提示词扩写确认流**（确认卡可编辑/用原话/重扩，失败自动直发永不阻塞）。逐条见 [CHANGELOG.md](CHANGELOG.md) Unreleased 段 |
 | [0.0.6](CHANGELOG.md) | 2026-11-07 → 11-08 | **装机版引擎根因修复**（engines.json「缓存不夺权」+ PATH 前置重建修「NPU 引擎不可用」、退出 c000041d/WER 卡顿修复、`app.log` 黑匣子日志）；**4B 重估轮**（Qwen3-4B「1.3 t/s」翻案为 bench 口径 8.15/10.82、ctx>512 包线墙实测钉准、P14e 杠杆跨模型迁移 +33%）；并入 2026-11-05→07 批次：**NPU 世代自适应**（一/二/三代探测 + clamp 链 + 实测上探闭环）、**语音 ASR&TTS 重构 M0–M3**、**路由两档制**、**NPU 视觉引擎修复**、**4B admission 收紧族**（Spark 深上下文拦 / Qwen3.5 编译禁入 / MiniCPM5 禁入）、**模型清单扩容**（neohorse-1-4b / qwen3.5-2b + 下载契约 6 预置） |
 | [0.0.5](CHANGELOG.md) | 2026-11-05（tag 11-06） | 引擎线合流收官：P15–P20 入册（`KV_HOST_WRITE` 翻转修复、chunk 自动升档）、16K 深上下文预设、引擎按需安装改 **zip 流式解包**（修 CUDA 800MB+ 包下载完成即崩）；侧边栏常显收窄 |
 | 0.0.4 | 2026-11-05 | **数据家统一**四家并一家进 `%APPDATA%\WangCai`（搬迁语义 6 用例）；路由定调 **NPU 主打**；JSONL 真相源通电（write-through + fast path）；窗口几何记忆/单实例/快捷键等桌面基本件；交互去手机化 |

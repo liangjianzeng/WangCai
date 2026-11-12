@@ -96,6 +96,7 @@ import '../services/image_gen_service.dart'
         ImageGenErrorKind,
         kImageGenApiKeyId,
         kImageGenSlashPrefix;
+import '../services/image_prompt_rewriter.dart';
 import 'agent_approval.dart'
     show sandboxApproverProvider, toolPreApproverProvider;
 import 'agent_state_provider.dart'
@@ -482,7 +483,13 @@ class ChatNotifier extends StateNotifier<bool> {
     // 依赖已删除的 gpuBackend/inferenceLimitRefreshRate）已整体退场。
   }
 
-  ChatNotifier(this._ref, this._inference, this._storage) : super(false);
+  ChatNotifier(this._ref, this._inference, this._storage,
+      {ImagePromptRewriter? rewriter})
+      : _rewriter = rewriter ?? ImagePromptRewriter(),
+        super(false);
+
+  /// 生图提示词扩写器（测试注入假件；默认走 openai_service 现成通道）。
+  final ImagePromptRewriter _rewriter;
 
   /// Ensure the correct model is loaded before sending a message.
   /// Uses [modelManagerProvider] so that loading state is visible in UI.
@@ -571,11 +578,14 @@ class ChatNotifier extends StateNotifier<bool> {
     await _refreshConversationMeta(conversationId);
   }
 
-  /// 入口①：确定性直调生图（不经 LLM，离线可用、零 token）。
+  /// 入口①：确定性直调生图（不经主聊天 LLM，零 token）。
   ///
-  /// 流程（评审定案）：user 消息先落库 → **临时占位**（imageGenJobsProvider，
-  /// 不入库，杀 App 不留脏占位）→ 完成才写带 imagePaths 的 assistant 消息；
-  /// 失败写错误文案 + 原提示词（重发即重试）。
+  /// 两态化（2026-11-12 一实例三角色方案）：user 消息落库 →（扩写开启且
+  /// 可解析出扩写模型时）**先出确认卡**——扩写模型把口语重写成 diffusion
+  /// 友好提示词，用户过目/编辑后由 [confirmImageGen] 真正生图；扩写模型
+  /// 不可用/扩写失败则**直发生图**（compaction 同源降级纪律，扩写永不
+  /// 阻塞主流程）。直发路径内部：临时占位（imageGenJobsProvider，不入库）
+  /// → 完成才写带 imagePaths 的 assistant 消息；失败写错误文案+原提示词。
   /// [prompt] 可带 [kImageGenSlashPrefix] 前缀（「/图 」），统一剥掉后入库。
   Future<void> generateImageDirect(
       String conversationId, String prompt) async {
@@ -595,8 +605,6 @@ class ChatNotifier extends StateNotifier<bool> {
       await _refreshConversationMeta(conversationId);
       return;
     }
-    final cfg = await _imageGenConfig();
-    final size = cfg.effectiveSize;
     await _storage.saveMessage(ChatMessage(
       id: 'imgu_${DateTime.now().millisecondsSinceEpoch}',
       conversationId: conversationId,
@@ -604,6 +612,54 @@ class ChatNotifier extends StateNotifier<bool> {
       content: promptText,
     ));
     await _refreshConversationMeta(conversationId);
+    final s = _ref.read(settingsProvider);
+    if (s.imageGenRewriteEnabled) {
+      final model = _rewriteModel(s);
+      if (model != null) {
+        final r = await _rewriter.rewrite(model: model, userPrompt: promptText);
+        if (!r.failed) {
+          await _storage.saveMessage(ChatMessage(
+            id: 'imgp_${DateTime.now().millisecondsSinceEpoch}',
+            conversationId: conversationId,
+            role: MessageRole.assistant,
+            content: r.rewritten,
+            genMeta: jsonEncode({
+              'pendingImageGen': true,
+              'original': r.original,
+              'rewritten': r.rewritten,
+              'confirmed': false,
+              'modelId': model.id,
+            }),
+          ));
+          await _refreshConversationMeta(conversationId);
+          return;
+        }
+      }
+    }
+    await _startImageGen(conversationId, promptText);
+  }
+
+  /// 扩写模型解析：设置专用档 > 当前 API 主模型。本地主模型（引擎治理、
+  /// 无 OpenAI 兼容端点可借）返回 null = 跳过扩写直发生图。
+  ApiModelConfig? _rewriteModel(InferenceSettings s, {String? preferId}) {
+    final id = (preferId != null && preferId.isNotEmpty)
+        ? preferId
+        : s.imageGenRewriteModelId;
+    if (id.isNotEmpty) {
+      for (final m in s.apiModels) {
+        if (m.id == id) return m;
+      }
+    }
+    return s.activeApiModel();
+  }
+
+  /// 生图 job 本体（确认卡与扩写跳过两路共用）：单飞占位 → 出图 → 落库。
+  /// user 消息由调用方先行落库；这里只管占位、生成与结果消息。
+  Future<void> _startImageGen(String conversationId, String promptText) async {
+    final jobs = _ref.read(imageGenJobsProvider.notifier);
+    if (jobs.state.containsKey(conversationId)) return; // 双保险（UI 已隐按钮）
+    final cfg = await _imageGenConfig();
+    final size = cfg.effectiveSize;
     jobs.start(ImageGenJob(
         conversationId: conversationId,
         prompt: promptText,
@@ -636,6 +692,72 @@ class ChatNotifier extends StateNotifier<bool> {
     } finally {
       jobs.finish(conversationId);
     }
+  }
+
+  /// 确认卡「生图」：[editedPrompt] 为编辑框现值（缺省用扩写文），
+  /// [useOriginal] 真则采用用户原话。同 id replace 标记 confirmed（按钮
+  /// 消失、500ms 轮询上屏），随后起 job。
+  Future<void> confirmImageGen(String conversationId, String pendingId,
+      {String? editedPrompt, bool useOriginal = false}) async {
+    final msg = await _loadPendingImageGen(conversationId, pendingId);
+    if (msg == null) return;
+    final meta = jsonDecode(msg.genMeta!) as Map<String, dynamic>;
+    final finalPrompt =
+        (useOriginal ? meta['original'] : (editedPrompt ?? meta['rewritten']))
+            .toString()
+            .trim();
+    if (finalPrompt.isEmpty) return;
+    meta['confirmed'] = true;
+    meta['finalPrompt'] = finalPrompt;
+    await _storage.saveMessage(ChatMessage(
+      id: msg.id,
+      conversationId: conversationId,
+      role: msg.role,
+      content: finalPrompt,
+      genMeta: jsonEncode(meta),
+    ));
+    await _refreshConversationMeta(conversationId);
+    await _startImageGen(conversationId, finalPrompt);
+  }
+
+  /// 确认卡「重扩」：对 original 再扩一次刷新卡面；失败保持现卡不动。
+  Future<void> regenerateImageRewrite(
+      String conversationId, String pendingId) async {
+    final msg = await _loadPendingImageGen(conversationId, pendingId);
+    if (msg == null) return;
+    final meta = jsonDecode(msg.genMeta!) as Map<String, dynamic>;
+    final s = _ref.read(settingsProvider);
+    final model = _rewriteModel(s, preferId: meta['modelId']?.toString());
+    if (model == null) return;
+    final r = await _rewriter.rewrite(
+        model: model, userPrompt: meta['original']?.toString() ?? '');
+    if (r.failed) return;
+    meta['rewritten'] = r.rewritten;
+    await _storage.saveMessage(ChatMessage(
+      id: msg.id,
+      conversationId: conversationId,
+      role: msg.role,
+      content: r.rewritten,
+      genMeta: jsonEncode(meta),
+    ));
+    await _refreshConversationMeta(conversationId);
+  }
+
+  /// 取未确认的 pendingImageGen 卡（含解析校验），取不到返回 null。
+  Future<ChatMessage?> _loadPendingImageGen(
+      String conversationId, String pendingId) async {
+    final msgs = await _storage.getAllMessages(conversationId);
+    for (final m in msgs) {
+      if (m.id != pendingId || m.genMeta == null) continue;
+      try {
+        final meta = jsonDecode(m.genMeta!) as Map<String, dynamic>;
+        if (meta['pendingImageGen'] == true && meta['confirmed'] != true) {
+          return m;
+        }
+      } catch (_) {}
+      return null;
+    }
+    return null;
   }
 
   /// 取消当前生图（占位卡的取消按钮）：真正掐断 HTTP 请求（CancelToken），

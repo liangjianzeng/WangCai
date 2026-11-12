@@ -79,3 +79,6 @@ packaging/dist/
 
 # ZCode 会话私有草稿（计划书等，同 .claude/ 一类 agent 记忆）
 .zcode/
+
+# 汪柴生图服务本地模型缓存（TE 17G / DiT，snapshot_download 落盘，绝不入库）
+tools/imagegen-server/models/

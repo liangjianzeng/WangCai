@@ -60,6 +60,7 @@ import '../services/storage_permission_service.dart';
 import '../widgets/agent_workflow.dart';
 import '../widgets/approval_card.dart';
 import '../widgets/chat_bubble.dart';
+import '../widgets/image_gen_confirm_card.dart';
 import '../widgets/image_preview.dart';
 import '../widgets/rail/rail_scaffold.dart';
 import '../plugins/panel/plugins_screen.dart';
@@ -2489,6 +2490,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                     audioPath: message.audioPath,
                     inferenceStats: message.inferenceStats,
                     conversationId: _currentConversationId,
+                  ),
+                ImageGenConfirmUnit(:final message) => ImageGenConfirmCard(
+                    message: message,
+                    busy: imageJob != null,
+                    onConfirm: (edited) => ref
+                        .read(chatNotifierProvider.notifier)
+                        .confirmImageGen(_currentConversationId, message.id,
+                            editedPrompt: edited),
+                    onUseOriginal: () => ref
+                        .read(chatNotifierProvider.notifier)
+                        .confirmImageGen(_currentConversationId, message.id,
+                            useOriginal: true),
+                    onRegenerate: () => ref
+                        .read(chatNotifierProvider.notifier)
+                        .regenerateImageRewrite(
+                            _currentConversationId, message.id),
                   ),
                 TurnUnit(:final tools, :final answer, :final thinking,
                         :final trace, :final traceTools) =>

@@ -211,6 +211,52 @@ class _ImageGenSectionState extends ConsumerState<ImageGenSection> {
                 if (v != null) _notifier.setImageGenDefaultSize(v);
               },
             ),
+            const SizedBox(height: 4),
+            // ---- 提示词扩写（2026-11-12 一实例三角色）----
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              dense: true,
+              title: const Text('提示词扩写（先确认再生图）',
+                  style: TextStyle(fontSize: 14)),
+              subtitle: Text(
+                '🎨/「/图」发送后先由模型把口语扩写成出图友好的提示词，'
+                '确认卡上可编辑、「用原话」或「重扩」；模型不可用时自动直发。'
+                '本机推荐指向 tools/imagegen-server :8899 的 chat 模型'
+                '（与生图共用同一份常驻 Qwen3-VL，零新增加载）。',
+                style: const TextStyle(fontSize: 12),
+              ),
+              value: settings.imageGenRewriteEnabled,
+              onChanged: (v) => _notifier.setImageGenRewriteEnabled(v),
+            ),
+            if (settings.imageGenRewriteEnabled)
+              DropdownButtonFormField<String>(
+                key: ValueKey(
+                    'imgrewrite_${settings.apiModels.map((m) => m.id).join("|")}'),
+                value: (settings.imageGenRewriteModelId.isEmpty ||
+                        settings.apiModels
+                            .any((m) => m.id == settings.imageGenRewriteModelId))
+                    ? settings.imageGenRewriteModelId
+                    : '',
+                isExpanded: true,
+                decoration: const InputDecoration(
+                  labelText: '扩写模型',
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+                items: [
+                  const DropdownMenuItem(
+                      value: '',
+                      child: Text('（跟随当前 API 主模型；本地主模型则直发）',
+                          style: TextStyle(fontSize: 13))),
+                  for (final m in settings.apiModels)
+                    DropdownMenuItem(
+                        value: m.id,
+                        child: Text('${m.name}（${m.model}）',
+                            style: const TextStyle(fontSize: 13),
+                            overflow: TextOverflow.ellipsis)),
+                ],
+                onChanged: (v) => _notifier.setImageGenRewriteModelId(v ?? ''),
+              ),
             const SizedBox(height: 8),
             TextField(
               controller: _keyCtl,

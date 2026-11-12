@@ -10,6 +10,51 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
 
 此处累积已入库、随下一版发布的改动。
 
+### 新增 —— 生图主线升级「8899 壳一实例三角色」+ 提示词扩写确认流（2026-11-12 用户拍板「8899 壳一实例三角色（唯一零换载解）」，2026-11-13 实测收口）
+
+- **背景**：🎨/「/图」对 prompt 零加工，口语一两句直进 DiT 出图差。用户要求
+  「先扩写，确认后再生图」且硬约束「不接受同模型双份显存、不接受频繁加载
+  卸载」。经 unsloth 源码级调查：Studio TE 被拆头（NoLogitsHead）物理不可
+  共享、其 GGUF 在 Windows GPU 路线根本没被用；我们 `tools/imagegen-server`
+  的 `pipe.text_encoder` 是完整 `Qwen3VLForConditionalGeneration`（带 lm_head
+  能 generate）→ 8899 壳一实例三角色（生图/扩写/聊天共用一份常驻 TE）。
+- **壳（tools/imagegen-server）**：新增 OpenAI 兼容 `POST /v1/chat/completions`
+  （processor.apply_chat_template → TE generate，非流 chat.completion + usage
+  /流式 SSE `chat.completion.chunk` → `[DONE]`，model 字段宽松）；`/v1/models`
+  双 id（生图 + chat）；TE CPU 驻留调度（`QI_TE_DEVICE`/`QI_TE_KEEP_SEC`，
+  上卡条件收紧到 cuda 档——**cpu 档误上卡 bug 实锤修复**：17G TE 曾整卡塞满
+  16042/16311 MiB）；`QI_CHAT_TEMPERATURE`/`QI_CHAT_MAX_TOKENS` 环境变量；
+  `convert_gguf_keys.py`（ComfyUI gguf → diffusers 键名，265 张量对齐验证，
+  幂等缓存）+ DiT GGUF 手工三步组装（`load_gguf_checkpoint` →
+  `_replace_with_gguf_linear` → 逐参数装载，绕开 0.43-dev
+  from_single_file/from_pretrained 双坑——均已实证）+ img_mlp
+  `gate_up → gate_layer/proj` 行切拆分；`QI_SKIP_DIT=1` TE-only 验收档。
+- **app**：`lib/services/image_prompt_rewriter.dart`（扩写器，内联中文模板，
+  30s 超时/失败折叠为原文直通——上下文压缩同款降级纪律）；chat_provider
+  两态化 `generateImageDirect`（user 落库 → 扩写 → **确认卡消息**
+  genMeta`pendingImageGen` 不起 job）+ `confirmImageGen`（编辑稿/用原话，
+  同 id replace 置 confirmed 后起 job）+ `regenerateImageRewrite`（对 original
+  重扩，不滚雪球）；`groupMessages` 新增 `ImageGenConfirmUnit` 分流（confirmed
+  后回归普通回答）；独立确认卡组件（可编辑 TextField + 🎨 生图/用原话/重扩 +
+  折叠原话，job 在飞时三键禁用）；设置 `imageGenRewriteEnabled`（默认开）+
+  `imageGenRewriteModelId`（apiModels 档，本机推荐 8899 chat 档）+ 设置 UI
+  开关/下拉；智能体 `generate_image` 工具**不过**确认流（自主回合不卡人机，
+  头注释记纪律）。
+- **实测（本机 geekpro RTX 5060 Ti 16GB）**：壳契约测试 25/25 全绿；真端点
+  chat 非流式/流式绿——扩写质量「画一只赛博朋克的猫」→ 80 字结构化提示词，
+  CPU 路径 20.8s/80token，**显存全程 0 MiB**（TE CPU 常驻）；generations
+  skip 档 503 如实；app 新用例 21/21 + 全量回归绿（1498+，唯一 fail 为语音
+  并行抖动单跑绿）。**TE bf16 实测 17G**（Qwen3-VL-8B，模型 8B）：16GB 卡
+  TE 上卡物理不可行（此前 ~9G 假设作废）——生图档 16GB 方案（候选 TE
+  int8/fp8 上卡 + DiT GGUF，norm 布局对账待收口）列为壳 README 开放项。
+- **环境链实案**（排障沉淀进 start.ps1/start.sh）：diffusers git 主干要求
+  Python ≥3.11（3.10 装依赖时才被拒 → 版本闸收紧 3.11~3.13，3.14 torch 轮子
+  未跟上）；`QI_PYTHON` 覆盖口 + NuGet 官方便携版 Python 3.12.7（官方安装器
+  /quiet 在本机挂死，弃）；torch 官方源 170KB/s → 阿里云
+  `mirrors.aliyun.com/pytorch-wheels/cu128` 直拉（50 系 Blackwell 必须
+  cu128+，torch 2.11.0+cu128 CUDA True 实证）；diffusers GGUF 缺 `gguf` 包
+  报 "Unable to load weights"（requirements 补）。
+
 ### 修复 —— Linux deb 国产老发行版（UOS Desktop 20）装得上点不动：Debian 10 基线构建通道（2026-11-11 用户机实锤）
 
 - **现象**：0.0.6 deb 在 UOS Desktop 20（Debian 10 系，glibc 2.28 / GLIBCXX 3.4.25）
