@@ -84,6 +84,10 @@ QI_DIT_GGUF = os.environ.get("QI_DIT_GGUF", "").strip()
 # 503——16GB 卡 TE 17G(bf16) 与 DiT 同卡不可行的 TE-only 验收档（2026-11-13
 # 实证 TE=Qwen3-VL-8B bf16 17G，此前 ~9G 假设作废）；chat 扩写/轻量聊天全功能。
 QI_SKIP_DIT = os.environ.get("QI_SKIP_DIT", "").strip() == "1"
+# QI_TE_INT4=1：TE 用 bitsandbytes nf4 **4bit 量化常驻上卡**（8B → ~5.5G）——
+# 16GB 单卡生图档的显存解：DiT GGUF Q5_K_M 5.4G + VAE 0.65G + TE int4 5.5G
+# ≈ 11.6G。bnb 加载即量化上卡（不可再 .to 搬运），TE 调度在本档禁用。
+QI_TE_INT4 = os.environ.get("QI_TE_INT4", "").strip() == "1"
 QI_API_KEY = os.environ.get("QI_API_KEY", "").strip()
 QI_HOST = os.environ.get("QI_HOST", "0.0.0.0")
 QI_PORT = int(os.environ.get("QI_PORT", "8899"))
@@ -131,8 +135,11 @@ def _te_acquire() -> None:
     """TE 上卡（幂等）。取消待触发的回迁计时；记使用时戳。
 
     上卡条件 = `_use_cuda` **且 QI_TE_DEVICE=="cuda"**——cpu 档 TE 永驻 RAM
-    （2026-11-13 实案：TE bf16 17G 会整卡塞满 16GB 消费卡，挤死 DiT/桌面）。"""
+    （2026-11-13 实案：TE bf16 17G 会整卡塞满 16GB 消费卡，挤死 DiT/桌面）；
+    int4 档 TE 已随 bnb 加载上卡，本函数 no-op。"""
     global _te_on_cuda, _te_last_used, _te_timer
+    if QI_TE_INT4:
+        return
     if _te_timer is not None:
         _te_timer.cancel()
         _te_timer = None
@@ -155,10 +162,10 @@ def _te_offload_now() -> None:
 
 
 def _te_release() -> None:
-    """解锁前调用：QI_TE_DEVICE=cuda 常驻不搬；cpu 档 TE 本就没上卡，no-op。"""
+    """解锁前调用：QI_TE_DEVICE=cuda 常驻不搬；cpu/int4 档 no-op。"""
     global _te_last_used, _te_timer
-    if not _use_cuda or QI_TE_DEVICE != "cuda":
-        return  # cpu 档 / CPU 宿主：TE 从未上卡，无需回迁
+    if not _use_cuda or QI_TE_DEVICE != "cuda" or QI_TE_INT4:
+        return  # cpu 档（TE 从未上卡）/ int4 档（常驻卡不搬）
     _te_last_used = time.monotonic()
     if QI_TE_KEEP_SEC == 0:
         _te_offload_now()
@@ -234,9 +241,22 @@ def _ensure_loaded() -> None:
                 path, subfolder="scheduler")
             vae = AutoencoderKLQwenImage21.from_pretrained(
                 path, subfolder="vae", torch_dtype=dtype)
-            # TE 先建在 CPU（QI_TE_DEVICE=cpu 档的初始态；cuda 档随后统一 .to）
-            text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
-                os.path.join(path, "text_encoder"), torch_dtype=dtype)
+            if QI_TE_INT4 and _use_cuda:
+                # 4bit nf4 量化：加载即逐层上卡量化（bnb 不支持加载后 .to）。
+                from transformers import BitsAndBytesConfig
+                text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+                    os.path.join(path, "text_encoder"), torch_dtype=dtype,
+                    quantization_config=BitsAndBytesConfig(
+                        load_in_4bit=True, bnb_4bit_compute_dtype=dtype,
+                        bnb_4bit_quant_type="nf4"),
+                    device_map={"": 0})
+                _te_on_cuda = True  # int4 档常驻卡，调度全程 no-op
+                print(f"[imagegen] TE int4(nf4) 常驻上卡（显存 ~"
+                      f"{torch.cuda.memory_allocated() / 2**30:.1f}G）", flush=True)
+            else:
+                # TE 先建在 CPU（QI_TE_DEVICE=cpu 档的初始态；cuda 档随后统一 .to）
+                text_encoder = Qwen3VLForConditionalGeneration.from_pretrained(
+                    os.path.join(path, "text_encoder"), torch_dtype=dtype)
             processor = Qwen3VLProcessor.from_pretrained(
                 path, subfolder="processor")
             if QI_SKIP_DIT:
@@ -266,44 +286,87 @@ def _ensure_loaded() -> None:
                 # 块形状）**直接赋 _parameters**——GGUFLinear 权重驻留本就是
                 # raw 形状，load_state_dict 的形状校验会误炸（0.43 实锤）；
                 # 非 quant 张量（bias/norm，gguf 里 F32）按 dtype copy_。
-                from diffusers.quantizers.gguf.utils import GGUFParameter
+                from diffusers.quantizers.gguf.utils import (
+                    GGUFParameter,
+                    dequantize_gguf_tensor,
+                )
                 msd_keys = set(dict(transformer.state_dict()))
                 _loaded = _raw = 0
                 for k, v in dit_sd.items():
-                    mod_name, pname = k.rsplit(".", 1)
-                    module = transformer.get_submodule(mod_name)
                     # 键映射（两代架构 img_mlp 重布线，实证 transformer_qwenimage21
                     # L206-212 前向 out(act(gate_layer) * proj)：原版 Qwen-Image 的
                     # gate_up（gate|up 沿输出维拼接，24576=2×12288）→ 2.1 的
                     # gate_layer(gate, act 通道) + proj(up, 乘子)。K-quant 块沿
-                    # 输出行独立 → 按行切半零损失；参数位对齐的键直接装。
-                    if pname == "gate_up" and f"{mod_name}.gate_layer" in msd_keys:
+                    # 输出行独立 → 按行切半零损失。键级处理（先于 get_submodule——
+                    # `…img_mlp.gate_up.weight` 按尾点切会得到不存在的模块路径）。
+                    if k.endswith("img_mlp.gate_up.weight"):
+                        # gate_layer/proj 是 nn.Linear（_replace_with_gguf_linear
+                        # 不认识 gate_up 键，没替换它们）——直接往 fw._parameters
+                        # 塞键会**遮蔽同名 _modules**（nn.Module.__getattr__ 先查
+                        # _parameters → self.gate_layer 变成不可调用 Tensor，
+                        # 'GGUFParameter' object is not callable 实锤）。正确做法
+                        # 是把两层整体换成 GGUFLinear：raw Q5 驻留 + 前向自动
+                        # dequant，显存优势与全链一致。
+                        from diffusers.quantizers.gguf.utils import GGUFLinear
+                        fw = transformer.get_submodule(k[:-len(".gate_up.weight")])
                         half = v.shape[0] // 2
-                        gate = GGUFParameter(v.as_tensor()[:half], quant_type=v.quant_type)
-                        up = GGUFParameter(v.as_tensor()[half:], quant_type=v.quant_type)
-                        module._parameters["gate_layer"] = gate
-                        module._parameters["proj"] = up
+                        fw.gate_layer = GGUFLinear(4096, half, bias=False,
+                                                   compute_dtype=dtype)
+                        fw.proj = GGUFLinear(4096, half, bias=False,
+                                             compute_dtype=dtype)
+                        fw.gate_layer._parameters["weight"] = GGUFParameter(
+                            v.as_tensor()[:half], quant_type=v.quant_type)
+                        fw.proj._parameters["weight"] = GGUFParameter(
+                            v.as_tensor()[half:], quant_type=v.quant_type)
                         _raw += 2
                         continue
+                    mod_name, pname = k.rsplit(".", 1)
+                    module = transformer.get_submodule(mod_name)
+                    is_gguf_linear = "GGUFLinear" in type(module).__name__
                     if isinstance(v, GGUFParameter):
                         if pname in module._parameters:
-                            module._parameters[pname] = v  # 不 .to：保 quant_type 属性
+                            if is_gguf_linear:
+                                # raw 驻留（GGUFLinear 前向按块 dequant，不 .to
+                                # 保 quant_type 属性）。
+                                module._parameters[pname] = v
+                            else:
+                                # 官方 create_quantized_param 的 excluded-module
+                                # 同款语义：非-Linear（RMSNorm 等）拿 raw 字节
+                                # 视图会前向广播炸（text_norm 8192 vs 4096 实锤）
+                                # → 就地 dequant 落值。
+                                module._parameters[pname] = torch.nn.Parameter(
+                                    dequantize_gguf_tensor(v).to(dtype),
+                                    requires_grad=False)
+                            _raw += 1
                         elif pname in module._buffers:
-                            module._buffers[pname] = v
+                            module._buffers[pname] = dequantize_gguf_tensor(v).to(dtype)
+                            _raw += 1
                         else:
                             raise RuntimeError(f"{k} 无对应参数位")
-                        _raw += 1
                     else:
-                        getattr(module, pname).data.copy_(v.to(dtype))
+                        cur = getattr(module, pname)
+                        if pname in module._parameters:
+                            # 整参数替换（copy_ 在 2026-11-13 实案中未落地——
+                            # norm_out.linear.weight 装载后仍 f32，前向 dtype
+                            # 炸；Parameter 重建不受 copy 语义牵制）。
+                            module._parameters[pname] = torch.nn.Parameter(
+                                v.to(dtype).clone().contiguous(),
+                                requires_grad=False)
+                        elif pname in module._buffers:
+                            module._buffers[pname] = v.to(dtype).clone().contiguous()
+                        else:
+                            raise RuntimeError(f"{k} 无对应参数位")
                         _loaded += 1
                 _missing = [k for k in msd_keys if k not in dit_sd
                             and not (k.endswith("img_mlp.proj.weight")
                                      or k.endswith("img_mlp.gate_layer.weight"))]
                 if _missing:
                     raise RuntimeError(f"GGUF DiT 缺键：{_missing[:8]}")
+                _nl = dict(transformer.named_modules())["norm_out.linear"]
                 print(f"[imagegen] DiT GGUF 装载 OK：raw={_raw} dequant-copied="
-                      f"{_loaded}（含 img_mlp gate_up→gate_layer/proj 拆分）",
-                      flush=True)
+                      f"{_loaded}（含 img_mlp gate_up→gate_layer/proj 拆分）；"
+                      f"norm_out.linear.weight dtype="
+                      f"{_nl.weight.dtype}", flush=True)
             else:
                 transformer = QwenImage21Transformer2DModel.from_pretrained(
                     path, subfolder="transformer", torch_dtype=dtype)
@@ -325,13 +388,17 @@ def _ensure_loaded() -> None:
                 else:
                     transformer.to("cuda")
                     vae.to("cuda")
-                    if QI_TE_DEVICE == "cuda":
+                    if QI_TE_DEVICE == "cuda" and not QI_TE_INT4:
                         text_encoder.to("cuda")
                         _te_on_cuda = True
+                    # QI_TE_INT4 档：TE 已随 bnb 加载上卡，禁止再 .to
             else:
                 if not QI_SKIP_DIT:
                     _pipe.to("cpu")
                 _te_on_cuda = True  # CPU 宿主无所谓搬移
+            if _use_cuda:
+                import torch as _torch
+                _torch.cuda.empty_cache()  # 挤出 bnb 量化/装载过程的 allocator 缓存
             _state.update(status="ready", error="")
             print(f"[imagegen] 模型就绪：{QI_MODEL_ID} + chat:{QI_CHAT_MODEL_ID}"
                   f"（{path}，{dtype}, {'cuda/' + QI_OFFLOAD + '/te:' + QI_TE_DEVICE if _use_cuda else 'cpu'}"
@@ -388,7 +455,8 @@ def health() -> JSONResponse:
         "model": QI_MODEL_ID,
         "chat_model": QI_CHAT_MODEL_ID,
         "model_status": _state["status"],
-        "te_residency": ("cuda" if _te_on_cuda else "cpu") if _use_cuda else "cpu",
+        "te_residency": ("cuda-int4" if QI_TE_INT4 else
+                         ("cuda" if _te_on_cuda else "cpu")) if _use_cuda else "cpu",
         "dit": "skipped" if QI_SKIP_DIT else ("gguf" if QI_DIT_GGUF else "safetensors"),
         "detail": _state["error"],
         "license": "Qwen Research License（非商用；商用需另行授权）",

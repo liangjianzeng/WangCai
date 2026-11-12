@@ -37,6 +37,7 @@ TORCH_INDEX="${TORCH_INDEX:-https://download.pytorch.org/whl/cu124}"
 DIT_GGUF="${DIT_GGUF:-${QI_DIT_GGUF:-}}"
 TE_DEVICE="${TE_DEVICE:-${QI_TE_DEVICE:-cpu}}"
 TE_KEEP_SEC="${TE_KEEP_SEC:-${QI_TE_KEEP_SEC:-120}}"
+TE_INT4="${TE_INT4:-${QI_TE_INT4:-}}"
 
 PY=.venv/bin/python
 if [ -x "$PY" ] && ! py_ok "$PY"; then
@@ -82,7 +83,7 @@ PYEOF
 fi
 
 export QI_REPO="$REPO" QI_API_KEY="$API_KEY" QI_PORT="$PORT" QI_OFFLOAD="$OFFLOAD" QI_DTYPE="$DTYPE"
-export QI_DIT_GGUF="$DIT_GGUF" QI_TE_DEVICE="$TE_DEVICE" QI_TE_KEEP_SEC="$TE_KEEP_SEC"
+export QI_DIT_GGUF="$DIT_GGUF" QI_TE_DEVICE="$TE_DEVICE" QI_TE_KEEP_SEC="$TE_KEEP_SEC" QI_TE_INT4="$TE_INT4"
 if [ -n "$API_KEY" ]; then AUTH=开; else AUTH=关; fi
 DIT_ZH=gguf; [ -z "$DIT_GGUF" ] && DIT_ZH=safetensors
 echo "[start] 起服：repo=$REPO dit=$DIT_ZH port=$PORT offload=$OFFLOAD te=$TE_DEVICE/keep${TE_KEEP_SEC}s dtype=$DTYPE 鉴权=$AUTH"

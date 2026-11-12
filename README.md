@@ -21,10 +21,12 @@
 > 「用原话」「重扩」后再生图（扩写不可用/失败自动直发，永不阻塞）；扩写走
 > `tools/imagegen-server` 新增的 `/v1/chat/completions`（与生图共用同一份常驻
 > Qwen3-VL），8899 转主推链路、unsloth 8888 保留可选（其 TE 拆头不可扩写）。
-> **2026-11-13 实测收口**：TE（Qwen3-VL-8B）bf16 实测 **17G**，16GB 卡 TE 上卡不可行
-> （此前 ~9G 假设作废）——现行档 TE CPU 常驻（chat 全程显存 0 MiB、扩写 20.8s/80
-> token 实测可用），生图档 16GB 方案（TE int8 上卡候选）列为开放项，详见
-> [tools/imagegen-server/README](tools/imagegen-server/README.md) 开放项节。
+> **2026-11-13 实测收口（全档）**：TE（Qwen3-VL-8B）bf16 实测 **17G**，16GB 卡 bf16 上卡
+> 不可行（此前 ~9G 假设作废）→ **生图档主配方 `QI_TE_INT4=1`：TE nf4 4bit 上卡 6.3G 常驻
+> + DiT GGUF 5.4G + VAE ≈ 13.9G 峰值**——1024² 连续出图 **37~39s/张**（赛博朋克机械猫/
+> 吉卜力柴犬两张实测），chat/扩写走 int4 TE **2.0s/80 token**；辅档 `QI_TE_DEVICE=cpu`
+> （显存 0 占用）与 `QI_SKIP_DIT=1`。工程链与实测数字详见
+> [tools/imagegen-server/README](tools/imagegen-server/README.md) 收口记录节。
 > **2026-11-10 · Linux 桌面入库**（11-11 升级兼容基线）—— **Debian 10 (glibc 2.28) chroot 基线**
 > deb + tar.gz 双产物（WSLg 实跑验证，UOS/Deepin 等老发行版兼容，readelf 版本闸把关）、
 > DGX Spark（ARM64）原生构建链。**Linux 端是远端客户壳形态**：本地 NPU 推理不可用，
@@ -92,7 +94,7 @@ WangCai 的判断是：这是一道**工程**鸿沟，不是硬件鸿沟。
 | **端侧多模态助手「汪柴」（v0.0.2）** | ✅ **M1–M4 全部完成（2026-11-02/03 开发机验证）**：`app/` Flutter Windows 壳（TongYi-Lite Dart 同路径 vendored，分叉清单 `app/UPSTREAM.md`）+ llama-server 子进程网关；三引擎齐——引擎商店钉官方 llama.cpp b12034（Vulkan+CUDA，sha256 白名单）+ OpenAI 远端 + 绑定表实测 t/s 回写 + 路由三档（速度优先 / NPU 优先 / 自动·拔电 NPU 加权），**DoD 四线真机 5/5**（NPU 1.7B / CUDA 4B 117.6 t/s / Vulkan 双卡 / 远端协议）；托盘驻留 + 电源感知 + HKCU 自启；**识图 DoD 达成**（SmolVLM2-500M + 商店 CUDA 引擎，壳网关 20 s 出准确语义描述；NPU 视觉当时归档缺陷，**2026-11-07 引擎修复后 NPU 带图三线 E2E 全绿**，见 [docs/defect-npu-mtmd.md](docs/defect-npu-mtmd.md)）；Agent `--jinja` 工具链全链路回归（tools 200，agent c4096）；便携包 + Inno Setup 脚本。⬜ 干净机装机验证待人工（`packaging/README.md`） |
 | **App 模型清单扩容：2B/4B 线（2026-11-07）** | ✅ **NPU 预置区扩到 8 条 preset + 目录补齐下载地址**：manifest 新增 `neohorse-1-4b`（TokenRhythm NeoHorse-1 4B Q4_K_M 2.5GB，262k ctx，留位未实测，通用 4B admission 自动接管：ctx≤512 放行、>512 拦）与 `qwen3.5-2b`（unsloth MTP UD-Q4_K_XL 1.29GB，同 qwen35 混合架构——GatedDeltaNet opset 风险与 4B 实锤同源 [defect-npu-qwen35-b12034](docs/defect-npu-qwen35-b12034.md)，2B 不预设结论、按「错放危害<错拦」不加家族禁入）；catalog 补 `Qwen3-4B-Q4_K_M` 下载条目（官方 Qwen 仓三镜像，sha256=本机已验证文件实测且与官方 HF LFS oid 逐位一致——此前 NPU 预置区缺文件却无处可下，用户只能手动放文件）；qwen3.5-2b 条目同步修到下载契约（魔搭置首 / `resolve/master` / 钉 sha，原 hf-mirror 置首+裸下载）。下载契约测试扩到 6 预置（落盘名命中 glob / 三镜像分支 / ±2% 字节带），全锦 1434/23/0 |
 | **生图整合（2026-11-10）** | ✅ **Win/Linux 双端可用，同一份 Dart**：聊天区两入口——🎨 chip /「/图 提示词」确定性直调（不经 LLM，简单聊天模式可用、零 token）+ 智能体 `generate_image` 工具（LLM 判断该配图时自主调用，未启用/断连不注册、不幻觉）。服务端 = Unsloth Studio OpenAI 兼容 `POST /v1/images/generations`（Qwen-Image-2.1-Turbo Q5_K_M 8 步 Turbo；1024² 实测 17–29 s、2048² ≈105 s，n≤4 单飞队列串行），seed/尺寸/耗时随消息落库可溯源复现；设置「API 接入 → 图像生成」测连接绿灯，断连 chip 置灰带原因；图片复制/另存三处入口（动作行 / 右键 / 全屏预览）。Windows 本机 `127.0.0.1:8888` 或 Tailscale 远端均可（tailnet 内填 **http** 方案） |
-| **生图主线升级「8899 壳一实例三角色」+ 扩写确认流（2026-11-12/13）** | ✅ **扩写流全链路实测交付**：`tools/imagegen-server` 8899 壳新增 `/v1/chat/completions`——扩写、轻量聊天（与生图共用同一份常驻 Qwen3-VL），主推链路，unsloth 8888 保留可选（其 TE 拆头不可扩写，源码实证在壳 README）。🎨/「/图」两态化：口语先经 `ImagePromptRewriter` 扩写 → **确认卡**（可编辑/🎨 生图/用原话/重扩）→ 确认才出图；扩写不可用/超时自动直发**永不阻塞**；开关与扩写模型档在设置「图像生成」节；智能体 `generate_image` 不过确认流（自主回合不卡人机）。**实测**：chat 真端点非流式/流式绿（CPU 扩写 20.8s/80token、显存 0 MiB）、壳契约 25/25、app 新用例 21/21 + 全量回归绿；TE bf16 17G 实证 16GB 卡不上卡，生图档（TE int8 上卡候选）为开放项（壳 README 开放项节） |
+| **生图主线升级「8899 壳一实例三角色」+ 扩写确认流（2026-11-12/13）** | ✅ **扩写流全链路实测交付**：`tools/imagegen-server` 8899 壳新增 `/v1/chat/completions`——扩写、轻量聊天（与生图共用同一份常驻 Qwen3-VL），主推链路，unsloth 8888 保留可选（其 TE 拆头不可扩写，源码实证在壳 README）。🎨/「/图」两态化：口语先经 `ImagePromptRewriter` 扩写 → **确认卡**（可编辑/🎨 生图/用原话/重扩）→ 确认才出图；扩写不可用/超时自动直发**永不阻塞**；开关与扩写模型档在设置「图像生成」节；智能体 `generate_image` 不过确认流（自主回合不卡人机）。**实测**：chat 真端点非流式/流式绿（**int4 TE 上卡 2.0s/80token**；CPU 档 20.8s、显存 0 MiB）、壳契约 25/25、app 新用例 21/21 + 全量回归绿；TE bf16 17G 实证 16GB 卡 bf16 上卡不可行 → **生图档已收口**：`QI_TE_INT4=1`（TE nf4 6.3G 常驻）+ DiT GGUF 5.4G + VAE，**1024² 连续两张 37~39s/张、显存峰值 13.9G 无增长**（壳 README 收口记录节） |
 
 精度主缺陷的完整攻坚记录是这个仓库最有价值的资产之一：从"logits 被压平、K 缓存第 0 行错八个
 数量级"出发，历经 scatter / conv 算子 / DQ / RMS 池化 / 广播 tile 一连串被证伪的假设，最终钉死在
@@ -343,7 +345,8 @@ Turbo，1024² 实测 17–29 s），n≤4 客户端单飞队列串行，图片�
 FastAPI + diffusers 直调 Qwen-Image-2.1-Turbo，同构 OpenAI 协议 + **`/v1/chat/completions`
 对话端点**——生图、**提示词扩写**、轻量聊天共用同一份常驻 Qwen3-VL text_encoder（完整
 `Qwen3VLForConditionalGeneration` 带 lm_head 能 generate；16GB 单卡口径 2026-11-13 实测修正：
-TE bf16 17G，CPU 常驻 + `QI_SKIP_DIT=1` TE-only 档，生图档二轮收口，**零双份零频繁换载**，
+TE bf16 17G → 生图档 **TE nf4 int4 上卡 6.3G 常驻 + DiT GGUF 5.4G + VAE**（13.9G 峰值，
+1024² 37~39s/张实测），辅档 `QI_TE_DEVICE=cpu` / `QI_SKIP_DIT=1`，**零双份零频繁换载**，
 与本地 24B/27B 聊天模型互斥）。扩写确认流：
 🎨/「/图」发送后 `ImagePromptRewriter` 先让模型把一两句口语扩写成 diffusion 友好提示词，
 **确认卡**上过目——可编辑、「🎨 生图」、「用原话」、「重扩」——确认才起 job；扩写模型不可用/

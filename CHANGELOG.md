@@ -45,8 +45,20 @@ Unreleased 段落里的日期是"该改动在硬件上被验证的日期"，不�
   CPU 路径 20.8s/80token，**显存全程 0 MiB**（TE CPU 常驻）；generations
   skip 档 503 如实；app 新用例 21/21 + 全量回归绿（1498+，唯一 fail 为语音
   并行抖动单跑绿）。**TE bf16 实测 17G**（Qwen3-VL-8B，模型 8B）：16GB 卡
-  TE 上卡物理不可行（此前 ~9G 假设作废）——生图档 16GB 方案（候选 TE
-  int8/fp8 上卡 + DiT GGUF，norm 布局对账待收口）列为壳 README 开放项。
+  TE 上卡物理不可行（此前 ~9G 假设作废）。
+- **生图档 16GB 收口（2026-11-13 当日完成）**：**`QI_TE_INT4=1` TE nf4
+  4bit 上卡 6.3G 常驻 + DiT GGUF Q5_K_M 5.4G + VAE 0.65G ≈ 13.9G 峰值**——
+  **1024² 连续两张端到端 37~39s/张**（赛博朋克机械猫 / 吉卜力柴犬，PNG
+  1.5/1.8MB），显存稳定无增长；chat/扩写走 int4 TE **2.0s/80 token**。
+  排障链沉淀（全部实证入壳 README 收口记录节）：diffusers BF16-GGUF dequant
+  的「行×2 字节」字节形状假设（值视图变体会把 ne 写反，三写法实验矩阵定
+  uint8+字节形状唯一自洽）；非-Linear 参数（txt_in.text_norm）拿 raw 字节
+  视图广播炸 4096 vs 8192 → 官方 excluded-module 同款就地 dequant；plain
+  F32 的 copy_ 不落地（norm_out 装载后仍 f32）→ 整 Parameter 替换；
+  gate_layer/proj 需换 GGUFLinear（往 nn.Linear._parameters 塞 raw 会遮蔽
+  同名 _modules → not callable）；就绪点 empty_cache 挤出 bnb 量化缓存
+  （16.0G→13.9G）。requirements 补 bitsandbytes；start.ps1/start.sh 加
+  `-TeInt4`/`TE_INT4` 直通。
 - **环境链实案**（排障沉淀进 start.ps1/start.sh）：diffusers git 主干要求
   Python ≥3.11（3.10 装依赖时才被拒 → 版本闸收紧 3.11~3.13，3.14 torch 轮子
   未跟上）；`QI_PYTHON` 覆盖口 + NuGet 官方便携版 Python 3.12.7（官方安装器

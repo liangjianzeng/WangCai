@@ -24,6 +24,7 @@ param(
   [ValidateSet("none", "model", "sequential")] [string]$Offload = "none",
   [ValidateSet("cpu", "cuda")] [string]$TeDevice = "cpu",
   [int]$TeKeepSec = 120,
+  [switch]$TeInt4,
   [string]$Dtype = "bf16",
   [string]$TorchIndex = "https://download.pytorch.org/whl/cu128"
 )
@@ -102,6 +103,7 @@ $env:QI_PORT = "$Port"
 $env:QI_OFFLOAD = $Offload
 $env:QI_TE_DEVICE = $TeDevice
 $env:QI_TE_KEEP_SEC = "$TeKeepSec"
+$env:QI_TE_INT4 = if ($TeInt4) { "1" } else { "" }
 $env:QI_DTYPE = $Dtype
 $authZh = if ($ApiKey) { '开' } else { '关' }
 $ditZh = if ($DitGguf) { 'gguf' } else { 'safetensors' }

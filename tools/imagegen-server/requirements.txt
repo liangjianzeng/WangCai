@@ -19,5 +19,6 @@ accelerate>=1.1
 gguf>=0.6            # DiT GGUF from_single_file 必需（diffusers 可选依赖不自动装；
                      # 2026-11-13 实案：缺它报 "Unable to load weights from checkpoint file"）
 transformers>=4.57   # qwen3_vl（TE=Qwen3VLForConditionalGeneration，chat/扩写共用）
+bitsandbytes>=0.48   # QI_TE_INT4=1：TE nf4 4bit 上卡（16GB 卡生图档显存解，~5.5G）
 modelscope>=1.23
 git+https://github.com/huggingface/diffusers.git@main

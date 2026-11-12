@@ -47,10 +47,18 @@ def convert_gguf_keys(in_path: str, out_path: str | None = None) -> str:
 
     import numpy as np
     n = 0
-    # gguf>=0.19 的 GGUFWriter 是显式状态机（NO_FILE→EMPTY→HEADER→KV→TI→…）：
+    # gguf>=0.19 的 GGUFWriter 是显式状态机（NO_FILE→EMPTY→HEADER→KV→…）：
     # add_tensor 只能在 open_output_file **之前**（内存缓存），随后按序
     # open_output_file → write_header/kv/ti/tensors_to_file → close 落盘；
     # 裸 close() 只关文件不写盘（0 字节空壳实锤）。
+    #
+    # ⚠️ add_tensor_info 只对 **uint8 输入**做字节→逻辑形状换算
+    # （`tensor_dtype == np.uint8` 分支才走 quant_shape_from_byte_shape）：
+    # F32 张量若直接传 float32 视图，raw_shape 里的**字节数**会被原样写进
+    # ne → 元数据声明 4× 数据量 → reader 越界把相邻张量读进来（2026-11-13
+    # 实锤：norm_q ne=(512,) 只写 512B，尾部混入 norm_k/后续数据——此前误判
+    # 为 unsloth 转换 bug，实为本脚本传参错误）。统一传 **uint8 字节视图 +
+    # 字节形状**：F32/BF16/K-quant 三类换算后均与源文件 ne 一致。
     writer = gguf.GGUFWriter(out_path, arch=arch)
     for t in reader.tensors:
         name = t.name
@@ -58,13 +66,16 @@ def convert_gguf_keys(in_path: str, out_path: str | None = None) -> str:
             if name.startswith(p):
                 name = name[len(p):]
                 break
-        # raw 量化块原样搬运（零解压）。writer 的 raw_shape 约定是
-        # **字节形状**（add_tensor_info 内 quant_shape_from_byte_shape 换算
-        # 回逻辑维度写 ne）——统一给 data 的 uint8 视图形状：F32/BF16/
-        # K-quant 三类换算后均与源文件 ne 一致（已逐类型对账）。
-        raw_bytes_shape = t.data.view(np.uint8).shape
-        writer.add_tensor(name, t.data,
-                          raw_shape=tuple(int(x) for x in raw_bytes_shape),
+        # raw 量化块原样搬运（零解压），只改键名与容器头。
+        #
+        # ⚠️ 传参铁律（2026-11-13 实验矩阵实证，BF16 三写法对照）：
+        # uint8 字节视图 + **uint8.shape（字节形状）** 是唯一自洽写法——
+        # writer 对 uint8 输入走 quant_shape_from_byte_shape 换算 ne，diffusers
+        # 的 dequantize_gguf_tensor 同款假设往返一致（img_in dequant (4096,64)
+        # 逐位对官方）；任何「值视图 + 逻辑 shape」变体都会把 ne 写反。
+        data_u8 = t.data.view(np.uint8)
+        writer.add_tensor(name, data_u8,
+                          raw_shape=tuple(int(x) for x in data_u8.shape),
                           raw_dtype=t.tensor_type)
         n += 1
     writer.open_output_file()

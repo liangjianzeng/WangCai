@@ -19,16 +19,16 @@ text_encoder**——`pipe.text_encoder` 是完整 `Qwen3VLForConditionalGenerati
 | 提示词扩写（🎨/「/图」确认卡流） | ✗（TE 拆头不可 generate） | ✓ `/v1/chat/completions`（同一份 Qwen3-VL 常驻） |
 | 采样 | Studio 管理 | checkpoint 内置 8 步，CFG=1（`num_inference_steps`/负向提示不生效，协议照收） |
 
-**16GB 单卡显存口径（5060Ti 实测基线，2026-11-13 修正）**：
-TE（Qwen3-VL-8B）**bf16 实测 17G**——远超此前的 ~9G 假设，**16GB 卡物理装不下
-TE 上卡**。现行档：`QI_TE_DEVICE=cpu`（默认）TE 常驻系统 RAM（47G 机器实测
-chat 全程显存 **0 MiB**），chat/扩写全功能；生图（DiT）档位为**开放项**——
-候选解 TE int8/fp8 上卡（~8.5G）+ DiT GGUF（Q5_K_M 5.4G）+ VAE 0.65G ≈ 14.6G，
-需二轮评估 TE 量化精度与可搬运性；`QI_SKIP_DIT=1` 是当前 TE-only 验收档
-（生图端点如实 503）。DiT GGUF 装载的 diffusers 双坑与键映射工程已完成
-（见 `convert_gguf_keys.py`），剩 norm 布局对账（norm_q 512 vs 128 等）未收口。
-本地聊天模型（LFM2.5-24B ~13G / Bonsai-27B）与生图栈**互斥**口径不变；
-DGX Spark（128GB 统一内存）无所谓：`-TeDevice cuda` TE 全常驻上卡。
+**16GB 单卡显存口径（5060Ti 实测基线，2026-11-13 全档收口）**：
+TE（Qwen3-VL-8B）bf16 实测 17G，16GB 卡装不下 → **生图档主配方
+`QI_TE_INT4=1`：TE bitsandbytes nf4 4bit 上卡常驻 ~6.3G + DiT GGUF Q5_K_M
+5.4G + VAE 0.65G**（allocated 峰值实测 13.9G）——1024² **端到端 37~39 s**
+（TE encode + 8 步去噪 + VAE decode），连续生图显存无增长；chat/扩写走
+int4 TE **2.0s/80 token**（GPU，对比 CPU 档 20.8s）。辅档：
+`QI_TE_DEVICE=cpu`（TE 常驻 RAM、显存 0 占用、chat 慢档 20.8s）与
+`QI_SKIP_DIT=1`（TE-only 验收档）。bf16 TE 上卡 = 整卡塞满（16042/16311
+MiB 实锤）不可用。本地聊天模型（LFM2.5-24B ~13G / Bonsai-27B）与生图栈
+**互斥**口径不变；DGX Spark（128GB 统一内存）：`-TeDevice cuda` bf16 全常驻。
 
 ## 快速开始（一键脚本）
 
@@ -87,8 +87,9 @@ QI_REPO=./models/qit QI_API_KEY=sk-wc-自己的随机串 python server.py
 | `QI_HOST` / `QI_PORT` | `0.0.0.0` / `8899` | 监听；8888 留给 unsloth |
 | `QI_DTYPE` | `bf16` | `bf16/fp16/fp32`；无 CUDA 自动退化 fp32（能跑，很慢） |
 | `QI_OFFLOAD` | `none` | 显存紧：`model`（推荐，速度换显存）或 `sequential`（更省更慢） |
-| `QI_TE_DEVICE` | `cpu` | TE 驻留档：`cpu`（TE 常驻系统 RAM，实测显存 0 占用；**16GB 卡必选**）或 `cuda`（大显存常驻上卡） |
-| `QI_TE_KEEP_SEC` | `120` | TE 空闲回迁 TTL 秒（仅 `cuda` 档生效；cpu 档 TE 从不上卡） |
+| `QI_TE_DEVICE` | `cpu` | TE 驻留档（bf16 TE 时）：`cpu`（常驻 RAM）或 `cuda`（大显存上卡）；**16GB 生图档请用 `QI_TE_INT4=1` 取代本项** |
+| `QI_TE_INT4` | 空 | `1` = TE bitsandbytes nf4 4bit 上卡常驻（~6.3G）——16GB 卡生图主配方，与 DiT GGUF 共卡 |
+| `QI_TE_KEEP_SEC` | `120` | TE 空闲回迁 TTL 秒（仅 bf16 `cuda` 档生效；cpu/int4 档不搬） |
 | `QI_SKIP_DIT` | 空 | `1` = TE-only 验收档：DiT 不装载、生图端点 503，chat/扩写全功能 |
 | `QI_CHAT_TEMPERATURE` | `0.7` | chat 端点缺省采样温度（请求体可覆盖；0=greedy，扩写要稳可传 0） |
 | `QI_CHAT_MAX_TOKENS` | `512` | chat 端点 max_new_tokens 上限（请求体更大值被钳到此） |
@@ -136,20 +137,32 @@ b64_json/seed?`，尺寸钳 [256,2560] 且 16 对齐（放得下官方竖图例 
 校验与 b64+seed 回声 / chat 非流式+流式（SSE 形状逐块断言）/ chat×generations
 并发 `_gen_lock` 单飞断言。**25/25 全绿**（2026-11-13 实测）；改动 server.py 后必跑。
 
-## 开放项（生图档 16GB 收口，2026-11-13 状态）
+## 生图档 16GB 收口记录（2026-11-13 全绿，原开放项）
 
-已完成：`convert_gguf_keys.py`（ComfyUI gguf → diffusers 键名，265 张量对齐
-验证过）+ server.py 手工三步组装（`load_gguf_checkpoint` →
-`_replace_with_gguf_linear` → 逐参数装载，绕开 0.43-dev 的
-from_single_file/from_pretrained 双坑——前者无 GGUF 实现、后者文件发现不认
-.gguf 名，均已实证）+ img_mlp `gate_up → gate_layer/proj` 行切拆分映射。
+已全部收口，端到端实测通过。工程链沉淀：
 
-待收口：①norm 布局对账——gguf `attn.norm_q/norm_k (512,)` 与 2.1 config
-`head_dim 128` 的 4× 差、`norm_out.linear (16384,4096)` vs 模型 `(4096,4096)`，
-疑 unsloth 转换布局差异，需对照 ComfyUI 原版 checkpoint 实证；②TE int8/fp8
-上卡（~8.5G）与 DiT GGUF 共卡的量化精度与可搬运性评估（TE bf16 17G 上卡已
-实证不可行——整卡塞满 16042/16311 MiB）。`QI_SKIP_DIT=1` 为现行 TE-only
-验收档：chat/扩写全功能实测通过，生图端点 503。
+1. **转换器** `convert_gguf_keys.py`：ComfyUI gguf → diffusers 键名（剥
+   `model.diffusion_model.` 前缀，265 张量），幂等缓存。**传参铁律**（实验
+   矩阵实证）：uint8 字节视图 + 字节形状是唯一自洽写法——writer 只对 uint8
+   输入做字节→逻辑换算，值视图变体会把 ne 写反。
+2. **diffusers 0.43-dev 双坑绕行**（server.py 手工三步组装）：from_single_file
+   无 GGUF 实现（"Unable to load weights"→形状爆炸）、from_pretrained 文件
+   发现不认 .gguf 名——`load_gguf_checkpoint`（.gguf → GGUFParameter）+
+   `_replace_with_gguf_linear` + 逐参数装载。
+3. **键映射**：img_mlp `gate_up（gate|up 拼接 24576）→ gate_layer/proj`
+   行切拆分（gate 前半配 act、proj 后半乘子，K-quant 行独立零损失）；
+   gate_layer/proj 需整体换 **GGUFLinear**（往 nn.Linear._parameters 塞
+   raw 会遮蔽同名 _modules → 前向 not callable 实锤）。
+4. **非-Linear 的 GGUFParameter 就地 dequant**（官方 excluded-module 同款
+   语义）：txt_in.text_norm 等 RMSNorm 拿 raw 字节视图会广播炸
+   （4096 vs 8192 实锤）；**plain F32 张量 copy_ 不落地**（norm_out 装载后
+   仍 f32）→ 整 Parameter 替换收口。
+5. **显存**：TE bf16 上卡整卡塞满不可用 → **TE nf4 int4 上卡 6.3G 常驻**；
+   就绪点 `empty_cache()` 挤出 bnb 量化过程缓存（16.0G→13.9G）。
+
+**端到端实测**：1024² 两张连续出图（赛博朋克机械猫 / 吉卜力柴犬）37~39s、
+PNG 1.5/1.8MB、显存峰值 13.9G 稳定无增长；chat 流式 int4 TE 2.0s；
+契约 25/25；app 21/21。
 
 ## 硬件宿主
 
