@@ -463,6 +463,22 @@ def health() -> JSONResponse:
     })
 
 
+@app.get("/api/vram")
+def vram():
+    """显存诊断（免鉴权）：分清 allocated（真用）/ reserved（PyTorch 缓存池）/
+    驱动层总量——nvidia-smi 看到 98% 时先看这里，别误判「重复加载」。"""
+    if not _use_cuda:
+        return JSONResponse({"cuda": False})
+    import torch
+    return JSONResponse({
+        "cuda": True,
+        "allocated_gib": round(torch.cuda.memory_allocated() / 2**30, 2),
+        "reserved_gib": round(torch.cuda.memory_reserved() / 2**30, 2),
+        "note": "reserved-allocated = caching allocator 池（可复用/empty_cache 可挤），"
+                "非第二份模型",
+    })
+
+
 @app.get("/v1/models")
 def models(request: Request):
     err = _auth_error(request)
@@ -541,6 +557,11 @@ async def generations(request: Request):
                     outs.append(base64.b64encode(buf.getvalue()).decode("ascii"))
             finally:
                 _te_release()
+                # 生图收尾挤缓存：GGUF 逐层 dequant 工作区 / 激活波峰的块
+                # 会被 caching allocator 保留（nvidia-smi 观感 98%+），每次
+                # 生图后归还驱动，保证 2048² 大图 / 桌面侧余量。
+                import torch as _torch
+                _torch.cuda.empty_cache()
         return outs
 
     import asyncio

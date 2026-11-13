@@ -103,7 +103,10 @@ $env:QI_PORT = "$Port"
 $env:QI_OFFLOAD = $Offload
 $env:QI_TE_DEVICE = $TeDevice
 $env:QI_TE_KEEP_SEC = "$TeKeepSec"
-$env:QI_TE_INT4 = if ($TeInt4) { "1" } else { "" }
+$env:QI_TE_INT4 = if ($TeInt4) { "1" } else { ${env:QI_TE_INT4} }  # 尊重外部 env
+# 显存池分段扩展：显著降低 caching allocator 碎片（reserved 贴近 allocated，
+# 大图/连续生图 OOM 面收敛）。
+$env:PYTORCH_CUDA_ALLOC_CONF = "expandable_segments:True"
 $env:QI_DTYPE = $Dtype
 $authZh = if ($ApiKey) { '开' } else { '关' }
 $ditZh = if ($DitGguf) { 'gguf' } else { 'safetensors' }
