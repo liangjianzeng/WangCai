@@ -72,6 +72,10 @@ class ImagePromptRewriter {
   }
 
   /// 扩写一次。任何异常折叠为 failed 结果（调用方无需 try/catch 决定是否阻塞）。
+  ///
+  /// 传输走**非流式**（chatCompletionOnce，2026-11-13 用户实测 SSE 扩写
+  /// 「输出到一半断开」频繁复现——扩写是短平快单发，非流式整包 JSON 没有
+  /// 中途断连面）；超时预算 [timeout] 独立（30s 默认）。
   Future<ImageRewriteResult> rewrite({
     required ApiModelConfig model,
     required String userPrompt,
@@ -81,8 +85,7 @@ class ImagePromptRewriter {
       return ImageRewriteResult(original: original, rewritten: original);
     }
     try {
-      final buf = StringBuffer();
-      final stream = _openAi.chatCompletion(
+      final raw = await _openAi.chatCompletionOnce(
         config: model,
         messages: const [
           {'role': 'system', 'content': systemPrompt},
@@ -92,11 +95,9 @@ class ImagePromptRewriter {
             ],
         temperature: 0.7,
         maxTokens: 256,
-      ).timeout(timeout);
-      await for (final piece in stream) {
-        buf.write(piece);
-      }
-      final out = sanitize(buf.toString());
+        timeout: timeout,
+      );
+      final out = sanitize(raw);
       if (out.isEmpty) {
         debugPrint('[ImageRewrite] 扩写空回复，降级用原文');
         return ImageRewriteResult(original: original, rewritten: original, failed: true);

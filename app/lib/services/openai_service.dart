@@ -147,6 +147,71 @@ class OpenAiService {
     }
   }
 
+  /// **非流式** chat/completions：POST 完整请求，等一个完整 JSON 响应体，
+  /// 返回 `choices[0].message.content`。适用短平快单发（生图提示词扩写等）——
+  /// 没有 SSE 的中途断连面（流式对长连接 + 增量解析敏感，「输出到一半断开」
+  /// 类问题在非流式形态下不存在），2026-11-13 为扩写链路新增。
+  ///
+  /// 网络/鉴权/解析失败抛出可读中文 [Exception]，调用方兜底；带请求级
+  /// [timeout] 超时（短平快语义，不应长挂）。
+  Future<String> chatCompletionOnce({
+    required ApiModelConfig config,
+    required List<Map<String, dynamic>> messages,
+    double? temperature,
+    int? maxTokens,
+    Map<String, dynamic>? extraBody,
+    Duration timeout = const Duration(seconds: 60),
+  }) async {
+    final url = normalizeChatUrl(config.baseUrl);
+    final body = <String, dynamic>{
+      'model': config.model,
+      'messages': messages,
+      if (temperature != null) 'temperature': temperature,
+      if (maxTokens != null) 'max_tokens': maxTokens,
+      if (extraBody != null) ...extraBody,
+      // 不带 stream 字段（缺省即非流式），严格端点零兼容负担。
+    };
+    final cancel = CancelToken();
+    _activeTokens.add(cancel);
+    try {
+      final resp = await _dio
+          .post<Map<String, dynamic>>(
+            url,
+            data: body,
+            options: Options(
+              headers: _headers(config.apiKey),
+              // 显式 JSON（默认 responseType 即可，勿 stream）。
+            ),
+            cancelToken: cancel,
+          )
+          .timeout(timeout);
+      final choices = resp.data?['choices'] as List?;
+      if (choices == null || choices.isEmpty) {
+        throw Exception('非流式响应缺 choices：${resp.data}');
+      }
+      final first = choices.first;
+      if (first is! Map<String, dynamic>) {
+        throw Exception('非流式响应 choices[0] 形状异常');
+      }
+      final message = first['message'];
+      final content = (message is Map<String, dynamic>) ? message['content'] : null;
+      if (content is! String || content.isEmpty) {
+        throw Exception('非流式响应 message.content 为空');
+      }
+      return content;
+    } on DioException catch (e) {
+      final status = e.response?.statusCode;
+      if (e.type == DioExceptionType.cancel) rethrow;
+      if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout) {
+        throw Exception('非流式请求超时：${e.type}');
+      }
+      throw Exception('请求失败：${e.type}${status != null ? ' HTTP $status' : ''}');
+    } finally {
+      _activeTokens.remove(cancel);
+    }
+  }
+
   /// 发起流式 chat/completions，返回**结构化增量事件流**（原生工具调用用）。
   ///
   /// 事件形如：

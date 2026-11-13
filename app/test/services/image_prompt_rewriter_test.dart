@@ -1,11 +1,13 @@
 // ImagePromptRewriter 单测（_FakeAdapter mock dio HttpClientAdapter，
 // image_gen_service_test 同款惯例）。
 //
-// 覆盖：SSE 拼接 + sanitize 清洗 / 请求体形状（system 模板 + user 原文 +
-// 采样参数）/ 空回复→failed / HTTP 错误→failed / 超时→failed /
-// 空提示词直通 / sanitize 各包裹形态。核心纪律锚：**任何失败都折叠为
-// failed（rewritten=original），扩写永不阻塞生图**。
-import 'dart:async';
+// 2026-11-13 扩写改**非流式**（chatCompletionOnce 整包 JSON——SSE 流式在
+// App 实测「输出到一半断开」频繁复现，非流式无中途断连面），测试随形态
+// 重写：完整 JSON 响应 / 请求体形状（system+user、无 stream 字段）/ 空回复
+// → failed / HTTP 401 → failed / connectionTimeout → failed / 空提示词
+// 直通 / sanitize 各包裹形态。时钟类超时守卫属生产层（flutter_test 下
+// Stream/Future timeout 不触发——对照实验实锤），此处用 DioException
+// connectionTimeout 注入等价覆盖「失败折叠为原文直通」的收敛口。
 import 'dart:convert';
 import 'dart:typed_data' show Uint8List;
 
@@ -31,19 +33,24 @@ class _FakeAdapter implements HttpClientAdapter {
   }
 }
 
-ResponseBody _sseBody(Stream<String> lines) => ResponseBody(
-      lines.map((l) => Uint8List.fromList(utf8.encode(l))),
+ResponseBody _jsonBody(Map<String, dynamic> json) => ResponseBody(
+      Stream.value(Uint8List.fromList(utf8.encode(jsonEncode(json)))),
       200,
-      headers: {
-        Headers.contentTypeHeader: ['text/event-stream'],
-      },
+      headers: {Headers.contentTypeHeader: [Headers.jsonContentType]},
     );
 
-String _chunk(String text) => jsonEncode({
+Map<String, dynamic> _chatResponse(String content) => {
+      'id': 'chatcmpl-x',
+      'object': 'chat.completion',
       'choices': [
-        {'delta': {'content': text}}
-      ]
-    });
+        {
+          'index': 0,
+          'message': {'role': 'assistant', 'content': content},
+          'finish_reason': 'stop',
+        }
+      ],
+      'usage': {'prompt_tokens': 55, 'completion_tokens': 80},
+    };
 
 ApiModelConfig _model() => const ApiModelConfig(
       id: 'm1',
@@ -61,17 +68,11 @@ ImagePromptRewriter _rewriterWith(_FakeAdapter adapter,
     );
 
 void main() {
-  group('ImagePromptRewriter.rewrite', () {
-    test('SSE 增量拼接 → sanitize 清洗围栏/前缀/引号', () async {
-      final adapter = _FakeAdapter((o) async => _sseBody(Stream.fromIterable([
-            'data: ${_chunk("```text\n")}\n\n',
-            'data: ${_chunk("提示词：")}\n\n',
-            'data: ${_chunk("「一只赛博朋克风格的猫，")}\n\n',
-            'data: ${_chunk("霓虹灯街道背景，电影光影，")}\n\n',
-            'data: ${_chunk("超高清」")}\n\n',
-            'data: ${_chunk("\n```")}\n\n',
-            'data: [DONE]\n\n',
-          ])));
+  group('ImagePromptRewriter.rewrite（非流式）', () {
+    test('整包 JSON → sanitize 清洗围栏/前缀/引号', () async {
+      final adapter = _FakeAdapter((o) async =>
+          _jsonBody(_chatResponse('```text\n提示词：「一只赛博朋克风格的猫，'
+              '霓虹灯街道背景，电影光影，超高清」\n```')));
       final r = await _rewriterWith(adapter)
           .rewrite(model: _model(), userPrompt: '画一只赛博朋克猫');
       expect(r.failed, isFalse);
@@ -80,35 +81,44 @@ void main() {
       expect(r.changed, isTrue);
     });
 
-    test('请求体：system 模板打头 + user 原文，模型/流式/采样参数齐全', () async {
+    test('请求体：system 模板打头 + user 原文，模型/采样参数齐全、无 stream 字段',
+        () async {
       Map<String, dynamic>? sent;
       String? auth;
       final adapter = _FakeAdapter((o) async {
         sent = o.data as Map<String, dynamic>;
         auth = o.headers['Authorization'];
-        return _sseBody(Stream.fromIterable([
-          'data: ${_chunk("好的提示词")}\n\n',
-          'data: [DONE]\n\n',
-        ]));
+        return _jsonBody(_chatResponse('好的提示词'));
       });
-      await _rewriterWith(adapter)
-          .rewrite(model: _model(), userPrompt: '画只猫');
+      await _rewriterWith(adapter).rewrite(model: _model(), userPrompt: '画只猫');
       expect(sent, isNotNull);
       expect(sent!['model'], 'Qwen3-VL-8B-Instruct');
-      expect(sent!['stream'], isTrue);
+      expect(sent!.containsKey('stream'), isFalse,
+          reason: '非流式语义：不携带 stream 字段');
       expect(sent!['temperature'], 0.7);
       expect(sent!['max_tokens'], 256);
       expect(auth, 'Bearer sk-test');
+      expect(sent!['url'] as String?, isNull);
       final msgs = (sent!['messages'] as List).cast<Map<String, dynamic>>();
       expect(msgs.first['role'], 'system');
       expect(msgs.first['content'], contains('提示词工程师'));
       expect(msgs.last, {'role': 'user', 'content': '画只猫'});
+      // URL 归一化：baseUrl 已带 /v1 → /v1/chat/completions
+      // （normalizeChatUrl 在 OpenAiService 内，这里从 dio options 侧验证）。
     });
 
-    test('空回复 → failed（rewritten=原文，不阻塞）', () async {
-      final adapter = _FakeAdapter((o) async => _sseBody(
-          Stream.fromIterable(['data: ${_chunk("   ")}\n\n', 'data: [DONE]\n\n']
-      )));
+    test('URL 归一化：请求打到 baseUrl/chat/completions', () async {
+      String? path;
+      final adapter = _FakeAdapter((o) async {
+        path = o.uri.toString();
+        return _jsonBody(_chatResponse('好的'));
+      });
+      await _rewriterWith(adapter).rewrite(model: _model(), userPrompt: '画只猫');
+      expect(path, contains('/v1/chat/completions'));
+    });
+
+    test('空 content → failed（rewritten=原文，不阻塞）', () async {
+      final adapter = _FakeAdapter((o) async => _jsonBody(_chatResponse('   ')));
       final r = await _rewriterWith(adapter)
           .rewrite(model: _model(), userPrompt: '画只猫');
       expect(r.failed, isTrue);
@@ -116,9 +126,18 @@ void main() {
       expect(r.changed, isFalse);
     });
 
+    test('缺 choices / 空 choices → failed', () async {
+      final adapter = _FakeAdapter((o) async => _jsonBody({'object': 'chat.completion'}));
+      final r = await _rewriterWith(adapter)
+          .rewrite(model: _model(), userPrompt: '画只猫');
+      expect(r.failed, isTrue);
+      expect(r.rewritten, '画只猫');
+    });
+
     test('HTTP 401 → failed 原文直通', () async {
       final adapter = _FakeAdapter((o) async => throw DioException(
             requestOptions: o,
+            type: DioExceptionType.badResponse,
             response: Response(requestOptions: o, statusCode: 401),
           ));
       final r = await _rewriterWith(adapter)
@@ -127,22 +146,10 @@ void main() {
       expect(r.rewritten, '画只猫');
     });
 
-    // 时钟类守卫（rewrite 的 .timeout 预算 / OpenAiService 停摆看门狗都建在
-    // Stream.timeout 上）在 flutter_test test() 里不触发——对照实验实锤：
-    // 裸 async* 阻塞流 + 150ms timeout 30s 未抛。故「挂起降级」在此环境用
-    // **流错误注入**等价覆盖（await for 抛错 → catch → failed 同一收敛口）；
-    // 时钟预算本体属生产层（真机 dio 流上 Stream/Timer 正常走）。
-    test('流中途报错 → failed 原文直通', () async {
-      final ctl = StreamController<Uint8List>();
-      ctl.add(Uint8List.fromList(utf8.encode('data: ${_chunk("一只")}\n\n')));
-      ctl.addError(Exception('connection reset'));
-      unawaited(ctl.close());
-      final adapter = _FakeAdapter((o) async => ResponseBody(
-            ctl.stream,
-            200,
-            headers: {
-              Headers.contentTypeHeader: ['text/event-stream'],
-            },
+    test('连接超时（DioException 注入）→ failed（永不卡死生图）', () async {
+      final adapter = _FakeAdapter((o) async => throw DioException(
+            requestOptions: o,
+            type: DioExceptionType.connectionTimeout,
           ));
       final r = await _rewriterWith(adapter)
           .rewrite(model: _model(), userPrompt: '画只猫');
@@ -154,10 +161,10 @@ void main() {
       var called = false;
       final adapter = _FakeAdapter((o) async {
         called = true;
-        return _sseBody(Stream.fromIterable(['data: [DONE]\n\n']));
+        return _jsonBody(_chatResponse('x'));
       });
-      final r =
-          await _rewriterWith(adapter).rewrite(model: _model(), userPrompt: '  ');
+      final r = await _rewriterWith(adapter)
+          .rewrite(model: _model(), userPrompt: '  ');
       expect(called, isFalse);
       expect(r.failed, isFalse);
       expect(r.rewritten, '');
